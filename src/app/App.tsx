@@ -1,3 +1,4 @@
+import { useRootScanner } from "./hooks/useRootScanner";
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -12,61 +13,8 @@ import {
   ChevronUp,
   Zap,
   Lock,
+  ShieldAlert,
 } from "lucide-react";
-
-type StreamState = "idle" | "scanning" | "active" | "error";
-
-interface StreamInfo {
-  width: number;
-  height: number;
-  fps: number;
-  hdr: string;
-  codec: string;
-  bitrate: number;
-  widevineLevel: string;
-  drm: string;
-  container: string;
-  colorSpace: string;
-  audioCodec: string;
-  audioChannels: string;
-  bufferHealth: number;
-  networkSpeed: number;
-}
-
-const STREAM_PRESETS: StreamInfo[] = [
-  {
-    width: 3840,
-    height: 2160,
-    fps: 23.976,
-    hdr: "Dolby Vision",
-    codec: "H.265 / HEVC",
-    bitrate: 15.8,
-    widevineLevel: "L1",
-    drm: "Widevine CDM",
-    container: "CMAF/fMP4",
-    colorSpace: "BT.2020 / PQ",
-    audioCodec: "Dolby Atmos (E-AC3)",
-    audioChannels: "7.1",
-    bufferHealth: 94,
-    networkSpeed: 42.3,
-  },
-  {
-    width: 1920,
-    height: 1080,
-    fps: 23.976,
-    hdr: "SDR",
-    codec: "H.264 / AVC",
-    bitrate: 6.2,
-    widevineLevel: "L1",
-    drm: "Widevine CDM",
-    container: "CMAF/fMP4",
-    colorSpace: "BT.709",
-    audioCodec: "AAC-LC",
-    audioChannels: "5.1",
-    bufferHealth: 78,
-    networkSpeed: 18.6,
-  },
-];
 
 function useAnimatedNumber(target: number, active: boolean, decimals = 0) {
   const [value, setValue] = useState(0);
@@ -172,69 +120,24 @@ function SegmentBar({ value, max = 100, color = "#00e87a" }: { value: number; ma
 }
 
 export default function App() {
-  const [streamState, setStreamState] = useState<StreamState>("idle");
-  const [streamInfo, setStreamInfo] = useState<StreamInfo | null>(null);
-  const [scanLog, setScanLog] = useState<string[]>([]);
+  const {
+    streamState,
+    streamInfo,
+    metrics,
+    scanLog,
+    hasRoot,
+    requestRootAccess,
+    startScan,
+    reset
+  } = useRootScanner();
+
   const [showDetails, setShowDetails] = useState(false);
-  const [presetIdx, setPresetIdx] = useState(0);
-  const [tick, setTick] = useState(0);
   const logRef = useRef<HTMLDivElement>(null);
 
   const is4k = streamInfo ? streamInfo.width >= 3840 : false;
 
-  useEffect(() => {
-    if (streamState !== "active") return;
-    const id = setInterval(() => setTick((t) => t + 1), 2000);
-    return () => clearInterval(id);
-  }, [streamState]);
-
-  const liveBuffer = streamInfo
-    ? Math.max(60, Math.min(100, streamInfo.bufferHealth + (Math.random() * 6 - 3)))
-    : 0;
-  const liveNetwork = streamInfo
-    ? Math.max(5, streamInfo.networkSpeed + (Math.random() * 4 - 2))
-    : 0;
-
-  function appendLog(msg: string) {
-    const ts = new Date().toISOString().slice(11, 23);
-    setScanLog((prev) => [...prev.slice(-40), `[${ts}] ${msg}`]);
-  }
-
-  function startScan() {
-    const preset = STREAM_PRESETS[presetIdx];
-    setStreamState("scanning");
-    setStreamInfo(null);
-    setScanLog([]);
-
-    const steps = [
-      { delay: 200, msg: "Attaching to media.extractor via root IPC..." },
-      { delay: 500, msg: "Enumerating MediaCodec pipeline..." },
-      { delay: 900, msg: `DRM session detected: ${preset.drm}` },
-      { delay: 1200, msg: `Widevine security level: ${preset.widevineLevel}` },
-      { delay: 1500, msg: `Video track: ${preset.codec}` },
-      { delay: 1800, msg: `Decoded resolution: ${preset.width}×${preset.height}` },
-      { delay: 2000, msg: `Frame rate: ${preset.fps} fps` },
-      { delay: 2200, msg: `HDR metadata: ${preset.hdr}` },
-      { delay: 2500, msg: `Bitrate: ${preset.bitrate} Mbps` },
-      { delay: 2800, msg: "Stream analysis complete." },
-    ];
-
-    steps.forEach(({ delay, msg }) => {
-      setTimeout(() => appendLog(msg), delay);
-    });
-
-    setTimeout(() => {
-      setStreamInfo(preset);
-      setStreamState("active");
-    }, 3000);
-  }
-
-  function reset() {
-    setStreamState("idle");
-    setStreamInfo(null);
-    setScanLog([]);
-    setShowDetails(false);
-  }
+  const liveBuffer = metrics.bufferHealth;
+  const liveNetwork = metrics.networkSpeed;
 
   useEffect(() => {
     if (logRef.current) {
@@ -252,15 +155,16 @@ export default function App() {
     >
       {/* Phone shell */}
       <div
-        className="relative w-full max-w-sm bg-[#07090d] rounded-[2.5rem] overflow-hidden"
+        className="relative w-full max-w-sm bg-[#07090d] rounded-[2.5rem] overflow-hidden flex flex-col"
         style={{
           boxShadow:
             "0 0 0 1px rgba(0,232,122,0.08), 0 0 80px rgba(0,232,122,0.04), 0 32px 64px rgba(0,0,0,0.8)",
           minHeight: 780,
+          maxHeight: 850
         }}
       >
         {/* Notch bar */}
-        <div className="flex items-center justify-between px-6 pt-4 pb-2">
+        <div className="flex items-center justify-between px-6 pt-4 pb-2 shrink-0">
           <span className="text-[10px] font-mono text-muted-foreground">9:41</span>
           <div className="w-20 h-5 rounded-full bg-black flex items-center justify-center mx-auto">
             <div className="w-2.5 h-2.5 rounded-full bg-[#0e1420]" />
@@ -271,9 +175,9 @@ export default function App() {
           </div>
         </div>
 
-        <div className="px-5 pb-8 flex flex-col gap-4">
+        <div className="px-5 pb-8 flex flex-col gap-4 flex-1 overflow-y-auto scrollbar-none">
           {/* Header */}
-          <div className="flex items-center justify-between mt-1">
+          <div className="flex items-center justify-between mt-1 shrink-0">
             <div>
               <h1
                 className="text-lg font-bold text-foreground leading-tight tracking-tight"
@@ -291,27 +195,28 @@ export default function App() {
             </div>
           </div>
 
-          {/* Preset selector */}
-          {streamState === "idle" && (
-            <div className="flex gap-2">
-              {STREAM_PRESETS.map((p, i) => (
-                <button
-                  key={i}
-                  onClick={() => setPresetIdx(i)}
-                  className={`flex-1 py-2 px-3 rounded-lg border text-xs font-mono transition-all duration-200 ${
-                    presetIdx === i
-                      ? "bg-[#00e87a]/10 border-[#00e87a]/40 text-[#00e87a]"
-                      : "bg-[#0e1420] border-border text-muted-foreground hover:border-[#00e87a]/20"
-                  }`}
+          {/* Root status banner (if denied) */}
+          <AnimatePresence>
+            {streamState === "root_denied" && (
+                <motion.div
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 flex items-start gap-3"
                 >
-                  {p.width}×{p.height}
-                </button>
-              ))}
-            </div>
-          )}
+                  <ShieldAlert size={16} className="text-red-400 mt-0.5 shrink-0" />
+                  <div className="flex flex-col gap-1">
+                    <span className="text-xs font-bold text-red-400">Root Access Denied</span>
+                    <span className="text-[10px] text-red-400/80 leading-relaxed">
+                      The daemon requires root permissions to hook into media.extractor. Please grant access in Magisk/KernelSU.
+                    </span>
+                  </div>
+                </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Main resolution display */}
-          <div className="relative bg-[#0e1420] rounded-xl border border-border overflow-hidden">
+          <div className="relative bg-[#0e1420] rounded-xl border border-border overflow-hidden shrink-0">
             {streamState === "scanning" && <ScanLine />}
 
             <div className="p-5 flex flex-col items-center gap-3">
@@ -322,8 +227,10 @@ export default function App() {
                     className={`w-2 h-2 rounded-full transition-colors duration-500 ${
                       streamState === "active"
                         ? "bg-[#00e87a]"
-                        : streamState === "scanning"
+                        : streamState === "scanning" || streamState === "requesting_root"
                         ? "bg-amber-400"
+                        : streamState === "root_denied" || streamState === "error"
+                        ? "bg-red-500"
                         : "bg-[#1e293b]"
                     }`}
                   />
@@ -334,8 +241,10 @@ export default function App() {
                   )}
                 </div>
                 <span className="text-[10px] font-mono tracking-widest uppercase text-muted-foreground">
-                  {streamState === "idle"
+                  {streamState === "idle" || streamState === "root_denied"
                     ? "No active stream"
+                    : streamState === "requesting_root"
+                    ? "Waiting for SU..."
                     : streamState === "scanning"
                     ? "Scanning..."
                     : "Stream detected"}
@@ -370,7 +279,7 @@ export default function App() {
                       </span>
                       <ResolutionBadge width={streamInfo.width} height={streamInfo.height} />
                     </motion.div>
-                  ) : streamState === "scanning" ? (
+                  ) : streamState === "scanning" || streamState === "requesting_root" ? (
                     <motion.div
                       key="scanning"
                       initial={{ opacity: 0 }}
@@ -393,7 +302,7 @@ export default function App() {
                         ))}
                       </div>
                       <span className="text-xs font-mono text-muted-foreground">
-                        Analyzing codec pipeline...
+                        {streamState === "requesting_root" ? "Waiting for SU prompt..." : "Analyzing codec pipeline..."}
                       </span>
                     </motion.div>
                   ) : (
@@ -402,61 +311,20 @@ export default function App() {
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       exit={{ opacity: 0 }}
-                      className="flex flex-col items-center gap-1 py-4"
+                      className="flex flex-col items-center gap-3 py-4"
                     >
-                      <span
-                        className="text-5xl font-bold text-[#1e293b]"
-                        style={{ fontFamily: "JetBrains Mono, monospace" }}
-                      >
-                        ----
-                      </span>
-                      <span className="text-xs text-muted-foreground font-mono">
-                        Tap scan to detect stream
+                      <Activity size={32} className="text-muted-foreground/20" />
+                      <span className="text-xs text-muted-foreground/50 max-w-[200px] leading-relaxed">
+                        Ready to intercept MediaCodec API buffers via root.
                       </span>
                     </motion.div>
                   )}
                 </AnimatePresence>
               </div>
-
-              {/* 4K verdict banner */}
-              <AnimatePresence>
-                {streamState === "active" && streamInfo && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 8 }}
-                    transition={{ delay: 0.3, duration: 0.35 }}
-                    className={`w-full rounded-lg px-4 py-2.5 flex items-center gap-3 ${
-                      is4k
-                        ? "bg-[#00e87a]/8 border border-[#00e87a]/20"
-                        : "bg-amber-400/8 border border-amber-400/20"
-                    }`}
-                  >
-                    {is4k ? (
-                      <CheckCircle2 size={16} className="text-[#00e87a] shrink-0" />
-                    ) : (
-                      <AlertTriangle size={16} className="text-amber-400 shrink-0" />
-                    )}
-                    <div className="flex flex-col">
-                      <span
-                        className={`text-xs font-bold ${is4k ? "text-[#00e87a]" : "text-amber-400"}`}
-                        style={{ fontFamily: "Exo 2, sans-serif" }}
-                      >
-                        {is4k ? "Confirmed 4K playback" : "Not playing in 4K"}
-                      </span>
-                      <span className="text-[10px] text-muted-foreground font-mono">
-                        {is4k
-                          ? `${streamInfo.hdr} · Widevine ${streamInfo.widevineLevel} · ${streamInfo.bitrate} Mbps`
-                          : `Actual: ${streamInfo.width}×${streamInfo.height} — check title availability`}
-                      </span>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
             </div>
           </div>
 
-          {/* Widevine + DRM status */}
+          {/* Quick stats grid */}
           <AnimatePresence>
             {streamState === "active" && streamInfo && (
               <motion.div
@@ -464,7 +332,7 @@ export default function App() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
                 transition={{ delay: 0.15 }}
-                className="grid grid-cols-2 gap-2"
+                className="grid grid-cols-2 gap-2 shrink-0"
               >
                 {[
                   {
@@ -522,7 +390,7 @@ export default function App() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
                 transition={{ delay: 0.25 }}
-                className="bg-[#0e1420] rounded-xl border border-border px-4 py-3 flex flex-col gap-2"
+                className="bg-[#0e1420] rounded-xl border border-border px-4 py-3 flex flex-col gap-2 shrink-0"
               >
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium">
@@ -558,7 +426,7 @@ export default function App() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
                 transition={{ delay: 0.3 }}
-                className="bg-[#0e1420] rounded-xl border border-border overflow-hidden"
+                className="bg-[#0e1420] rounded-xl border border-border overflow-hidden shrink-0"
               >
                 <button
                   onClick={() => setShowDetails((d) => !d)}
@@ -603,7 +471,7 @@ export default function App() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className="bg-black rounded-xl border border-[#00e87a]/10 overflow-hidden"
+                className="bg-black rounded-xl border border-[#00e87a]/10 overflow-hidden shrink-0"
               >
                 <div className="px-3 py-2 border-b border-[#00e87a]/8 flex items-center gap-2">
                   <div className="w-1.5 h-1.5 rounded-full bg-[#00e87a] animate-pulse" />
@@ -613,7 +481,7 @@ export default function App() {
                 </div>
                 <div
                   ref={logRef}
-                  className="px-3 py-2 max-h-28 overflow-y-auto space-y-0.5 scrollbar-none"
+                  className="px-3 py-2 max-h-36 overflow-y-auto space-y-0.5 scrollbar-none"
                 >
                   {scanLog.map((line, i) => (
                     <p key={i} className="text-[9px] font-mono text-[#00e87a]/70 leading-relaxed">
@@ -625,8 +493,10 @@ export default function App() {
             )}
           </AnimatePresence>
 
+          <div className="flex-1" />
+
           {/* CTA buttons */}
-          <div className="flex gap-2 mt-1">
+          <div className="flex gap-2 mt-auto shrink-0 pb-2">
             {streamState === "active" || streamState === "error" ? (
               <>
                 <button
@@ -644,37 +514,35 @@ export default function App() {
                   Re-scan
                 </button>
               </>
-            ) : (
+            ) : streamState === "idle" || streamState === "root_denied" ? (
               <button
-                onClick={startScan}
-                disabled={streamState === "scanning"}
-                className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl text-sm font-bold transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={requestRootAccess}
+                className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl text-sm font-bold transition-all duration-200"
                 style={{
-                  background:
-                    streamState === "scanning"
-                      ? "rgba(0,232,122,0.08)"
-                      : "linear-gradient(135deg, #00e87a 0%, #00c965 100%)",
-                  color: streamState === "scanning" ? "#00e87a" : "#020a04",
-                  boxShadow:
-                    streamState === "scanning" ? "none" : "0 4px 24px rgba(0,232,122,0.25)",
+                  background: "linear-gradient(135deg, #00e87a 0%, #00c965 100%)",
+                  color: "#020a04",
+                  boxShadow: "0 4px 24px rgba(0,232,122,0.25)",
                 }}
               >
-                {streamState === "scanning" ? (
-                  <>
-                    <RefreshCw size={14} className="animate-spin" />
-                    Scanning stream...
-                  </>
-                ) : (
-                  <>
-                    <Activity size={14} />
-                    Scan Active Stream
-                  </>
-                )}
+                {hasRoot ? <Activity size={16} /> : <ShieldAlert size={16} />}
+                {hasRoot ? "Scan Active Stream" : "Grant Root & Scan"}
               </button>
+            ) : (
+                <button
+                    disabled
+                    className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl text-sm font-bold transition-all duration-200 opacity-50 cursor-not-allowed"
+                    style={{
+                      background: "rgba(0,232,122,0.08)",
+                      color: "#00e87a",
+                    }}
+                >
+                    <RefreshCw size={14} className="animate-spin" />
+                    {streamState === "requesting_root" ? "Requesting access..." : "Scanning stream..."}
+                </button>
             )}
           </div>
 
-          <p className="text-center text-[9px] font-mono text-muted-foreground/40 mt-1">
+          <p className="text-center text-[9px] font-mono text-muted-foreground/40 mt-1 shrink-0">
             Pixel 10 XL Pro · Android 16 · MediaCodec API
           </p>
         </div>
