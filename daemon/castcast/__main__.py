@@ -13,8 +13,11 @@ import argparse
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 
 from .api import API_PORT, ApiServer
 from .service import CastService
@@ -35,6 +38,66 @@ DEFAULT_CONFIG = {
     "avr_passthrough": False,
 }
 
+
+
+def _api_url(host: str, port: int, path: str = "/status") -> str:
+    return f"http://{host}:{port}{path}"
+
+
+def _server_running(host: str, port: int, timeout: float = 0.5) -> bool:
+    try:
+        with urllib.request.urlopen(_api_url(host, port), timeout=timeout) as response:
+            return response.status < 500
+    except urllib.error.HTTPError as exc:
+        return exc.code < 500
+    except (OSError, urllib.error.URLError, TimeoutError):
+        return False
+
+
+def _listener_pids(port: int) -> list[int]:
+    commands = [
+        ["lsof", "-tiTCP:%d" % port, "-sTCP:LISTEN"],
+        ["fuser", "%d/tcp" % port],
+    ]
+    pids: set[int] = set()
+    for cmd in commands:
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for token in proc.stdout.replace("\n", " ").split():
+            try:
+                pid = int(token)
+            except ValueError:
+                continue
+            if pid != os.getpid():
+                pids.add(pid)
+        if pids:
+            break
+    return sorted(pids)
+
+
+def _kill_server(port: int, timeout: float = 5.0) -> bool:
+    pids = _listener_pids(port)
+    if not pids:
+        return False
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            print(f"sent SIGTERM to castcast listener pid {pid}")
+        except OSError as exc:
+            print(f"warning: could not terminate pid {pid}: {exc}", file=sys.stderr)
+    deadline = time.time() + timeout
+    while time.time() < deadline and _listener_pids(port):
+        time.sleep(0.1)
+    remaining = _listener_pids(port)
+    for pid in remaining:
+        try:
+            os.kill(pid, signal.SIGKILL)
+            print(f"sent SIGKILL to castcast listener pid {pid}")
+        except OSError as exc:
+            print(f"warning: could not kill pid {pid}: {exc}", file=sys.stderr)
+    return True
 
 def load_config(path: str) -> dict:
     config = dict(DEFAULT_CONFIG)
@@ -145,6 +208,18 @@ def main(argv=None) -> int:
     serve.add_argument("--api-port", type=int)
     serve.add_argument("--api-host")
     serve.add_argument("--quiet", action="store_true")
+    serve.add_argument("--kill-existing", action="store_true",
+                       help="terminate any process already listening on the API port before starting")
+    serve.add_argument("--restart", action="store_true",
+                       help="alias for --kill-existing; useful after starting from the wrong directory")
+    serve.add_argument("--if-running", choices=("fail", "exit", "kill", "restart"), default="fail",
+                       help="what to do when the API port is already in use")
+
+    server = sub.add_parser("server", help="inspect or control the local daemon process")
+    server_sub = server.add_subparsers(dest="server_command", required=True)
+    server_sub.add_parser("status", help="check whether the daemon API is responding")
+    server_sub.add_parser("kill", help="terminate the process listening on the API port")
+    server_sub.add_parser("restart", help="kill the existing listener, then start the daemon")
 
     sub.add_parser("devices", help="discover Chromecasts on the LAN")
 
@@ -240,6 +315,33 @@ def main(argv=None) -> int:
             return 0 if report["ready"] else 1
         return _print_health(report)
 
+    if args.command == "server":
+        host = config.get("api_host") or "127.0.0.1"
+        port = int(config.get("api_port") or API_PORT)
+        if args.server_command == "status":
+            if _server_running(host, port):
+                print(f"castcast daemon is running at {_api_url(host, port)}")
+                return 0
+            print(f"castcast daemon is not responding at {_api_url(host, port)}")
+            pids = _listener_pids(port)
+            if pids:
+                print(f"but port {port} is held by pid(s): {', '.join(map(str, pids))}")
+            return 1
+        if args.server_command == "kill":
+            killed = _kill_server(port)
+            if not killed:
+                print(f"nothing is listening on port {port}")
+            return 0
+        # restart falls through to the serve path after killing below.
+        _kill_server(port)
+        args.command = "serve"
+        args.quiet = False
+        args.api_host = None
+        args.api_port = None
+        args.kill_existing = False
+        args.restart = False
+        args.if_running = "fail"
+
     if args.command == "prepare":
         service.media_server.start()
         result = service.prepare(os.path.abspath(args.path), force=args.force)
@@ -292,8 +394,23 @@ def main(argv=None) -> int:
     if args.api_port:
         config["api_port"] = args.api_port
 
+    api_host = config["api_host"]
+    api_port = int(config["api_port"])
+    action = "kill" if args.kill_existing else "restart" if args.restart else args.if_running
+    if _server_running(api_host, api_port) or _listener_pids(api_port):
+        if action == "exit":
+            print(f"castcast daemon is already running at {_api_url(api_host, api_port)}")
+            return 0
+        if action in ("kill", "restart"):
+            _kill_server(api_port)
+        else:
+            print(f"error: port {api_port} is already in use. Use `python -m castcast server status`, "
+                  f"`python -m castcast serve --restart`, or `python -m castcast server kill`.",
+                  file=sys.stderr)
+            return 1
+
     service.start()
-    api = ApiServer(service, config["api_host"], int(config["api_port"]))
+    api = ApiServer(service, api_host, api_port)
     api.start()
 
     service.log(f"control API on http://{config['api_host']}:{api.port}")

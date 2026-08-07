@@ -105,6 +105,12 @@ termux-setup-storage               # grants access to /storage/emulated/0
 No Python dependencies. The `CastMessage` protobuf is hand-rolled (~150 lines)
 specifically to avoid needing `protoc` or `grpcio` on-device.
 
+Then enter the daemon directory first. If you run from the repository root, Python can report that `castcast` is missing, which makes it look like a module problem even though `castcast` is the package inside `daemon/`:
+
+```sh
+cd VideoQualityCheckerApp/daemon
+```
+
 Then confirm the setup actually took:
 
 ```sh
@@ -118,7 +124,8 @@ address at all. Each failing row prints the literal command that fixes it, and
 the exit code is 0 only when nothing blocking is wrong, so it works as a gate:
 
 ```sh
-python -m castcast doctor && python -m castcast serve
+python -m castcast --media-root /storage/emulated/0/Download/Chromecast doctor && \
+  python -m castcast --media-root /storage/emulated/0/Download/Chromecast serve
 ```
 
 A `127.0.0.1` LAN address is worth calling out: casting would still "succeed"
@@ -142,7 +149,12 @@ python -m castcast prepare movie.mkv
 python -m castcast --host 192.168.1.50 cast movie.cast.mp4
 
 # Run the daemon for the UI / other clients
-python -m castcast serve
+python -m castcast --media-root /storage/emulated/0/Download/Chromecast serve
+
+# Check, stop, or restart an already-running daemon
+python -m castcast server status
+python -m castcast server kill
+python -m castcast serve --restart
 ```
 
 ### Pin the IP
