@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Search,
   Square,
+  Subtitles,
   Wifi,
 } from "lucide-react";
 import {
@@ -47,6 +48,7 @@ export default function App() {
   const [selected, setSelected] = useState<LibraryItem | null>(null);
   const [report, setReport] = useState<Preflight | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
+  const [showDebugLogs, setShowDebugLogs] = useState(false);
   const [online, setOnline] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [host, setHost] = useState("192.168.1.50");
@@ -136,6 +138,15 @@ export default function App() {
       if (result.error) setNotice(result.error);
       if (result.converting) setNotice("Conversion started — cast again when it finishes.");
       setReport((prev) => ({ ...(prev || {}), ...result } as Preflight));
+    });
+
+
+  const requestSubtitles = () =>
+    cast?.source_path &&
+    run("subtitles", async () => {
+      const result = await daemon.requestOpenSubtitles(cast.source_path, "eng");
+      if (result.error) setNotice(result.error);
+      else setNotice("English subtitles loaded from OpenSubtitles.");
     });
 
   const cast = status?.cast;
@@ -297,6 +308,14 @@ python -m castcast serve`}
                 )}
               </button>
               <button
+                onClick={requestSubtitles}
+                disabled={!cast.source_path || busy === "subtitles"}
+                className="flex items-center gap-1.5 rounded border border-emerald-500/25 px-4 py-2 hover:bg-emerald-500/10 disabled:opacity-40"
+              >
+                {busy === "subtitles" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Subtitles className="h-3.5 w-3.5" />}
+                subtitles
+              </button>
+              <button
                 onClick={() => run("stop", daemon.stop)}
                 className="flex items-center gap-1.5 rounded border border-emerald-500/25 px-4 py-2 hover:bg-emerald-500/10"
               >
@@ -402,7 +421,15 @@ python -m castcast serve`}
 
         {/* log */}
         <section className="rounded border border-emerald-500/20 bg-black/60 p-3">
-          <div className="mb-2 text-emerald-500/50 uppercase tracking-wider">daemon log</div>
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-emerald-500/50 uppercase tracking-wider">daemon log</span>
+            <button
+              onClick={() => setShowDebugLogs((value) => !value)}
+              className="rounded border border-emerald-500/25 px-2 py-1 text-xs text-emerald-400/70 hover:bg-emerald-500/10"
+            >
+              {showDebugLogs ? "hide debug" : "show debug"}
+            </button>
+          </div>
           <div
             ref={logRef}
             className="max-h-48 space-y-0.5 overflow-y-auto font-mono"
@@ -411,7 +438,7 @@ python -m castcast serve`}
             {logs.length === 0 ? (
               <div className="text-emerald-500/30">waiting for events…</div>
             ) : (
-              logs.map((line) => (
+              logs.filter((line) => showDebugLogs || line.level !== "debug").map((line) => (
                 <div
                   key={line.seq}
                   className={

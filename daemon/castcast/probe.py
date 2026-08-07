@@ -65,6 +65,16 @@ class AudioStream:
 
 
 @dataclass
+class SubtitleStream:
+    index: int = 0
+    codec: str = ""
+    language: str = ""
+    title: str = ""
+    forced: bool = False
+    default: bool = False
+
+
+@dataclass
 class MediaInfo:
     path: str
     size_bytes: int = 0
@@ -75,6 +85,7 @@ class MediaInfo:
     video: List[VideoStream] = field(default_factory=list)
     audio: List[AudioStream] = field(default_factory=list)
     subtitle_codecs: List[str] = field(default_factory=list)
+    subtitles: List[SubtitleStream] = field(default_factory=list)
 
     @property
     def primary_video(self) -> Optional[VideoStream]:
@@ -249,6 +260,17 @@ def probe(path: str, timeout: float = 30.0) -> MediaInfo:
                 language=((stream.get("tags") or {}).get("language") or ""),
             ))
         elif kind == "subtitle":
-            info.subtitle_codecs.append((stream.get("codec_name") or "").lower())
+            codec = (stream.get("codec_name") or "").lower()
+            tags = stream.get("tags") or {}
+            disposition = stream.get("disposition") or {}
+            info.subtitle_codecs.append(codec)
+            info.subtitles.append(SubtitleStream(
+                index=_i(stream.get("index"), 0) or 0,
+                codec=codec,
+                language=tags.get("language") or "",
+                title=tags.get("title") or "",
+                forced=bool(disposition.get("forced")),
+                default=bool(disposition.get("default")),
+            ))
 
     return info

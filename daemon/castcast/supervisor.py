@@ -79,6 +79,8 @@ class MediaSession:
     source_path: str = ""
     position: float = 0.0
     autoplay: bool = True
+    tracks: Optional[list] = None
+    active_track_ids: Optional[list] = None
 
 
 @dataclass
@@ -94,10 +96,12 @@ class Status:
     idle_reason: str = ""
     title: str = ""
     content_url: str = ""
+    source_path: str = ""
     reconnects: int = 0
     connected_since: float = 0.0
     last_error: str = ""
     stream_stalls: int = 0
+    active_track_ids: Optional[list] = None
 
 
 class Supervisor:
@@ -167,17 +171,23 @@ class Supervisor:
             return True
 
     def load(self, url: str, content_type: str = "video/mp4", title: str = "",
-             duration: float = 0.0, source_path: str = "", autoplay: bool = True) -> None:
+             duration: float = 0.0, source_path: str = "", autoplay: bool = True,
+             tracks: Optional[list] = None, active_track_ids: Optional[list] = None) -> None:
         """Queue a LOAD.  Safe to call before the link is even up."""
         with self._lock:
+            self._media_session_id = None
+            self.status.media_session_id = None
             self._session = MediaSession(url=url, content_type=content_type, title=title,
                                          duration=duration, source_path=source_path,
-                                         position=0.0, autoplay=autoplay)
+                                         position=0.0, autoplay=autoplay, tracks=tracks or [],
+                                         active_track_ids=active_track_ids or [])
             self._pending_restore = True
             self.status.title = title
             self.status.content_url = url
+            self.status.source_path = source_path
             self.status.duration = duration
             self.status.idle_reason = ""
+            self.status.active_track_ids = active_track_ids or []
         self._log(f"queued LOAD {title or url}")
         self._try_load()
 
@@ -332,6 +342,11 @@ class Supervisor:
         }
         if session.duration:
             payload["media"]["duration"] = session.duration
+        if session.tracks:
+            payload["media"]["tracks"] = session.tracks
+            payload["media"]["textTrackStyle"] = {"fontScale": 1.0, "foregroundColor": "#FFFFFFFF", "backgroundColor": "#00000099"}
+        if session.active_track_ids:
+            payload["activeTrackIds"] = session.active_track_ids
 
         try:
             channel.send_json(NS_MEDIA, self._app_transport_id, payload)
@@ -342,7 +357,8 @@ class Supervisor:
         with self._lock:
             self._pending_restore = False
         resume = f" @ {session.position:.1f}s" if session.position else ""
-        self._log(f"LOAD sent{resume}: {session.url}")
+        detail = f" tracks={len(session.tracks or [])} active={session.active_track_ids or []}" if session.tracks else ""
+        self._log(f"LOAD sent{resume}{detail}: {session.url}")
         self._set_state(State.LOADING)
 
     # -- inbound -----------------------------------------------------------
@@ -499,8 +515,8 @@ class Supervisor:
                 self._media_session_id = session_id
                 self.status.media_session_id = session_id
             elif session_id is not None and session_id != self._media_session_id:
-                # Someone else took the device over.
-                self._log(f"ignoring status for foreign media session {session_id}")
+                # A new LOAD can race the receiver status for the previous session.
+                self._log(f"ignoring status for foreign media session {session_id}; expected {self._media_session_id}", "debug")
                 return True
 
         media = entry.get("media") or {}
