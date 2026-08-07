@@ -1,0 +1,27 @@
+name: Android loopback cleartext config
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  loopback-cleartext:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: pnpm exec cap add android
+      - run: pnpm exec cap sync android
+      - run: node scripts/configure-android-loopback.mjs
+      - run: test -f android/app/src/main/res/xml/network_security_config.xml
+      - run: grep -q 'android:networkSecurityConfig="@xml/network_security_config"' android/app/src/main/AndroidManifest.xml
+      - run: grep -q 'androidScheme.*http' capacitor.config.ts
