@@ -85,8 +85,14 @@ class CastService:
         self._remuxer = remux.Remuxer(on_update=self._on_remux_update)
         self._remux_thread: Optional[threading.Thread] = None
         self.default_language = language3(config.get("default_language") or "eng")
-        self.opensubtitles_api_key = config.get("opensubtitles_api_key") or os.environ.get("OPENSUBTITLES_API_KEY", "")
-        self.opensubtitles_token = config.get("opensubtitles_token") or os.environ.get("OPENSUBTITLES_TOKEN", "")
+        self.opensubtitles_api_key = (
+            config.get("opensubtitles_api_key")
+            or os.environ.get("OPENSUBTITLES_API_KEY", "")
+        )
+        self.opensubtitles_token = (
+            config.get("opensubtitles_token")
+            or os.environ.get("OPENSUBTITLES_TOKEN", "")
+        )
         self._lock = threading.RLock()
         self._events: List[Callable[[str, dict], None]] = []
         self._watchdog: Optional[threading.Thread] = None
@@ -155,6 +161,8 @@ class CastService:
                             title=session.title,
                             duration=session.duration,
                             source_path=session.source_path,
+                            tracks=session.tracks,
+                            active_track_ids=session.active_track_ids,
                         )
             except Exception as exc:  # noqa: BLE001
                 self.log(f"watchdog: {exc}", "warn")
@@ -426,8 +434,6 @@ class CastService:
         self.log(f"casting {title} [{resolution}] -> {self.device.friendly_name if self.device else '?'}")
         return {**report, "casting": True, "url": url}
 
-
-
     def _target_for_default_language(self, target: str, info: dict) -> tuple[str, str]:
         audio = info.get("audio") or []
         if len(audio) < 2:
@@ -440,12 +446,17 @@ class CastService:
         if audio.index(selected) == 0:
             return target, f"{preferred} audio is already the first/default track"
         if not have_ffmpeg():
-            return target, f"{preferred} audio is track {selected.get('index')}, but ffmpeg is unavailable for default-track remux"
+            return (
+                target,
+                f"{preferred} audio is track {selected.get('index')}, "
+                "but ffmpeg is unavailable for default-track remux",
+            )
         out = self._language_output_path(target, preferred)
         if not os.path.exists(out) or os.path.getmtime(out) < os.path.getmtime(target):
             cmd = [FFMPEG, "-hide_banner", "-y", "-i", target, "-map", "0:v:0",
                    "-map", f"0:{selected.get('index')}", "-c", "copy", "-sn", "-dn",
-                   "-map_chapters", "-1", "-disposition:a:0", "default", "-movflags", "+faststart", out]
+                   "-map_chapters", "-1", "-disposition:a:0", "default",
+                   "-movflags", "+faststart", out]
             self.log(f"remuxing to make {preferred} audio the default track: {' '.join(cmd)}", "debug")
             proc = subprocess.run(cmd, capture_output=True, timeout=900)
             if proc.returncode != 0:
@@ -463,16 +474,24 @@ class CastService:
         if not subtitles or not have_ffmpeg():
             return ""
         preferred = self.default_language
-        selected = next((s for s in subtitles if language3(s.get("language") or "") == preferred and not s.get("forced")), None)
+        selected = next(
+            (s for s in subtitles
+             if language3(s.get("language") or "") == preferred and not s.get("forced")),
+            None,
+        )
         selected = selected or next((s for s in subtitles if language3(s.get("language") or "") == preferred), None)
         if not selected:
             self.log(f"no embedded {preferred} subtitle track found", "debug")
             return ""
-        out = os.path.join(self.work_dir, f"{hashlib.sha1((path + preferred + 'sub').encode()).hexdigest()[:12]}.{preferred}.vtt")
+        stem = hashlib.sha1((path + preferred + "sub").encode()).hexdigest()[:12]
+        out = os.path.join(self.work_dir, f"{stem}.{preferred}.vtt")
         if os.path.exists(out) and os.path.getmtime(out) >= os.path.getmtime(path):
             self.log(f"using cached embedded {preferred} subtitles: {os.path.basename(out)}", "debug")
             return out
-        cmd = [FFMPEG, "-hide_banner", "-y", "-i", path, "-map", f"0:{selected.get('index')}", "-f", "webvtt", out]
+        cmd = [
+            FFMPEG, "-hide_banner", "-y", "-i", path,
+            "-map", f"0:{selected.get('index')}", "-f", "webvtt", out,
+        ]
         self.log(f"extracting embedded {preferred} subtitles for sideload: {' '.join(cmd)}", "debug")
         proc = subprocess.run(cmd, capture_output=True, timeout=300)
         if proc.returncode != 0:
