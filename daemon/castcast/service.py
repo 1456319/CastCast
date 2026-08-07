@@ -5,7 +5,9 @@ the pre-flight pipeline.
 from __future__ import annotations
 
 import collections
+import hashlib
 import os
+import subprocess
 import threading
 import time
 from typing import Callable, Dict, List, Optional
@@ -14,11 +16,27 @@ from . import capability, health, remux
 from .discovery import CastDevice, DeviceCache, resolve
 from .mediaserver import MediaServer, guess_mime
 from .opensubtitles import download_best, language3
-from .probe import MediaInfo, ProbeError, have_ffmpeg, have_ffprobe, probe
+from .probe import FFMPEG, MediaInfo, ProbeError, have_ffmpeg, have_ffprobe, probe
 from .supervisor import State, Supervisor
 
-VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mkv", ".webm", ".ts", ".m2ts", ".mov",
-                    ".avi", ".flv", ".mpg", ".mpeg", ".m3u8", ".mpd", ".wmv"}
+DEFAULT_MEDIA_ROOT = "/storage/emulated/0/Download/Chromecast"
+
+VIDEO_EXTENSIONS = {
+    ".avi",
+    ".flv",
+    ".m3u8",
+    ".m2ts",
+    ".m4v",
+    ".mkv",
+    ".mov",
+    ".mp4",
+    ".mpd",
+    ".mpeg",
+    ".mpg",
+    ".ts",
+    ".webm",
+    ".wmv",
+}
 
 
 class LogBuffer:
@@ -62,7 +80,7 @@ class CastService:
         self.config = config
         self.log_buffer = LogBuffer()
 
-        media_roots = config.get("media_roots") or ["/storage/emulated/0/Download/Chromecast"]
+        media_roots = config.get("media_roots") or [DEFAULT_MEDIA_ROOT]
         self.media_roots = [os.path.expanduser(r) for r in media_roots]
         self.work_dir = os.path.expanduser(
             config.get("work_dir") or os.path.join(self.media_roots[0], ".castcast"))
@@ -83,12 +101,21 @@ class CastService:
         self._remuxer = remux.Remuxer(on_update=self._on_remux_update)
         self._remux_thread: Optional[threading.Thread] = None
         self.default_language = language3(config.get("default_language") or "eng")
-        self.opensubtitles_api_key = config.get("opensubtitles_api_key") or os.environ.get("OPENSUBTITLES_API_KEY", "")
-        self.opensubtitles_token = config.get("opensubtitles_token") or os.environ.get("OPENSUBTITLES_TOKEN", "")
+        self.opensubtitles_api_key = self._config_value(
+            "opensubtitles_api_key",
+            "OPENSUBTITLES_API_KEY",
+        )
+        self.opensubtitles_token = self._config_value(
+            "opensubtitles_token",
+            "OPENSUBTITLES_TOKEN",
+        )
         self._lock = threading.RLock()
         self._events: List[Callable[[str, dict], None]] = []
         self._watchdog: Optional[threading.Thread] = None
         self._stop = threading.Event()
+
+    def _config_value(self, key: str, env_name: str) -> str:
+        return str(self.config.get(key) or os.environ.get(env_name, ""))
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -153,6 +180,8 @@ class CastService:
                             title=session.title,
                             duration=session.duration,
                             source_path=session.source_path,
+                            tracks=session.tracks,
+                            active_track_ids=session.active_track_ids,
                         )
             except Exception as exc:  # noqa: BLE001
                 self.log(f"watchdog: {exc}", "warn")
@@ -395,12 +424,18 @@ class CastService:
                 return {**report, "error": "file needs conversion before casting",
                         "requires_confirmation": True}
 
+        info = report.get("media") or {}
+        target, language_note = self._target_for_default_language(target, info)
+        if language_note:
+            self.log(language_note, "debug")
+        if not subtitle_path:
+            subtitle_path = self._extract_default_subtitle(path, info)
+            subtitle_language = self.default_language if subtitle_path else subtitle_language
         try:
             url = self.media_server.url_for(target)
         except ValueError as exc:
             return {**report, "error": str(exc)}
 
-        info = report.get("media") or {}
         title = os.path.splitext(os.path.basename(path))[0]
         tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
         self.supervisor.load(
@@ -415,9 +450,135 @@ class CastService:
 
         pv = (info.get("video") or [{}])
         resolution = f"{pv[0].get('width')}x{pv[0].get('height')}" if pv and pv[0] else "?"
-        self.log(f"casting {title} [{resolution}] -> {self.device.friendly_name if self.device else '?'}")
+        device_name = self.device.friendly_name if self.device else "?"
+        self.log(f"casting {title} [{resolution}] -> {device_name}")
         return {**report, "casting": True, "url": url}
 
+    def _target_for_default_language(self, target: str, info: dict) -> tuple[str, str]:
+        audio = info.get("audio") or []
+        if len(audio) < 2:
+            return target, ""
+        preferred = self.default_language
+        selected = self._first_stream_for_language(audio, preferred)
+        if not selected:
+            langs = ", ".join(a.get("language") or "und" for a in audio)
+            return (
+                target,
+                f"no {preferred} audio track found; receiver will use source default ({langs})",
+            )
+        if audio.index(selected) == 0:
+            return target, f"{preferred} audio is already the first/default track"
+        if not have_ffmpeg():
+            return (
+                target,
+                f"{preferred} audio is track {selected.get('index')}, "
+                "but ffmpeg is unavailable for default-track remux",
+            )
+        out = self._language_output_path(target, preferred)
+        if not os.path.exists(out) or os.path.getmtime(out) < os.path.getmtime(target):
+            cmd = self._default_audio_remux_command(target, selected, out)
+            self.log(
+                f"remuxing to make {preferred} audio the default track: {' '.join(cmd)}",
+                "debug",
+            )
+            proc = subprocess.run(cmd, capture_output=True, timeout=900)
+            if proc.returncode != 0:
+                detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+                reason = detail[-1] if detail else proc.returncode
+                return target, f"default-language remux failed: {reason}"
+        return out, f"using remuxed default-{preferred} audio file: {os.path.basename(out)}"
+
+    def _first_stream_for_language(
+        self,
+        streams: list,
+        language: str,
+        *,
+        forced: Optional[bool] = None,
+    ) -> Optional[dict]:
+        for stream in streams:
+            if language3(stream.get("language") or "") != language:
+                continue
+            if forced is not None and bool(stream.get("forced")) != forced:
+                continue
+            return stream
+        return None
+
+    def _default_audio_remux_command(self, source: str, audio: dict, output: str) -> list:
+        return [
+            FFMPEG,
+            "-hide_banner",
+            "-y",
+            "-i",
+            source,
+            "-map",
+            "0:v:0",
+            "-map",
+            f"0:{audio.get('index')}",
+            "-c",
+            "copy",
+            "-sn",
+            "-dn",
+            "-map_chapters",
+            "-1",
+            "-disposition:a:0",
+            "default",
+            "-movflags",
+            "+faststart",
+            output,
+        ]
+
+    def _subtitle_extract_command(self, source: str, subtitle: dict, output: str) -> list:
+        return [
+            FFMPEG,
+            "-hide_banner",
+            "-y",
+            "-i",
+            source,
+            "-map",
+            f"0:{subtitle.get('index')}",
+            "-f",
+            "webvtt",
+            output,
+        ]
+
+    def _language_output_path(self, path: str, language: str) -> str:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        digest = hashlib.sha1((path + language).encode()).hexdigest()[:10]
+        return os.path.join(self.work_dir, f"{stem}.{language}.{digest}.cast.mp4")
+
+    def _extract_default_subtitle(self, path: str, info: dict) -> str:
+        subtitles = info.get("subtitles") or []
+        if not subtitles or not have_ffmpeg():
+            return ""
+        preferred = self.default_language
+        selected = self._first_stream_for_language(subtitles, preferred, forced=False)
+        selected = selected or self._first_stream_for_language(
+            subtitles,
+            preferred,
+        )
+        if not selected:
+            self.log(f"no embedded {preferred} subtitle track found", "debug")
+            return ""
+        stem = hashlib.sha1((path + preferred + "sub").encode()).hexdigest()[:12]
+        out = os.path.join(self.work_dir, f"{stem}.{preferred}.vtt")
+        if os.path.exists(out) and os.path.getmtime(out) >= os.path.getmtime(path):
+            self.log(
+                f"using cached embedded {preferred} subtitles: {os.path.basename(out)}",
+                "debug",
+            )
+            return out
+        cmd = self._subtitle_extract_command(path, selected, out)
+        self.log(
+            f"extracting embedded {preferred} subtitles for sideload: {' '.join(cmd)}",
+            "debug",
+        )
+        proc = subprocess.run(cmd, capture_output=True, timeout=300)
+        if proc.returncode != 0:
+            detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+            reason = detail[-1] if detail else proc.returncode
+            self.log(f"embedded subtitle extraction failed: {reason}", "warn")
+            return ""
+        return out
 
     def request_subtitles(self, path: str, language: str = "") -> dict:
         """Download the best OpenSubtitles match and re-LOAD current media with it."""
