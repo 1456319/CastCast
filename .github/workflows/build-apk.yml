@@ -33,6 +33,19 @@ jobs:
           npx cap init "Video Quality Checker" "com.videoquality.app" --web-dir dist
           npx cap add android
           npx cap sync android
+          
+      - name: Patch Gradle Duplicate Classes
+        working-directory: ./android/app
+        run: |
+          cat << 'EOF' >> build.gradle
+          
+          configurations.all {
+              resolutionStrategy {
+                  exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
+                  exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
+              }
+          }
+          EOF
 
       - name: Build APK with Gradle
         working-directory: ./android
