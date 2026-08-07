@@ -254,3 +254,26 @@ Requires the phone (hand off to the on-device agent):
    the discrimination the current single unreachable message cannot make.
 10. Confirm copy-to-clipboard yields a command that runs verbatim in Termux —
     this is the same class of defect as B1 and deserves an actual paste test.
+
+---
+
+## 2026-08-07 update — daemon process controls and loopback packaging CI
+
+The daemon now protects users from the accidental duplicate-server path that
+triggered this follow-up. `serve` checks whether the API port is already held
+before binding it, reports the conflict with concrete recovery commands, and
+supports `--kill-existing`, `--restart`, and `--if-running exit|kill|restart`.
+A `server` command group was added for `status`, `kill`, and `restart`, so users
+no longer have to grep for a listener PID manually.
+
+Docs now put `cd VideoQualityCheckerApp/daemon` before `python -m castcast` so a
+root-level launch attempt does not make `castcast` look like a missing Python
+module. The corrected media-root command remains the canonical launch command.
+
+Packaging state was also brought in line with the previous PACKAGING guidance:
+`capacitor.config.ts` sets `androidScheme: 'http'`, and CI runs a script that
+writes `network_security_config.xml` permitting cleartext only for `127.0.0.1`
+and `localhost`, patches `AndroidManifest.xml` with
+`android:networkSecurityConfig="@xml/network_security_config"`, and rejects
+missing loopback config. This prevents Android WebView cleartext loopback
+failures from masquerading as a dead daemon.
