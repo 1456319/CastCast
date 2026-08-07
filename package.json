@@ -6,8 +6,7 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite",
-    "android:loopback-cleartext": "node scripts/configure-android-loopback.mjs",
-    "check:conflicts": "node scripts/check-conflict-markers.mjs"
+    "android:loopback-cleartext": "node scripts/configure-android-loopback.mjs"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",
