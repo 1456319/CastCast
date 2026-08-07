@@ -5,7 +5,9 @@ the pre-flight pipeline.
 from __future__ import annotations
 
 import collections
+import hashlib
 import os
+import subprocess
 import threading
 import time
 from typing import Callable, Dict, List, Optional
@@ -13,7 +15,8 @@ from typing import Callable, Dict, List, Optional
 from . import capability, health, remux
 from .discovery import CastDevice, DeviceCache, resolve
 from .mediaserver import MediaServer, guess_mime
-from .probe import MediaInfo, ProbeError, have_ffmpeg, have_ffprobe, probe
+from .opensubtitles import download_best, language3
+from .probe import FFMPEG, MediaInfo, ProbeError, have_ffmpeg, have_ffprobe, probe
 from .supervisor import State, Supervisor
 
 VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mkv", ".webm", ".ts", ".m2ts", ".mov",
@@ -81,6 +84,9 @@ class CastService:
         self._probe_cache: Dict[str, tuple] = {}   # path -> (mtime, MediaInfo)
         self._remuxer = remux.Remuxer(on_update=self._on_remux_update)
         self._remux_thread: Optional[threading.Thread] = None
+        self.default_language = language3(config.get("default_language") or "eng")
+        self.opensubtitles_api_key = config.get("opensubtitles_api_key") or os.environ.get("OPENSUBTITLES_API_KEY", "")
+        self.opensubtitles_token = config.get("opensubtitles_token") or os.environ.get("OPENSUBTITLES_TOKEN", "")
         self._lock = threading.RLock()
         self._events: List[Callable[[str, dict], None]] = []
         self._watchdog: Optional[threading.Thread] = None
@@ -350,7 +356,8 @@ class CastService:
     # -- casting -----------------------------------------------------------
 
     def cast(self, path: str, *, allow_unsafe: bool = False,
-             auto_prepare: bool = True) -> dict:
+             auto_prepare: bool = True, subtitle_path: str = "",
+             subtitle_language: str = "") -> dict:
         """The whole pipeline: pre-flight, convert if needed, serve, LOAD."""
         if not self.supervisor:
             return {"error": "not connected to a device"}
@@ -390,25 +397,121 @@ class CastService:
                 return {**report, "error": "file needs conversion before casting",
                         "requires_confirmation": True}
 
+        info = report.get("media") or {}
+        target, language_note = self._target_for_default_language(target, info)
+        if language_note:
+            self.log(language_note, "debug")
+        if not subtitle_path:
+            subtitle_path = self._extract_default_subtitle(path, info)
+            subtitle_language = self.default_language if subtitle_path else subtitle_language
         try:
             url = self.media_server.url_for(target)
         except ValueError as exc:
             return {**report, "error": str(exc)}
 
-        info = report.get("media") or {}
         title = os.path.splitext(os.path.basename(path))[0]
+        tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
         self.supervisor.load(
             url,
             content_type=guess_mime(target),
             title=title,
             duration=float(info.get("duration_s") or 0.0),
             source_path=target,
+            tracks=tracks,
+            active_track_ids=active_track_ids,
         )
 
         pv = (info.get("video") or [{}])
         resolution = f"{pv[0].get('width')}x{pv[0].get('height')}" if pv and pv[0] else "?"
         self.log(f"casting {title} [{resolution}] -> {self.device.friendly_name if self.device else '?'}")
         return {**report, "casting": True, "url": url}
+
+
+
+    def _target_for_default_language(self, target: str, info: dict) -> tuple[str, str]:
+        audio = info.get("audio") or []
+        if len(audio) < 2:
+            return target, ""
+        preferred = self.default_language
+        selected = next((a for a in audio if language3(a.get("language") or "") == preferred), None)
+        if not selected:
+            langs = ", ".join(a.get("language") or "und" for a in audio)
+            return target, f"no {preferred} audio track found; receiver will use source default ({langs})"
+        if audio.index(selected) == 0:
+            return target, f"{preferred} audio is already the first/default track"
+        if not have_ffmpeg():
+            return target, f"{preferred} audio is track {selected.get('index')}, but ffmpeg is unavailable for default-track remux"
+        out = self._language_output_path(target, preferred)
+        if not os.path.exists(out) or os.path.getmtime(out) < os.path.getmtime(target):
+            cmd = [FFMPEG, "-hide_banner", "-y", "-i", target, "-map", "0:v:0",
+                   "-map", f"0:{selected.get('index')}", "-c", "copy", "-sn", "-dn",
+                   "-map_chapters", "-1", "-disposition:a:0", "default", "-movflags", "+faststart", out]
+            self.log(f"remuxing to make {preferred} audio the default track: {' '.join(cmd)}", "debug")
+            proc = subprocess.run(cmd, capture_output=True, timeout=900)
+            if proc.returncode != 0:
+                detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+                return target, f"default-language remux failed: {detail[-1] if detail else proc.returncode}"
+        return out, f"using remuxed default-{preferred} audio file: {os.path.basename(out)}"
+
+    def _language_output_path(self, path: str, language: str) -> str:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        digest = hashlib.sha1((path + language).encode()).hexdigest()[:10]
+        return os.path.join(self.work_dir, f"{stem}.{language}.{digest}.cast.mp4")
+
+    def _extract_default_subtitle(self, path: str, info: dict) -> str:
+        subtitles = info.get("subtitles") or []
+        if not subtitles or not have_ffmpeg():
+            return ""
+        preferred = self.default_language
+        selected = next((s for s in subtitles if language3(s.get("language") or "") == preferred and not s.get("forced")), None)
+        selected = selected or next((s for s in subtitles if language3(s.get("language") or "") == preferred), None)
+        if not selected:
+            self.log(f"no embedded {preferred} subtitle track found", "debug")
+            return ""
+        out = os.path.join(self.work_dir, f"{hashlib.sha1((path + preferred + 'sub').encode()).hexdigest()[:12]}.{preferred}.vtt")
+        if os.path.exists(out) and os.path.getmtime(out) >= os.path.getmtime(path):
+            self.log(f"using cached embedded {preferred} subtitles: {os.path.basename(out)}", "debug")
+            return out
+        cmd = [FFMPEG, "-hide_banner", "-y", "-i", path, "-map", f"0:{selected.get('index')}", "-f", "webvtt", out]
+        self.log(f"extracting embedded {preferred} subtitles for sideload: {' '.join(cmd)}", "debug")
+        proc = subprocess.run(cmd, capture_output=True, timeout=300)
+        if proc.returncode != 0:
+            detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+            self.log(f"embedded subtitle extraction failed: {detail[-1] if detail else proc.returncode}", "warn")
+            return ""
+        return out
+
+    def request_subtitles(self, path: str, language: str = "") -> dict:
+        """Download the best OpenSubtitles match and re-LOAD current media with it."""
+        if not self.supervisor:
+            return {"error": "not connected to a device"}
+        lang = language3(language or self.default_language)
+        result = download_best(path, self.work_dir, self.opensubtitles_api_key,
+                               language=lang, token=self.opensubtitles_token)
+        result.url = self.media_server.url_for(result.path)
+        self.log(f"downloaded {lang} subtitles from OpenSubtitles: {os.path.basename(result.path)}")
+
+        snap = self.supervisor.snapshot()
+        cast_result = self.cast(path, allow_unsafe=True, auto_prepare=False,
+                                subtitle_path=result.path, subtitle_language=lang)
+        if not cast_result.get("error") and snap.get("position"):
+            self.supervisor.seek(float(snap.get("position") or 0.0))
+        return {**cast_result, "subtitles": result.__dict__}
+
+    def _tracks_for_load(self, subtitle_path: str = "", language: str = "") -> tuple[list, list]:
+        if not subtitle_path:
+            return [], []
+        url = self.media_server.url_for(subtitle_path)
+        lang = language3(language or self.default_language)
+        return ([{
+            "trackId": 1,
+            "type": "TEXT",
+            "trackContentId": url,
+            "trackContentType": "text/vtt",
+            "name": lang.upper(),
+            "language": lang,
+            "subtype": "SUBTITLES",
+        }], [1])
 
     # -- transport passthrough --------------------------------------------
 

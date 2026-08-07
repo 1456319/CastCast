@@ -120,6 +120,11 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(svc.cast(path,
                                     allow_unsafe=bool(body.get("allow_unsafe")),
                                     auto_prepare=body.get("auto_prepare", True)))
+            elif route == "/subtitles/opensubtitles":
+                path = body.get("path")
+                if not path:
+                    return self._json({"error": "path is required"}, 400)
+                self._json(svc.request_subtitles(path, body.get("language") or ""))
             elif route == "/prepare":
                 path = body.get("path")
                 if not path:
@@ -214,6 +219,7 @@ _ROUTES = {
     "POST /connect": "{host, port?}",
     "POST /disconnect": "",
     "POST /cast": "{path, allow_unsafe?, auto_prepare?}",
+    "POST /subtitles/opensubtitles": "{path, language?} download and sideload subtitles",
     "POST /prepare": "{path, force?}  run the remux",
     "POST /prepare/cancel": "",
     "POST /play|/pause|/stop": "",
