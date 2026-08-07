@@ -277,3 +277,12 @@ and `localhost`, patches `AndroidManifest.xml` with
 `android:networkSecurityConfig="@xml/network_security_config"`, and rejects
 missing loopback config. This prevents Android WebView cleartext loopback
 failures from masquerading as a dead daemon.
+
+## 2026-08-07 update — Copilot follow-up and lockfile fix
+
+Reviewed the follow-up feedback and kept the daemon/server-control and loopback
+cleartext approach. The actionable CI failure was that the pnpm-based workflow
+used `setup-node` pnpm caching without a committed `pnpm-lock.yaml`; generated
+and committed the lockfile, pinned the newly added Capacitor packages to the
+resolved version instead of `latest`, and restored the loopback CI install step
+to `pnpm install --frozen-lockfile` so future dependency drift fails loudly.

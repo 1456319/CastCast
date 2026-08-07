@@ -64,15 +64,16 @@
     "tailwind-merge": "3.2.0",
     "tw-animate-css": "1.3.8",
     "vaul": "1.1.2",
-    "@capacitor/core": "latest"
+    "@capacitor/core": "8.5.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.1.12",
     "@vitejs/plugin-react": "4.7.0",
     "tailwindcss": "4.1.12",
     "vite": "6.3.5",
-    "@capacitor/cli": "latest",
-    "@capacitor/android": "latest"
+    "@capacitor/cli": "8.5.0",
+    "@capacitor/android": "8.5.0",
+    "typescript": "5.9.2"
   },
   "peerDependencies": {
     "react": "18.3.1",
