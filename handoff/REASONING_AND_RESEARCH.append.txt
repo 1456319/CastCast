@@ -1,0 +1,224 @@
+================================================================================
+2026-08-07 -- UI review + APK-readiness pass (Opus 5, daemon author)
+APPEND-ONLY. Nothing below deletes prior entries; corrections are made by
+adding, per the file's existing convention.
+================================================================================
+
+SCOPE OF THIS ENTRY
+  Reviewed the Expo UI in mobile/ and the Lovable page against the daemon I
+  wrote, then implemented the daemon-side readiness work and staged the
+  mobile-side artifacts. Handoff artifacts live in handoff/ in the daemon
+  workspace; see handoff/HANDOFF.md for the file-by-file merge list.
+
+
+1. VERDICT ON THE UI: APPROPRIATE. KEEP IT.
+
+  The concern in the brief was "optimally the APK wouldn't just be a package
+  for a webUI". That concern is already satisfied and no work is needed for it.
+  mobile/ is Expo React Native rendering real native views. There is no
+  webview, no Capacitor, no Cordova, no Tauri. The APK will be a native app.
+
+  Confirmed by direct comparison rather than assumption:
+
+  - mobile/lib/daemon.ts matches daemon/castcast/api.py EXACTLY. Every path,
+    method, query parameter and body field lines up across all 17 endpoints.
+    No drift, no invented endpoints, no missing ones.
+  - The daemon returns soft failures as {"error": ...} with HTTP 200, and uses
+    409 for wrong-state and 400 for missing-parameter. daemon.ts models this
+    correctly, and DaemonUnreachable is a separate Error subclass so transport
+    death is never confused with an application-level error. This is the right
+    shape and should not be "simplified" later.
+  - Per-endpoint timeouts (60s deep library, 30s preflight/cast/prepare, 20s
+    connect, 8s default) are well matched to real daemon latencies.
+  - react-native-sse with a 1s polling fallback, because RN has no global
+    EventSource. Correct, and the fallback means the missing 'finished' event
+    (see 4F) is a latency bug, not a correctness bug.
+
+  The decision to strip the earlier mock diagnostics blob -- CPU temperature,
+  HDCP version, Widevine level, an ADB console -- was correct and must not be
+  reverted. The CASTv2 receiver namespace exposes volume, running apps and
+  session IDs. That is the entire surface. Everything else in that blob was
+  fabricated. Rendering '?' via orUnknown is the honest alternative and it is
+  now also the rule the new setup screen follows.
+
+
+2. CORRECTION TO EXISTING DOCUMENTATION: THE START COMMAND IS BROKEN
+
+  README.md and docs/PACKAGING.md both document:
+
+      python -m castcast --root /storage/emulated/0/Download/Chromecast
+
+  This cannot work. Checked against daemon/castcast/__main__.py:
+
+    - There is no --root flag. It is --media-root, with action="append".
+    - add_subparsers(dest="command", required=True) makes a subcommand
+      mandatory, so even with the flag corrected the command exits with an
+      argparse error.
+
+  Correct form, which is what every doc should say:
+
+      python -m castcast --media-root /storage/emulated/0/Download/Chromecast serve
+
+  This is the first command anyone runs, which is why it is listed first here.
+  Note the abbreviated `python -m castcast serve` (no --media-root) IS valid --
+  it falls back to the default root -- so the short form in the project brief
+  was never wrong. Only the --root form is.
+
+
+3. CORRECTION: THE LOVABLE URL IS NOT THE APP
+
+  chromecast-whisperer.lovable.app is a landing/overview page describing the
+  project. It is not the control surface and cannot become one: it is browser
+  JavaScript, and the daemon binds 127.0.0.1 on the phone, so a desktop browser
+  has no route to it. The shippable UI is mobile/. Recording this because a
+  future agent could reasonably read the repo and try to package that page.
+
+
+4. BLOCKERS FOUND, AND WHAT WAS DONE ABOUT EACH
+
+  4A. Broken start command. See section 2. Doc fix; not yet applied to the
+      whisperer repo (not checked out in my environment) -- listed in
+      handoff/HANDOFF.md section 3.
+
+  4B. No eas.json, so no APK could be produced. Also worth knowing: EAS's
+      DEFAULT Android artifact is an AAB, not an APK. Staged eas.json sets
+      android.buildType = "apk" on development, preview and production.
+
+  4C. The network security config in docs/PACKAGING.md is unreachable as
+      written. The doc is RIGHT to refuse app-wide usesCleartextTraffic and
+      right to want a loopback-scoped config -- but it points at
+      android/app/src/main/res/xml/, and mobile/ is a managed CNG project with
+      no android/ directory in git. `expo prebuild` regenerates that tree from
+      scratch, so a hand-placed file there vanishes on the next prebuild.
+
+      This is a nasty failure mode: the build still SUCCEEDS, and the app then
+      fails at runtime on every single request, silently, because Android
+      blocks cleartext on API 28+. Staged plugins/withLoopbackCleartext.js
+      writes the XML during prebuild and sets android:networkSecurityConfig on
+      <application>. Its base-config is cleartextTrafficPermitted="false", i.e.
+      stricter than Android's default, with 127.0.0.1 and localhost as the only
+      exceptions.
+
+      Known gap: a user-pinned LAN daemon address (via the gear icon) is NOT
+      covered by this config and will fail. The UI should say so rather than
+      failing opaquely. Not yet implemented.
+
+  4D. Declared permissions do not match what will ship. app.json declares
+      INTERNET + ACCESS_NETWORK_STATE and PACKAGING.md repeats that claim, but
+      expo-camera is a dependency and its autolinked plugin injects
+      android.permission.CAMERA. react-native-webview is also present and
+      unused -- which, beyond being dead weight, actively undercuts the "not a
+      webview app" claim. Also suspect: expo-symbols, expo-blur, @lucide/lab,
+      expo-web-browser. Prune list in HANDOFF.md section 2.
+
+  4E. SSE event mismatch. The daemon emits a 'finished' event that is absent
+      from EVENT_NAMES in daemon.ts, so the client drops it. Conversely the
+      client listens for 'error', which the daemon never emits. Low severity --
+      the 5s poll covers it -- but 'finished' should be added.
+
+  4F. No readiness endpoint. This was the substantive gap and the one the brief
+      explicitly asked for. See section 5.
+
+
+5. WHAT WAS BUILT: daemon /health + `castcast doctor`
+
+  Rationale. /status answers "what is the daemon's state". The phone needs a
+  different question answered on first launch: "what is stopping me from
+  casting, and what exactly do I type?" Those are not the same question,
+  and collapsing them was making three unrelated failures look identical:
+
+      (a) daemon not started
+      (b) daemon running, but termux-setup-storage was never run
+      (c) daemon running, but no LAN route
+
+  All three present to the user as "casting doesn't work". Their remedies have
+  nothing in common. The old UI could only render a single "unreachable"
+  message, so it could not distinguish them at all.
+
+  New file: daemon/castcast/health.py. Plus CastService.health(),
+  GET /health, MediaServer.running, and a `doctor` CLI subcommand.
+
+  Three design decisions worth defending, because they are the ones a later
+  agent would be tempted to "clean up":
+
+  (i) `ok` IS TRI-STATE: true / false / null. null means UNKNOWN and renders as
+      '?'. Do not narrow it to boolean. This is the same honesty rule that got
+      the mock diagnostics removed: when the daemon is unreachable the app
+      genuinely cannot know whether ffmpeg is installed, and showing a red row
+      there would be a fabricated claim, not a conservative default.
+
+  (ii) ffmpeg AND ffprobe ARE NON-BLOCKING (blocking=false, rendered as warn,
+      not fail). An already-compatible MP4 casts fine without them. That
+      degradation path is implemented in CastService.preflight() and was added
+      deliberately in an earlier session after ffprobe-absence was found to
+      hard-block all casting. Do not let a readiness check re-introduce the
+      hard block that was already fixed once.
+
+  (iii) THE MEDIA-ROOT CHECK TESTS READABILITY, NOT EXISTENCE. On Android the
+      interesting failure before termux-setup-storage is not "directory
+      missing" -- it is "directory exists and os.listdir raises
+      PermissionError". Checking os.path.isdir alone would report green on the
+      exact machine state we most need to catch. A readable-but-empty folder is
+      reported as a pass with a count, because an empty folder is not an error
+      and the user cannot act on it.
+
+  A loopback lan_ip is treated as blocking. detect_lan_ip() falls back to
+  127.0.0.1 when there is no route off-device; casting then "succeeds" at the
+  CASTv2 layer and the receiver spins forever, because the LOAD URL it was
+  handed resolves to itself. That is precisely the class of silent failure this
+  whole project exists to eliminate, so it gets a red row.
+
+  `castcast doctor` exits 0 only when nothing blocking is wrong, so it composes:
+      python -m castcast doctor && python -m castcast serve
+
+
+6. SCOPE DECISION (user, this session): DETECT AND VERIFY ONLY
+
+  The APK will NOT launch the daemon. No Termux RUN_COMMAND intent, no
+  com.termux.permission.RUN_COMMAND, no <queries> entry, no bundled Python via
+  Chaquopy.
+
+  Reasoning, recorded because this will look like an omission later:
+
+  - Launching requires the user to have set allow-external-apps=true in
+    ~/.termux/termux.properties. An APK cannot do that on their behalf, so the
+    manual setup step is not actually eliminated -- it is replaced by a
+    different, more obscure manual step.
+  - Staying detect-only keeps the shipped manifest at exactly INTERNET +
+    ACCESS_NETWORK_STATE, which turns PACKAGING.md's permission claim from an
+    aspiration into an enforceable invariant that can be checked with a grep
+    after prebuild.
+  - Bundling Python (Chaquopy / python-for-android) was considered and
+    rejected: large rewrite, and ffmpeg still has to come from somewhere.
+
+  Consequence: starting the daemon stays a deliberate user action in Termux.
+  The app's job is to say precisely what is wrong and hand over the exact
+  command. Staged as mobile/app/(tabs)/setup.tsx -- rows in dependency order so
+  the first non-green row is always the real cause, each failure carrying the
+  literal command with a copy button. It polls every 5s while the daemon is
+  down so the screen goes green on its own the moment the user starts it,
+  rather than requiring them to navigate back.
+
+
+7. WHAT IS STILL UNVERIFIED -- READ THIS BEFORE TRUSTING ANY OF IT
+
+  Stated plainly so nobody downstream assumes more testing happened than did.
+
+  - health.py, GET /health, MediaServer.running and the doctor command are
+    UNRUN. Shell execution was unavailable in the session that wrote them, so
+    they have not been byte-compiled, let alone executed. The logic is simple
+    (filesystem stats and shutil.which) but it is unrun code and may contain a
+    typo. FIRST ON-DEVICE TASK SHOULD BE `python -m castcast doctor` -- it
+    exercises the whole module and is the cheapest possible smoke test.
+  - None of the staged mobile files have been type-checked or built. No npx,
+    no tsc in the sandbox.
+  - Remuxer.run() has STILL never been executed. No ffmpeg binary. Unchanged
+    from the prior entry; repeating it because it remains the largest untested
+    surface in the project.
+  - mDNS discovery has only ever been tested against a synthetic advert I
+    constructed, never a real Chromecast. It is also the least reliable part of
+    the stack on Android regardless. Pin the IP.
+  - The CASTv2 stack itself (handshake, 18s dead-link detection,
+    reconnect-with-resume, Range/HEAD/traversal) WAS verified against a mock
+    receiver using real TLS, real framing and real protobuf -- but a mock is
+    not a Chromecast Ultra. Real-hardware behaviour is still unknown.
