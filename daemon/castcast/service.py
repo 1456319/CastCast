@@ -81,6 +81,9 @@ class CastService:
         self._probe_cache: Dict[str, tuple] = {}   # path -> (mtime, MediaInfo)
         self._remuxer = remux.Remuxer(on_update=self._on_remux_update)
         self._remux_thread: Optional[threading.Thread] = None
+        self.default_language = language3(config.get("default_language") or "eng")
+        self.opensubtitles_api_key = config.get("opensubtitles_api_key") or os.environ.get("OPENSUBTITLES_API_KEY", "")
+        self.opensubtitles_token = config.get("opensubtitles_token") or os.environ.get("OPENSUBTITLES_TOKEN", "")
         self._lock = threading.RLock()
         self._events: List[Callable[[str, dict], None]] = []
         self._watchdog: Optional[threading.Thread] = None
@@ -350,7 +353,8 @@ class CastService:
     # -- casting -----------------------------------------------------------
 
     def cast(self, path: str, *, allow_unsafe: bool = False,
-             auto_prepare: bool = True) -> dict:
+             auto_prepare: bool = True, subtitle_path: str = "",
+             subtitle_language: str = "") -> dict:
         """The whole pipeline: pre-flight, convert if needed, serve, LOAD."""
         if not self.supervisor:
             return {"error": "not connected to a device"}
@@ -397,18 +401,54 @@ class CastService:
 
         info = report.get("media") or {}
         title = os.path.splitext(os.path.basename(path))[0]
+        tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
         self.supervisor.load(
             url,
             content_type=guess_mime(target),
             title=title,
             duration=float(info.get("duration_s") or 0.0),
             source_path=target,
+            tracks=tracks,
+            active_track_ids=active_track_ids,
         )
 
         pv = (info.get("video") or [{}])
         resolution = f"{pv[0].get('width')}x{pv[0].get('height')}" if pv and pv[0] else "?"
         self.log(f"casting {title} [{resolution}] -> {self.device.friendly_name if self.device else '?'}")
         return {**report, "casting": True, "url": url}
+
+
+    def request_subtitles(self, path: str, language: str = "") -> dict:
+        """Download the best OpenSubtitles match and re-LOAD current media with it."""
+        if not self.supervisor:
+            return {"error": "not connected to a device"}
+        lang = language3(language or self.default_language)
+        result = download_best(path, self.work_dir, self.opensubtitles_api_key,
+                               language=lang, token=self.opensubtitles_token)
+        result.url = self.media_server.url_for(result.path)
+        self.log(f"downloaded {lang} subtitles from OpenSubtitles: {os.path.basename(result.path)}")
+
+        snap = self.supervisor.snapshot()
+        cast_result = self.cast(path, allow_unsafe=True, auto_prepare=False,
+                                subtitle_path=result.path, subtitle_language=lang)
+        if not cast_result.get("error") and snap.get("position"):
+            self.supervisor.seek(float(snap.get("position") or 0.0))
+        return {**cast_result, "subtitles": result.__dict__}
+
+    def _tracks_for_load(self, subtitle_path: str = "", language: str = "") -> tuple[list, list]:
+        if not subtitle_path:
+            return [], []
+        url = self.media_server.url_for(subtitle_path)
+        lang = language3(language or self.default_language)
+        return ([{
+            "trackId": 1,
+            "type": "TEXT",
+            "trackContentId": url,
+            "trackContentType": "text/vtt",
+            "name": lang.upper(),
+            "language": lang,
+            "subtype": "SUBTITLES",
+        }], [1])
 
     # -- transport passthrough --------------------------------------------
 
