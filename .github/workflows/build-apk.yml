@@ -29,8 +29,9 @@ jobs:
 
       - name: Install & Sync Capacitor
         run: |
-          npm install @capacitor/core @capacitor/cli
-          npx cap add android || true
+          npm install @capacitor/core @capacitor/cli @capacitor/android
+          npx cap init "Video Quality Checker" "com.videoquality.app" --web-dir dist
+          npx cap add android
           npx cap sync android
 
       - name: Build APK with Gradle
