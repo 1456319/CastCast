@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Search,
   Square,
+  Subtitles,
   Wifi,
 } from "lucide-react";
 import {
@@ -136,6 +137,15 @@ export default function App() {
       if (result.error) setNotice(result.error);
       if (result.converting) setNotice("Conversion started — cast again when it finishes.");
       setReport((prev) => ({ ...(prev || {}), ...result } as Preflight));
+    });
+
+
+  const requestSubtitles = () =>
+    cast?.source_path &&
+    run("subtitles", async () => {
+      const result = await daemon.requestOpenSubtitles(cast.source_path, "eng");
+      if (result.error) setNotice(result.error);
+      else setNotice("English subtitles loaded from OpenSubtitles.");
     });
 
   const cast = status?.cast;
@@ -295,6 +305,14 @@ python -m castcast serve`}
                 ) : (
                   <><Pause className="h-4 w-4" /> pause</>
                 )}
+              </button>
+              <button
+                onClick={requestSubtitles}
+                disabled={!cast.source_path || busy === "subtitles"}
+                className="flex items-center gap-1.5 rounded border border-emerald-500/25 px-4 py-2 hover:bg-emerald-500/10 disabled:opacity-40"
+              >
+                {busy === "subtitles" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Subtitles className="h-3.5 w-3.5" />}
+                subtitles
               </button>
               <button
                 onClick={() => run("stop", daemon.stop)}

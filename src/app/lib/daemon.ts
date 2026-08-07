@@ -88,6 +88,8 @@ export interface CastState {
   stream_stalls: number;
   last_error: string;
   idle_reason: string;
+  source_path: string;
+  active_track_ids?: number[];
 }
 
 export interface Status {
@@ -140,6 +142,11 @@ export const daemon = {
   stop: () => post<Status>("/stop"),
   seek: (position: number) => post<Status>("/seek", { position }),
   volume: (level: number) => post<Status>("/volume", { level }),
+  requestOpenSubtitles: (path: string, language = "eng") =>
+    post<Preflight & { subtitles?: { path: string; language: string; url: string; label: string } }>(
+      "/subtitles/opensubtitles",
+      { path, language },
+    ),
 };
 
 /** Subscribe to the daemon's SSE stream. Returns an unsubscribe function. */
