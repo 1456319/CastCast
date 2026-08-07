@@ -13,6 +13,7 @@ from typing import Callable, Dict, List, Optional
 from . import capability, health, remux
 from .discovery import CastDevice, DeviceCache, resolve
 from .mediaserver import MediaServer, guess_mime
+from .opensubtitles import download_best, language3
 from .probe import MediaInfo, ProbeError, have_ffmpeg, have_ffprobe, probe
 from .supervisor import State, Supervisor
 
