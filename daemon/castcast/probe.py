@@ -45,6 +45,8 @@ class VideoStream:
     color_transfer: str = ""
     color_space: str = ""
     hdr_format: str = "SDR"   # SDR | HDR10 | HDR10+ | HLG | Dolby Vision
+    dv_profile: Optional[int] = None
+    dv_level: Optional[int] = None
     bitrate_kbps: Optional[int] = None
 
     @property
@@ -231,6 +233,16 @@ def probe(path: str, timeout: float = 30.0) -> MediaInfo:
             if (stream.get("disposition") or {}).get("attached_pic"):
                 continue
             br = _i(stream.get("bit_rate"))
+
+            dv_prof = None
+            dv_lvl = None
+            for side in stream.get("side_data_list") or []:
+                stype = (side.get("side_data_type") or "").lower()
+                if "dovi" in stype or "dolby vision" in stype:
+                    dv_prof = _i(side.get("dv_profile"))
+                    dv_lvl = _i(side.get("dv_level"))
+                    break
+
             info.video.append(VideoStream(
                 index=_i(stream.get("index"), 0) or 0,
                 codec=(stream.get("codec_name") or "").lower(),
@@ -245,6 +257,8 @@ def probe(path: str, timeout: float = 30.0) -> MediaInfo:
                 color_transfer=stream.get("color_transfer") or "",
                 color_space=stream.get("color_space") or "",
                 hdr_format=_detect_hdr(stream),
+                dv_profile=dv_prof,
+                dv_level=dv_lvl,
                 bitrate_kbps=int(br // 1000) if br else None,
             ))
         elif kind == "audio":

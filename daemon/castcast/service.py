@@ -438,9 +438,20 @@ class CastService:
 
         title = os.path.splitext(os.path.basename(path))[0]
         tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
+
+        content_type = guess_mime(target)
+        pv = (info.get("video") or [{}])
+        if pv and pv[0]:
+            v = pv[0]
+            if v.get("hdr_format") == "Dolby Vision" and v.get("codec") == "hevc" and v.get("dv_profile") is not None and v.get("dv_level") is not None:
+                # Only use specific codec string for supported profiles (5 and 8)
+                # to prevent breaking playback (fallback to HDR10) for unsupported profiles like 7.
+                if v.get("dv_profile") in (5, 8):
+                    content_type = f'video/mp4; codecs="dvhe.{v.get("dv_profile"):02d}.{v.get("dv_level"):02d}"'
+
         self.supervisor.load(
             url,
-            content_type=guess_mime(target),
+            content_type=content_type,
             title=title,
             duration=float(info.get("duration_s") or 0.0),
             source_path=target,
