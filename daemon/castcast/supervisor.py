@@ -81,6 +81,7 @@ class MediaSession:
     autoplay: bool = True
     tracks: Optional[list] = None
     active_track_ids: Optional[list] = None
+    queue_items: Optional[list] = None
 
 
 @dataclass
@@ -189,6 +190,42 @@ class Supervisor:
             self.status.idle_reason = ""
             self.status.active_track_ids = active_track_ids or []
         self._log(f"queued LOAD {title or url}")
+        self._try_load()
+
+    def queue_insert(self, item: dict) -> None:
+        """Append an item to the current queue."""
+        self._media_command({"type": "QUEUE_INSERT", "items": [item]})
+
+    def queue_load(self, items: list) -> None:
+        """Queue a QUEUE_LOAD with multiple items."""
+        if not items:
+            return
+
+        with self._lock:
+            self._media_session_id = None
+            self.status.media_session_id = None
+
+            # Extract first item properties to populate status and basic session
+            first = items[0]
+            media = first.get("media", {})
+            url = media.get("contentId", "")
+            title = media.get("metadata", {}).get("title", "")
+            duration = float(media.get("duration") or 0.0)
+
+            self._session = MediaSession(
+                url=url,
+                title=title,
+                duration=duration,
+                queue_items=items
+            )
+            self._pending_restore = True
+
+            self.status.title = title
+            self.status.content_url = url
+            self.status.duration = duration
+            self.status.idle_reason = ""
+
+        self._log(f"queued QUEUE_LOAD with {len(items)} items")
         self._try_load()
 
     def play(self) -> None:
@@ -324,29 +361,39 @@ class Supervisor:
         if channel is None:
             return
 
-        payload = {
-            "type": "LOAD",
-            "requestId": self._next_request_id(),
-            "sessionId": None,
-            "autoplay": session.autoplay,
-            "currentTime": session.position,
-            "media": {
-                "contentId": session.url,
-                "streamType": "BUFFERED",
-                "contentType": session.content_type,
-                "metadata": {
-                    "metadataType": 1,
-                    "title": session.title or "castcast",
+        if session.queue_items:
+            payload = {
+                "type": "QUEUE_LOAD",
+                "requestId": self._next_request_id(),
+                "sessionId": None,
+                "items": session.queue_items,
+                "repeatMode": "REPEAT_OFF",
+                "startIndex": 0,
+            }
+        else:
+            payload = {
+                "type": "LOAD",
+                "requestId": self._next_request_id(),
+                "sessionId": None,
+                "autoplay": session.autoplay,
+                "currentTime": session.position,
+                "media": {
+                    "contentId": session.url,
+                    "streamType": "BUFFERED",
+                    "contentType": session.content_type,
+                    "metadata": {
+                        "metadataType": 1,
+                        "title": session.title or "castcast",
+                    },
                 },
-            },
-        }
-        if session.duration:
-            payload["media"]["duration"] = session.duration
-        if session.tracks:
-            payload["media"]["tracks"] = session.tracks
-            payload["media"]["textTrackStyle"] = {"fontScale": 1.0, "foregroundColor": "#FFFFFFFF", "backgroundColor": "#00000099"}
-        if session.active_track_ids:
-            payload["activeTrackIds"] = session.active_track_ids
+            }
+            if session.duration:
+                payload["media"]["duration"] = session.duration
+            if session.tracks:
+                payload["media"]["tracks"] = session.tracks
+                payload["media"]["textTrackStyle"] = {"fontScale": 1.0, "foregroundColor": "#FFFFFFFF", "backgroundColor": "#00000099"}
+            if session.active_track_ids:
+                payload["activeTrackIds"] = session.active_track_ids
 
         try:
             channel.send_json(NS_MEDIA, self._app_transport_id, payload)
