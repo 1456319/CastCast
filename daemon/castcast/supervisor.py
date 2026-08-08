@@ -213,17 +213,20 @@ class Supervisor:
             url = media.get("contentId", "")
             title = media.get("metadata", {}).get("title", "")
             duration = float(media.get("duration") or 0.0)
+            source_path = media.get("customData", {}).get("sourcePath", "")
 
             self._session = MediaSession(
                 url=url,
                 title=title,
                 duration=duration,
+                source_path=source_path,
                 queue_items=items
             )
             self._pending_restore = True
 
             self.status.title = title
             self.status.content_url = url
+            self.status.source_path = source_path
             self.status.duration = duration
             self.status.idle_reason = ""
 
@@ -389,6 +392,8 @@ class Supervisor:
                     },
                 },
             }
+            if session.source_path:
+                payload["media"]["customData"] = {"sourcePath": session.source_path}
             if session.duration:
                 payload["media"]["duration"] = session.duration
             if session.tracks:
@@ -570,6 +575,13 @@ class Supervisor:
 
         media = entry.get("media") or {}
         with self._lock:
+            custom_data = media.get("customData") or {}
+            source_path = custom_data.get("sourcePath")
+            if source_path:
+                self.status.source_path = source_path
+                if self._session:
+                    self._session.source_path = source_path
+
             if media.get("duration"):
                 self.status.duration = float(media["duration"])
                 if self._session:

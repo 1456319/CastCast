@@ -423,7 +423,10 @@ class CastService:
             "media": {
                 "contentId": url,
                 "streamType": "BUFFERED",
-                "contentType": self._get_content_type(target, info),
+"contentType": self._get_content_type(target, info),
+                "customData": {
+                    "sourcePath": target
+                },
                 "metadata": {
                     "metadataType": 1,
                     "title": title
@@ -582,7 +585,10 @@ class CastService:
                 "media": {
                     "contentId": url,
                     "streamType": "BUFFERED",
-                    "contentType": self._get_content_type(target, info),
+"contentType": self._get_content_type(target, info),
+                "customData": {
+                    "sourcePath": target
+                },
                     "metadata": {
                         "metadataType": 1,
                         "title": title
