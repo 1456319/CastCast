@@ -13,6 +13,7 @@ import time
 from typing import Callable, Dict, List, Optional
 
 from . import capability, health, remux
+from .channel import DEFAULT_TEXT_TRACK_STYLE
 from .discovery import CastDevice, DeviceCache, resolve
 from .mediaserver import MediaServer, guess_mime
 from .opensubtitles import download_best, language3
@@ -353,17 +354,16 @@ class CastService:
         if self._remuxer.busy:
             return {**report, "error": "another conversion is already running"}
 
-        info = self.probe_cached(path)
-        verdict = capability.evaluate(info)
-        plan = remux.build_plan(info, verdict, self.work_dir)
-        if plan is None:
-            return report
+        plan_kwargs = dict(plan_dict)
+        plan_kwargs.pop("shell_command", None)
+        plan = remux.RemuxPlan(**plan_kwargs)
 
         self.log(f"converting: {plan.description}")
         self.log(f"$ {plan.shell_command}")
 
         def worker():
-            self._remuxer.run(plan, duration_s=info.duration_s)
+            duration = report.get("media", {}).get("duration_s", 0.0)
+            self._remuxer.run(plan, duration_s=duration)
 
         self._remux_thread = threading.Thread(target=worker, name="castcast-remux",
                                               daemon=True)
@@ -423,7 +423,7 @@ class CastService:
             "media": {
                 "contentId": url,
                 "streamType": "BUFFERED",
-                "contentType": guess_mime(target),
+"contentType": self._get_content_type(target, info),
                 "customData": {
                     "sourcePath": target
                 },
@@ -439,7 +439,7 @@ class CastService:
             item["media"]["duration"] = duration
         if tracks:
             item["media"]["tracks"] = tracks
-            item["media"]["textTrackStyle"] = {"fontScale": 1.0, "foregroundColor": "#FFFFFFFF", "backgroundColor": "#00000099"}
+            item["media"]["textTrackStyle"] = DEFAULT_TEXT_TRACK_STYLE
         if active_track_ids:
             item["activeTrackIds"] = active_track_ids
 
@@ -517,15 +517,7 @@ class CastService:
         title = os.path.splitext(os.path.basename(path))[0]
         tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
 
-        content_type = guess_mime(target)
-        pv = (info.get("video") or [{}])
-        if pv and pv[0]:
-            v = pv[0]
-            if v.get("hdr_format") == "Dolby Vision" and v.get("codec") == "hevc" and v.get("dv_profile") is not None and v.get("dv_level") is not None:
-                # Only use specific codec string for supported profiles (5 and 8)
-                # to prevent breaking playback (fallback to HDR10) for unsupported profiles like 7.
-                if v.get("dv_profile") in (5, 8):
-                    content_type = f'video/mp4; codecs="dvhe.{v.get("dv_profile"):02d}.{v.get("dv_level"):02d}"'
+        content_type = self._get_content_type(target, info)
 
         self.supervisor.load(
             url,
@@ -593,10 +585,10 @@ class CastService:
                 "media": {
                     "contentId": url,
                     "streamType": "BUFFERED",
-                    "contentType": guess_mime(target),
-                    "customData": {
-                        "sourcePath": target
-                    },
+"contentType": self._get_content_type(target, info),
+                "customData": {
+                    "sourcePath": target
+                },
                     "metadata": {
                         "metadataType": 1,
                         "title": title
@@ -609,7 +601,7 @@ class CastService:
                 item["media"]["duration"] = duration
             if tracks:
                 item["media"]["tracks"] = tracks
-                item["media"]["textTrackStyle"] = {"fontScale": 1.0, "foregroundColor": "#FFFFFFFF", "backgroundColor": "#00000099"}
+                item["media"]["textTrackStyle"] = DEFAULT_TEXT_TRACK_STYLE
             if active_track_ids:
                 item["activeTrackIds"] = active_track_ids
 
@@ -810,6 +802,19 @@ class CastService:
         self._require().set_muted(muted)
         return self.status()
 
+
+
+    def _get_content_type(self, target: str, info: dict) -> str:
+        content_type = guess_mime(target)
+        pv = (info.get("video") or [{}])
+        if pv and pv[0]:
+            v = pv[0]
+            if v.get("hdr_format") == "Dolby Vision" and v.get("codec") == "hevc" and v.get("dv_profile") is not None and v.get("dv_level") is not None:
+                # Only use specific codec string for supported profiles (5 and 8)
+                # to prevent breaking playback (fallback to HDR10) for unsupported profiles like 7.
+                if v.get("dv_profile") in (5, 8):
+                    content_type = f'video/mp4; codecs="dvhe.{v.get("dv_profile"):02d}.{v.get("dv_level"):02d}"'
+        return content_type
 
 def _size(path: str) -> int:
     try:
