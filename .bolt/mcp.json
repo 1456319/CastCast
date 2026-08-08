@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "github": {
+      "enabled": true
+    },
+    "linear": {
+      "enabled": true
+    },
+    "context7": {
+      "enabled": true
+    },
+    "miro": {
+      "enabled": true
+    },
+    "shaders": {
+      "enabled": true
+    },
+    "sentry": {
+      "enabled": true
+    }
+  }
+}
