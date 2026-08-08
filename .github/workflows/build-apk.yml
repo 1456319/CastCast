@@ -35,7 +35,6 @@ jobs:
 
       - name: Install & Sync Capacitor
         run: |
-          pnpm exec cap add android
           pnpm exec cap sync android
           node scripts/configure-android-loopback.mjs
 
