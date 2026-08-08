@@ -569,13 +569,11 @@ class Supervisor:
         entry = entries[0]
         session_id = entry.get("mediaSessionId")
         with self._lock:
-            if self._media_session_id is None and session_id is not None:
+            if session_id is not None:
+                if self._media_session_id is not None and session_id != self._media_session_id:
+                    self._log(f"media session changed from {self._media_session_id} to {session_id}", "debug")
                 self._media_session_id = session_id
                 self.status.media_session_id = session_id
-            elif session_id is not None and session_id != self._media_session_id:
-                # A new LOAD can race the receiver status for the previous session.
-                self._log(f"ignoring status for foreign media session {session_id}; expected {self._media_session_id}", "debug")
-                return True
 
         media = entry.get("media") or {}
         with self._lock:

@@ -111,7 +111,7 @@ def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str) -> Optional[Rem
     if info.primary_audio is None:
         args += ["-an"]
     else:
-        args += ["-map", "0:a:0"]
+        args += ["-map", "0:a"]
         if verdict.audio_action == "transcode":
             channels = info.primary_audio.channels or 2
             # Keep 5.1 as 5.1; the receiver downmixes if the sink can't take it.

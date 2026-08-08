@@ -502,12 +502,13 @@ class CastService:
                 return {**report, "error": "file needs conversion before casting",
                         "requires_confirmation": True}
 
-        info = report.get("media") or {}
+        original_info = report.get("media") or {}
+        info = probe(target) if target != path else original_info
         target, language_note = self._target_for_default_language(target, info)
         if language_note:
             self.log(language_note, "debug")
         if not subtitle_path:
-            subtitle_path = self._extract_default_subtitle(path, info)
+            subtitle_path = self._extract_default_subtitle(path, original_info)
             subtitle_language = self.default_language if subtitle_path else subtitle_language
         try:
             url = self.media_server.url_for(target)
