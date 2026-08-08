@@ -29,6 +29,8 @@ CAST_PORT = 8009
 #: pychromecast, VLC, catt and go-chromecast all hardcode it.
 DEFAULT_MEDIA_RECEIVER_APP_ID = "CC1AD845"
 
+DEFAULT_TEXT_TRACK_STYLE = {"fontScale": 1.0, "foregroundColor": "#FFFFFFFF", "backgroundColor": "#00000099"}
+
 #: Payloads larger than this are refused outright -- VLC does the same
 #: ("Payload size is too long: dropping connection") to avoid a hostile or
 #: corrupt peer making us allocate unboundedly.
