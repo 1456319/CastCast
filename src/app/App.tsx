@@ -14,6 +14,8 @@ import {
   Subtitles,
   Wifi,
   Trash2,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import {
   DAEMON_BASE,
@@ -303,9 +305,17 @@ export default function App() {
         {live && cast && (
           <section className="rounded border border-emerald-500/25 bg-black/40 p-3">
             <div className="mb-2 truncate text-emerald-200">{cast.title || "untitled"}</div>
-            <div className="mb-2 h-1 overflow-hidden rounded bg-emerald-500/15">
+            <div
+              className="mb-2 h-2 overflow-hidden rounded bg-emerald-500/15 cursor-pointer"
+              onClick={(e) => {
+                if (!cast || !cast.duration) return;
+                const rect = e.currentTarget.getBoundingClientRect();
+                const percent = (e.clientX - rect.left) / rect.width;
+                run("seek", () => daemon.seek(percent * cast.duration!));
+              }}
+            >
               <div
-                className="h-full bg-emerald-400 transition-all"
+                className="h-full bg-emerald-400 transition-all pointer-events-none"
                 style={{
                   width: `${cast.duration ? Math.min((cast.position / cast.duration) * 100, 100) : 0}%`,
                 }}
@@ -328,14 +338,16 @@ export default function App() {
                   <><Pause className="h-4 w-4" /> pause</>
                 )}
               </button>
-              <button
-                onClick={requestSubtitles}
-                disabled={!cast.source_path || busy === "subtitles"}
-                className="flex items-center gap-1.5 rounded border border-emerald-500/25 px-4 py-2 hover:bg-emerald-500/10 disabled:opacity-40"
-              >
-                {busy === "subtitles" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Subtitles className="h-3.5 w-3.5" />}
-                subtitles
-              </button>
+              {(!cast.active_track_ids || cast.active_track_ids.length <= 1) && (
+                <button
+                  onClick={requestSubtitles}
+                  disabled={!cast.source_path || busy === "subtitles" || notice === "English subtitles loaded from OpenSubtitles."}
+                  className="flex items-center gap-1.5 rounded border border-emerald-500/25 px-4 py-2 hover:bg-emerald-500/10 disabled:opacity-40"
+                >
+                  {busy === "subtitles" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Subtitles className="h-3.5 w-3.5" />}
+                  {notice === "English subtitles loaded from OpenSubtitles." ? "loaded" : "subtitles"}
+                </button>
+              )}
               <button
                 onClick={() => run("stop", daemon.stop)}
                 className="flex items-center gap-1.5 rounded border border-emerald-500/25 px-4 py-2 hover:bg-emerald-500/10"
@@ -343,15 +355,39 @@ export default function App() {
                 <Square className="h-3.5 w-3.5" /> stop
               </button>
             </div>
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                onClick={() => run("mute", () => daemon.mute(!cast.muted))}
+                className="text-emerald-400 hover:text-emerald-300"
+              >
+                {cast.muted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
+              </button>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={(cast.volume ?? 1) * 100}
+                onChange={(e) => run("volume", () => daemon.volume(parseInt(e.target.value) / 100))}
+                className="flex-1 accent-emerald-500"
+              />
+            </div>
           </section>
         )}
 
         {/* conversion progress */}
         {remux && remux.state === "running" && (
           <section className="rounded border border-amber-500/30 bg-amber-500/5 p-3">
-            <div className="mb-2 flex items-center gap-2 text-amber-300">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              {remux.description}
+            <div className="mb-2 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-amber-300">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                {remux.description}
+              </div>
+              <button
+                onClick={() => run("cancel", daemon.cancelPrepare)}
+                className="rounded border border-amber-500/30 px-2 py-1 text-xs text-amber-400 hover:bg-amber-500/20"
+              >
+                Cancel
+              </button>
             </div>
             <div className="h-1 overflow-hidden rounded bg-amber-500/20">
               <div className="h-full bg-amber-400" style={{ width: `${remux.progress * 100}%` }} />
