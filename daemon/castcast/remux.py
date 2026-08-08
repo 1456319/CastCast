@@ -141,6 +141,7 @@ class RemuxJob:
     state: str = "pending"      # pending | running | done | failed | cancelled
     progress: float = 0.0       # 0..1
     error: str = ""
+    warnings: List[str] = field(default_factory=list)
     started_at: float = 0.0
     finished_at: float = 0.0
 
@@ -149,6 +150,7 @@ class RemuxJob:
             "state": self.state,
             "progress": round(self.progress, 4),
             "error": self.error,
+            "warnings": self.warnings,
             "output_path": self.plan.output_path,
             "description": self.plan.description,
             "shell_command": self.plan.shell_command,
@@ -178,7 +180,7 @@ class Remuxer:
             if self.job and self.job.state == "running":
                 self.job.state = "cancelled"
 
-    def run(self, plan: RemuxPlan, duration_s: float = 0.0) -> RemuxJob:
+    def run(self, plan: RemuxPlan, duration_s: float = 0.0, original_info: Optional[MediaInfo] = None) -> RemuxJob:
         """Blocking.  Call from a worker thread."""
         if not have_ffmpeg():
             job = RemuxJob(plan=plan, state="failed",
@@ -216,6 +218,80 @@ class Remuxer:
             if job.state == "cancelled":
                 _unlink(plan.output_path)
             elif proc.returncode == 0:
+                # HDR metadata passthrough verification
+                if original_info and original_info.primary_video and original_info.primary_video.hdr_format != "SDR":
+                    from .probe import probe
+                    try:
+                        out_info = probe(plan.output_path)
+                    except Exception as e:
+                        out_info = None
+
+                    if out_info and out_info.primary_video:
+                        # Compare metadata
+                        pv = original_info.primary_video
+                        ov = out_info.primary_video
+
+                        lost = False
+                        if pv.color_primaries and ov.color_primaries != pv.color_primaries:
+                            lost = True
+                        if pv.color_transfer and ov.color_transfer != pv.color_transfer:
+                            lost = True
+                        if pv.color_space and ov.color_space != pv.color_space:
+                            lost = True
+
+                        if lost:
+                            w = f"HDR metadata lost during remux; re-running with bitstream filters to preserve it."
+                            job.warnings.append(w)
+                            self._emit(job)
+
+                            _unlink(plan.output_path)
+
+                            bsf_args = []
+                            if pv.color_primaries:
+                                bsf_args.append(f"colour_primaries={pv.color_primaries}")
+                            if pv.color_transfer:
+                                bsf_args.append(f"transfer_characteristics={pv.color_transfer}")
+                            if pv.color_space:
+                                bsf_args.append(f"matrix_coefficients={pv.color_space}")
+
+                            if bsf_args:
+                                plan.args += ["-bsf:v", f"hevc_metadata={':'.join(bsf_args)}"]
+
+                            # Re-run the command
+                            cmd = plan.command + ["-progress", "pipe:1", "-nostats"]
+
+                            # Reset job progress
+                            job.progress = 0.0
+                            self._emit(job)
+
+                            with self._lock:
+                                self._proc = subprocess.Popen(
+                                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            proc = self._proc
+                            assert proc.stdout is not None
+
+                            for line in proc.stdout:
+                                match = _PROGRESS_TIME.search(line)
+                                if match and duration_s > 0:
+                                    done = int(match.group(1)) / 1_000_000.0
+                                    new = min(done / duration_s, 0.999)
+                                    if new - job.progress > 0.005:
+                                        job.progress = new
+                                        self._emit(job)
+
+                            proc.wait()
+                            stderr = (proc.stderr.read() if proc.stderr else b"").decode("utf-8", "replace")
+
+                            if job.state == "cancelled":
+                                _unlink(plan.output_path)
+                                return job
+                            elif proc.returncode != 0:
+                                job.state = "failed"
+                                tail = [ln for ln in stderr.strip().splitlines() if ln.strip()]
+                                job.error = tail[-1] if tail else f"ffmpeg exited {proc.returncode}"
+                                _unlink(plan.output_path)
+                                return job
+
                 job.state = "done"
                 job.progress = 1.0
             else:

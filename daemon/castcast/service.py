@@ -361,7 +361,7 @@ class CastService:
         self.log(f"$ {plan.shell_command}")
 
         def worker():
-            self._remuxer.run(plan, duration_s=info.duration_s)
+            self._remuxer.run(plan, duration_s=info.duration_s, original_info=info)
 
         self._remux_thread = threading.Thread(target=worker, name="castcast-remux",
                                               daemon=True)
@@ -378,6 +378,16 @@ class CastService:
             level = "info" if job.state == "done" else "warn"
             self.log(f"conversion {job.state}"
                      + (f": {job.error}" if job.error else ""), level)
+
+        # Log any new warnings from the job
+        if not hasattr(self, "_logged_warnings"):
+            self._logged_warnings = set()
+
+        for w in job.warnings:
+            if w not in self._logged_warnings:
+                self.log(w, "warn")
+                self._logged_warnings.add(w)
+
         self._emit("remux", job.to_dict())
 
     # -- casting -----------------------------------------------------------

@@ -489,3 +489,60 @@ def test_remuxer_run_success_empty_stderr(mock_makedirs, mock_popen, mock_have_f
 
     assert job.state == "done"
     assert job.progress == 1.0
+
+@patch("castcast.remux.have_ffmpeg", return_value=True)
+@patch("subprocess.Popen")
+@patch("os.makedirs")
+@patch("castcast.probe.probe")
+@patch("castcast.remux._unlink")
+def test_hdr_metadata_loss_retry(mock_unlink, mock_probe, mock_makedirs, mock_popen, mock_have_ffmpeg):
+    from castcast.probe import MediaInfo, VideoStream
+
+    mock_proc1 = MagicMock()
+    mock_proc1.stdout = []
+    mock_proc1.stderr = None
+    mock_proc1.returncode = 0
+
+    mock_proc2 = MagicMock()
+    mock_proc2.stdout = []
+    mock_proc2.stderr = None
+    mock_proc2.returncode = 0
+
+    mock_popen.side_effect = [mock_proc1, mock_proc2]
+
+    # Original info has HDR
+    original_info = MediaInfo(
+        path="/in/file.mkv",
+        video=[VideoStream(codec="hevc", hdr_format="HDR10", color_primaries="bt2020", color_transfer="smpte2084", color_space="bt2020nc")],
+        audio=[]
+    )
+
+    # First probe returns lost HDR (no metadata)
+    lost_info = MediaInfo(
+        path="/out/file.mp4",
+        video=[VideoStream(codec="hevc", hdr_format="SDR", color_primaries="", color_transfer="", color_space="")],
+        audio=[]
+    )
+
+    mock_probe.side_effect = [lost_info]
+
+    r = Remuxer()
+    plan = RemuxPlan(
+        input_path="/in/file.mkv",
+        output_path="/out/file.mp4",
+        args=["-c:v", "copy"]
+    )
+
+    job = r.run(plan, original_info=original_info)
+
+    assert job.state == "done"
+    assert job.progress == 1.0
+    assert len(job.warnings) == 1
+    assert "HDR metadata lost" in job.warnings[0]
+
+    # Ensure Popen was called twice
+    assert mock_popen.call_count == 2
+
+    # Ensure arguments include -bsf:v in the plan
+    assert "-bsf:v" in plan.args
+    assert "hevc_metadata=colour_primaries=bt2020:transfer_characteristics=smpte2084:matrix_coefficients=bt2020nc" in plan.args
