@@ -354,17 +354,16 @@ class CastService:
         if self._remuxer.busy:
             return {**report, "error": "another conversion is already running"}
 
-        info = self.probe_cached(path)
-        verdict = capability.evaluate(info)
-        plan = remux.build_plan(info, verdict, self.work_dir)
-        if plan is None:
-            return report
+        plan_kwargs = dict(plan_dict)
+        plan_kwargs.pop("shell_command", None)
+        plan = remux.RemuxPlan(**plan_kwargs)
 
         self.log(f"converting: {plan.description}")
         self.log(f"$ {plan.shell_command}")
 
         def worker():
-            self._remuxer.run(plan, duration_s=info.duration_s)
+            duration = report.get("media", {}).get("duration_s", 0.0)
+            self._remuxer.run(plan, duration_s=duration)
 
         self._remux_thread = threading.Thread(target=worker, name="castcast-remux",
                                               daemon=True)
