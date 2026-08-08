@@ -113,6 +113,11 @@ class _Handler(BaseHTTPRequestHandler):
                                        body.get("friendly_name", "")))
             elif route == "/disconnect":
                 self._json(svc.disconnect())
+            elif route == "/queue":
+                paths = body.get("paths")
+                if not paths or not isinstance(paths, list):
+                    return self._json({"error": "paths must be a non-empty list of strings"}, 400)
+                self._json(svc.queue(paths))
             elif route == "/cast":
                 path = body.get("path")
                 if not path:
@@ -219,6 +224,7 @@ _ROUTES = {
     "POST /connect": "{host, port?}",
     "POST /disconnect": "",
     "POST /cast": "{path, allow_unsafe?, auto_prepare?}",
+    "POST /queue": "{paths} queue a list of castable media",
     "POST /subtitles/opensubtitles": "{path, language?} download and sideload subtitles",
     "POST /prepare": "{path, force?}  run the remux",
     "POST /prepare/cancel": "",
