@@ -424,6 +424,9 @@ class CastService:
                 "contentId": url,
                 "streamType": "BUFFERED",
                 "contentType": guess_mime(target),
+                "customData": {
+                    "sourcePath": target
+                },
                 "metadata": {
                     "metadataType": 1,
                     "title": title
@@ -591,6 +594,9 @@ class CastService:
                     "contentId": url,
                     "streamType": "BUFFERED",
                     "contentType": guess_mime(target),
+                    "customData": {
+                        "sourcePath": target
+                    },
                     "metadata": {
                         "metadataType": 1,
                         "title": title
