@@ -6,21 +6,21 @@ It is designed for power users who want guaranteed compatibility, gapless playba
 
 ## Features & Abilities
 
-### ⚡ Direct Cast V2 Communication
+### Direct Cast V2 Communication
 Bypass the Google Home sandbox. Castcast opens a raw TLS socket to your Chromecast on port 8009. It natively handles `CONNECT`, `LAUNCH`, and the entire `media` namespace, giving you instantaneous transport controls (Play, Pause, Seek, Volume, Mute) directly from the UI.
 
-### 🎥 Proactive On-Device Transcoding
+### Proactive On-Device Transcoding
 No more mid-stream buffering or format failures. Castcast runs a pre-flight probe using `ffprobe` on every video. If the video codec or container is not supported by your Chromecast, the daemon instantly spins up a local `ffmpeg` process to transcode the video (and safely pass through HDR metadata) before streaming it.
 
-### 🔄 Unified Native Queue Architecture
+### Unified Native Queue Architecture
 In Castcast, your local media folder *is* your queue. The app seamlessly interfaces with the Chromecast's internal queue system (`QUEUE_LOAD`, `QUEUE_INSERT`). 
 - Gapless auto-advancing managed natively by the Chromecast.
 - Moving a file to the "Trash" (marking it as watched) automatically fires a `QUEUE_REMOVE` command to yank it from the active stream dynamically.
 
-### 📝 OpenSubtitles Integration
+### OpenSubtitles Integration
 If your media lacks embedded subtitles, Castcast can autonomously connect to the OpenSubtitles API to download and sideload accurate `.srt`/`.vtt` tracks into your active cast session.
 
-### 🚀 1-Click Termux Setup & Audit Logging
+### 1-Click Termux Setup & Audit Logging
 No manual terminal typing required. The frontend APK uses an Android Intent to silently wake Termux in the background. Termux verifies its storage permissions, checks required directories, installs Python and FFmpeg if missing, and boots the daemon. **Every single setup action is strictly logged to an `audit.log` for total user transparency and trust.**
 
 ## Target Use Cases
