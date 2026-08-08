@@ -109,6 +109,7 @@ class CastService:
             "opensubtitles_token",
             "OPENSUBTITLES_TOKEN",
         )
+        self._queued_for_later = set()
         self._lock = threading.RLock()
         self._events: List[Callable[[str, dict], None]] = []
         self._watchdog: Optional[threading.Thread] = None
@@ -380,6 +381,67 @@ class CastService:
                      + (f": {job.error}" if job.error else ""), level)
         self._emit("remux", job.to_dict())
 
+        if job.state == "done" and job.plan.input_path in self._queued_for_later:
+            self._queued_for_later.remove(job.plan.input_path)
+            if self.supervisor and self.supervisor._state.value != "disconnected":
+                self._insert_queued_item(job.plan.input_path)
+
+    def _insert_queued_item(self, path: str) -> None:
+        report = self.preflight(path)
+        verdict = report.get("verdict")
+        target = path
+
+        if verdict and verdict.get("needs_processing"):
+            prepared = report.get("prepared_path")
+            if prepared:
+                target = prepared
+            else:
+                self.log(f"queue_insert: skipping {os.path.basename(path)} because it still needs conversion", "warn")
+                return
+
+        info = report.get("media") or {}
+        target, language_note = self._target_for_default_language(target, info)
+        if language_note:
+            self.log(language_note, "debug")
+
+        subtitle_path = self._extract_default_subtitle(path, info)
+        subtitle_language = self.default_language if subtitle_path else ""
+
+        try:
+            url = self.media_server.url_for(target)
+        except ValueError as exc:
+            self.log(f"queue_insert: skipping {os.path.basename(path)} due to url error: {exc}", "warn")
+            return
+
+        title = os.path.splitext(os.path.basename(path))[0]
+        tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
+
+        item = {
+            "autoplay": True,
+            "preloadTime": 10.0,
+            "media": {
+                "contentId": url,
+                "streamType": "BUFFERED",
+                "contentType": guess_mime(target),
+                "metadata": {
+                    "metadataType": 1,
+                    "title": title
+                }
+            }
+        }
+
+        duration = float(info.get("duration_s") or 0.0)
+        if duration:
+            item["media"]["duration"] = duration
+        if tracks:
+            item["media"]["tracks"] = tracks
+            item["media"]["textTrackStyle"] = {"fontScale": 1.0, "foregroundColor": "#FFFFFFFF", "backgroundColor": "#00000099"}
+        if active_track_ids:
+            item["activeTrackIds"] = active_track_ids
+
+        if self.supervisor:
+            self.supervisor.queue_insert(item)
+
     # -- casting -----------------------------------------------------------
 
     def cast(self, path: str, *, allow_unsafe: bool = False,
@@ -453,6 +515,81 @@ class CastService:
         device_name = self.device.friendly_name if self.device else "?"
         self.log(f"casting {title} [{resolution}] -> {device_name}")
         return {**report, "casting": True, "url": url}
+
+    def queue(self, paths: list[str]) -> dict:
+        """Queue multiple items for playback. Pre-flights each and only queues castable ones."""
+        if not self.supervisor:
+            return {"error": "not connected to a device"}
+
+        items = []
+        skipped = 0
+        preparing = 0
+
+        for path in paths:
+            report = self.preflight(path)
+            verdict = report.get("verdict")
+            target = path
+
+            if verdict and verdict.get("needs_processing"):
+                prepared = report.get("prepared_path")
+                if prepared:
+                    target = prepared
+                    self.log(f"queue: using previously converted file: {os.path.basename(prepared)}")
+                else:
+                    self.log(f"queue: preparing {os.path.basename(path)} for later queueing")
+                    self._queued_for_later.add(path)
+                    self.prepare(path)
+                    preparing += 1
+                    continue
+
+            info = report.get("media") or {}
+            target, language_note = self._target_for_default_language(target, info)
+            if language_note:
+                self.log(language_note, "debug")
+
+            subtitle_path = self._extract_default_subtitle(path, info)
+            subtitle_language = self.default_language if subtitle_path else ""
+
+            try:
+                url = self.media_server.url_for(target)
+            except ValueError as exc:
+                self.log(f"queue: skipping {os.path.basename(path)} due to url error: {exc}", "warn")
+                skipped += 1
+                continue
+
+            title = os.path.splitext(os.path.basename(path))[0]
+            tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
+
+            item = {
+                "autoplay": True,
+                "preloadTime": 10.0,
+                "media": {
+                    "contentId": url,
+                    "streamType": "BUFFERED",
+                    "contentType": guess_mime(target),
+                    "metadata": {
+                        "metadataType": 1,
+                        "title": title
+                    }
+                }
+            }
+
+            duration = float(info.get("duration_s") or 0.0)
+            if duration:
+                item["media"]["duration"] = duration
+            if tracks:
+                item["media"]["tracks"] = tracks
+                item["media"]["textTrackStyle"] = {"fontScale": 1.0, "foregroundColor": "#FFFFFFFF", "backgroundColor": "#00000099"}
+            if active_track_ids:
+                item["activeTrackIds"] = active_track_ids
+
+            items.append(item)
+
+        if not items:
+            return {"error": "no castable items found in the provided paths"}
+
+        self.supervisor.queue_load(items)
+        return {"queued": len(items), "skipped": skipped, "preparing": preparing}
 
     def _target_for_default_language(self, target: str, info: dict) -> tuple[str, str]:
         audio = info.get("audio") or []
