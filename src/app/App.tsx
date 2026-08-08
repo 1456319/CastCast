@@ -13,6 +13,7 @@ import {
   Square,
   Subtitles,
   Wifi,
+  Trash2,
 } from "lucide-react";
 import {
   DAEMON_BASE,
@@ -45,6 +46,7 @@ const STATE_TONE: Record<string, string> = {
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [library, setLibrary] = useState<LibraryItem[]>([]);
+  const [trashItems, setTrashItems] = useState<LibraryItem[]>([]);
   const [selected, setSelected] = useState<LibraryItem | null>(null);
   const [report, setReport] = useState<Preflight | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
@@ -122,7 +124,25 @@ export default function App() {
     run("library", async () => {
       const { items } = await daemon.library(false);
       setLibrary(items);
+      const { items: trashed } = await daemon.getTrash();
+      setTrashItems(trashed);
     });
+
+  const trashFile = (path: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    run("trash", async () => {
+      await daemon.trash(path);
+      await loadLibrary();
+    });
+  };
+
+  const deleteFile = (path: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    run("delete", async () => {
+      await daemon.delete(path);
+      await loadLibrary();
+    });
+  };
 
   const select = (item: LibraryItem) =>
     run("preflight", async () => {
@@ -167,11 +187,12 @@ export default function App() {
             cannot speak CASTv2 itself — the protocol needs a raw TLS socket — so the daemon does all
             the device work and this talks to it over localhost.
           </p>
-          <pre className="overflow-x-auto rounded border border-emerald-500/25 bg-black/60 p-3 font-mono text-emerald-300/80">
-{`pkg install python ffmpeg
-termux-setup-storage
-python -m castcast serve`}
-          </pre>
+          <a
+            href="intent:#Intent;action=com.termux.RUN_COMMAND;S.com.termux.RUN_COMMAND_PATH=/data/data/com.termux/files/usr/bin/bash;S.com.termux.RUN_COMMAND_ARGUMENTS=-c%20/data/data/com.termux/files/usr/bin/bash%20/storage/emulated/0/Download/VideoQualityCheckerApp/daemon/termux_bootstrap.sh;B.com.termux.RUN_COMMAND_BACKGROUND=true;package=com.termux;end"
+            className="block text-center rounded border border-emerald-500/50 bg-emerald-500/20 px-4 py-3 text-emerald-100 hover:bg-emerald-500/30 font-bold tracking-wide shadow-lg"
+          >
+            Launch Daemon (Termux)
+          </a>
           <div className="font-mono text-emerald-500/50">expecting: {DAEMON_BASE}</div>
           <button
             onClick={refreshStatus}
@@ -344,7 +365,7 @@ python -m castcast serve`}
         {/* library */}
         <section className="rounded border border-emerald-500/20 bg-black/40 p-3">
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-emerald-500/50 uppercase tracking-wider">library</span>
+            <span className="text-emerald-500/50 uppercase tracking-wider">Queue</span>
             <button
               onClick={loadLibrary}
               className="flex items-center gap-1.5 text-emerald-400/70 hover:text-emerald-300"
@@ -373,7 +394,47 @@ python -m castcast serve`}
                   <span className="shrink-0 font-mono text-emerald-500/40">
                     {formatBytes(item.size_bytes)}
                   </span>
+                  <button
+                    onClick={(e) => trashFile(item.path, e)}
+                    className="flex items-center gap-1.5 rounded border border-emerald-500/30 px-2 py-1 text-xs hover:bg-emerald-500/20"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" /> Trash (Watched)
+                  </button>
                 </button>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* Trash */}
+        <section className="rounded border border-emerald-500/20 bg-black/40 p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-emerald-500/50 uppercase tracking-wider">Trash</span>
+          </div>
+
+          {trashItems.length === 0 ? (
+            <div className="py-4 text-center text-emerald-500/40">
+              trash is empty
+            </div>
+          ) : (
+            <div className="max-h-56 space-y-1 overflow-y-auto">
+              {trashItems.map((item) => (
+                <div
+                  key={item.path}
+                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left bg-emerald-500/5"
+                >
+                  <FileVideo className="h-3.5 w-3.5 shrink-0 text-emerald-500/50" />
+                  <span className="min-w-0 flex-1 truncate text-emerald-200 line-through opacity-70">{item.rel}</span>
+                  <span className="shrink-0 font-mono text-emerald-500/40">
+                    {formatBytes(item.size_bytes)}
+                  </span>
+                  <button
+                    onClick={(e) => deleteFile(item.path, e)}
+                    className="flex items-center gap-1.5 rounded border border-rose-500/30 px-2 py-1 text-xs text-rose-400 hover:bg-rose-500/20"
+                  >
+                    Permanently Delete
+                  </button>
+                </div>
               ))}
             </div>
           )}

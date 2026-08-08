@@ -274,7 +274,7 @@ class CastService:
                 self.log(f"media root does not exist: {root}", "warn")
                 continue
             for dirpath, dirnames, filenames in os.walk(root):
-                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+                dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "trash"]
                 for filename in sorted(filenames):
                     if os.path.splitext(filename)[1].lower() not in VIDEO_EXTENSIONS:
                         continue
@@ -797,6 +797,59 @@ class CastService:
     def set_volume(self, level: float):
         self._require().set_volume(level)
         return self.status()
+
+    def trash(self, path: str) -> dict:
+        import shutil
+        target_root = None
+        for root in self.media_roots:
+            if path.startswith(root):
+                target_root = root
+                break
+        if not target_root:
+            return {"error": "file not in media roots"}
+        trash_dir = os.path.join(target_root, "trash")
+        os.makedirs(trash_dir, exist_ok=True)
+        dest = os.path.join(trash_dir, os.path.basename(path))
+        shutil.move(path, dest)
+        
+        # Check if in queue and remove
+        if self.supervisor and self.supervisor._session and self.supervisor._session.queue_items:
+            item_ids_to_remove = []
+            for item in self.supervisor._session.queue_items:
+                media = item.get("media", {})
+                custom_data = media.get("customData", {})
+                content_id = media.get("contentId", "")
+                if custom_data.get("sourcePath") == path or os.path.basename(path) in content_id:
+                    item_id = item.get("itemId")
+                    if item_id is not None:
+                        item_ids_to_remove.append(item_id)
+            if item_ids_to_remove:
+                self.supervisor.queue_remove(item_ids_to_remove)
+                
+        return {"trashed": dest}
+
+    def delete(self, path: str) -> dict:
+        if os.path.exists(path):
+            os.remove(path)
+            return {"deleted": path}
+        return {"error": "file not found"}
+
+    def get_trash(self) -> List[dict]:
+        entries = []
+        for root in self.media_roots:
+            trash_dir = os.path.join(root, "trash")
+            if not os.path.isdir(trash_dir):
+                continue
+            for filename in sorted(os.listdir(trash_dir)):
+                full = os.path.join(trash_dir, filename)
+                if os.path.isfile(full):
+                    entries.append({
+                        "path": full,
+                        "name": filename,
+                        "rel": os.path.relpath(full, root),
+                        "size_bytes": os.path.getsize(full),
+                    })
+        return entries
 
     def set_muted(self, muted: bool):
         self._require().set_muted(muted)
