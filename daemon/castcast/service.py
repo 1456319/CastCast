@@ -380,13 +380,13 @@ class CastService:
                      + (f": {job.error}" if job.error else ""), level)
 
         # Log any new warnings from the job
-        if not hasattr(self, "_logged_warnings"):
-            self._logged_warnings = set()
+        if not hasattr(job, "_logged_warnings"):
+            job._logged_warnings = set()
 
         for w in job.warnings:
-            if w not in self._logged_warnings:
+            if w not in job._logged_warnings:
                 self.log(w, "warn")
-                self._logged_warnings.add(w)
+                job._logged_warnings.add(w)
 
         self._emit("remux", job.to_dict())
 

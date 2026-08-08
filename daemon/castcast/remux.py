@@ -240,25 +240,32 @@ class Remuxer:
                             lost = True
 
                         if lost:
-                            w = f"HDR metadata lost during remux; re-running with bitstream filters to preserve it."
-                            job.warnings.append(w)
-                            self._emit(job)
+                            if pv.codec == "hevc":
+                                w = f"HDR metadata lost during remux; re-running with bitstream filters to preserve it."
+                                job.warnings.append(w)
+                                self._emit(job)
 
-                            _unlink(plan.output_path)
+                                _unlink(plan.output_path)
 
-                            bsf_args = []
-                            if pv.color_primaries:
-                                bsf_args.append(f"colour_primaries={pv.color_primaries}")
-                            if pv.color_transfer:
-                                bsf_args.append(f"transfer_characteristics={pv.color_transfer}")
-                            if pv.color_space:
-                                bsf_args.append(f"matrix_coefficients={pv.color_space}")
+                                bsf_args = []
+                                if pv.color_primaries:
+                                    bsf_args.append(f"colour_primaries={pv.color_primaries}")
+                                if pv.color_transfer:
+                                    bsf_args.append(f"transfer_characteristics={pv.color_transfer}")
+                                if pv.color_space:
+                                    bsf_args.append(f"matrix_coefficients={pv.color_space}")
 
-                            if bsf_args:
-                                plan.args += ["-bsf:v", f"hevc_metadata={':'.join(bsf_args)}"]
+                                if bsf_args:
+                                    plan.args += ["-bsf:v", f"hevc_metadata={':'.join(bsf_args)}"]
 
-                            # Re-run the command
-                            cmd = plan.command + ["-progress", "pipe:1", "-nostats"]
+                                # Re-run the command
+                                cmd = plan.command + ["-progress", "pipe:1", "-nostats"]
+                            else:
+                                job.warnings.append("HDR metadata lost during remux, but codec is not HEVC; bitstream filter cannot be applied.")
+                                self._emit(job)
+                                job.state = "done"
+                                job.progress = 1.0
+                                return job
 
                             # Reset job progress
                             job.progress = 0.0
