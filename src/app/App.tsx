@@ -124,10 +124,13 @@ export default function App() {
 
   const loadLibrary = () =>
     run("library", async () => {
-      const { items } = await daemon.library(false);
-      setLibrary(items);
-      const { items: trashed } = await daemon.getTrash();
-      setTrashItems(trashed);
+      const libRes = await daemon.library(false);
+      if ((libRes as any).error) throw new Error((libRes as any).error);
+      setLibrary(libRes.items || []);
+
+      const trashRes = await daemon.getTrash();
+      if ((trashRes as any).error) throw new Error((trashRes as any).error);
+      setTrashItems(trashRes.items || []);
     });
 
   const trashFile = (path: string, e: React.MouseEvent) => {
