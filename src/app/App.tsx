@@ -418,10 +418,10 @@ export default function App() {
           ) : (
             <div className="max-h-56 space-y-1 overflow-y-auto">
               {library.map((item) => (
-                <button
+                <div
                   key={item.path}
                   onClick={() => select(item)}
-                  className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-emerald-500/10 ${
+                  className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left cursor-pointer hover:bg-emerald-500/10 ${
                     selected?.path === item.path ? "bg-emerald-500/15" : ""
                   }`}
                 >
@@ -436,7 +436,7 @@ export default function App() {
                   >
                     <Trash2 className="h-3.5 w-3.5" /> Trash (Watched)
                   </button>
-                </button>
+                </div>
               ))}
             </div>
           )}
