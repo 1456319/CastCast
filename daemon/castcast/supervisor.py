@@ -110,10 +110,12 @@ class Supervisor:
     def __init__(self, host: str, port: int = 8009,
                  on_event: Optional[Callable[[str, dict], None]] = None,
                  logger: Optional[Callable[[str], None]] = None,
+                 on_finished: Optional[Callable[[str], None]] = None,
                  device_auth: bool = False):
         self.host = host
         self.port = port
         self._on_event = on_event
+        self._on_finished = on_finished
         self._log = logger or (lambda m: None)
         self._device_auth = device_auth
 
@@ -555,10 +557,13 @@ class Supervisor:
             if idle_reason == "FINISHED":
                 self._log("playback finished")
                 with self._lock:
+                    source_path = self._session.source_path if self._session else ""
                     self._session = None
                     self._media_session_id = None
                 self._set_state(State.READY)
                 self._emit("finished", {})
+                if self._on_finished and source_path:
+                    self._on_finished(source_path)
             elif idle_reason == "INTERRUPTED":
                 self._log("playback interrupted -- another sender took the device")
                 self._set_state(State.READY)
