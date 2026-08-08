@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Optional
 
-from .channel import (CastChannel, ChannelClosed, DEFAULT_MEDIA_RECEIVER_APP_ID,
+from .channel import (CastChannel, ChannelClosed, DEFAULT_MEDIA_RECEIVER_APP_ID, DEFAULT_TEXT_TRACK_STYLE,
                       NS_CONNECTION, NS_HEARTBEAT, NS_MEDIA, NS_RECEIVER,
                       PLATFORM_RECEIVER)
 
@@ -393,7 +393,7 @@ class Supervisor:
                 payload["media"]["duration"] = session.duration
             if session.tracks:
                 payload["media"]["tracks"] = session.tracks
-                payload["media"]["textTrackStyle"] = {"fontScale": 1.0, "foregroundColor": "#FFFFFFFF", "backgroundColor": "#00000099"}
+                payload["media"]["textTrackStyle"] = DEFAULT_TEXT_TRACK_STYLE
             if session.active_track_ids:
                 payload["activeTrackIds"] = session.active_track_ids
 

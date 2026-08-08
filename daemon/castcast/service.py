@@ -13,6 +13,7 @@ import time
 from typing import Callable, Dict, List, Optional
 
 from . import capability, health, remux
+from .channel import DEFAULT_TEXT_TRACK_STYLE
 from .discovery import CastDevice, DeviceCache, resolve
 from .mediaserver import MediaServer, guess_mime
 from .opensubtitles import download_best, language3
@@ -436,7 +437,7 @@ class CastService:
             item["media"]["duration"] = duration
         if tracks:
             item["media"]["tracks"] = tracks
-            item["media"]["textTrackStyle"] = {"fontScale": 1.0, "foregroundColor": "#FFFFFFFF", "backgroundColor": "#00000099"}
+            item["media"]["textTrackStyle"] = DEFAULT_TEXT_TRACK_STYLE
         if active_track_ids:
             item["activeTrackIds"] = active_track_ids
 
@@ -603,7 +604,7 @@ class CastService:
                 item["media"]["duration"] = duration
             if tracks:
                 item["media"]["tracks"] = tracks
-                item["media"]["textTrackStyle"] = {"fontScale": 1.0, "foregroundColor": "#FFFFFFFF", "backgroundColor": "#00000099"}
+                item["media"]["textTrackStyle"] = DEFAULT_TEXT_TRACK_STYLE
             if active_track_ids:
                 item["activeTrackIds"] = active_track_ids
 
