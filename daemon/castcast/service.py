@@ -208,6 +208,7 @@ class CastService:
                 host, port,
                 on_event=self._emit,
                 logger=lambda m: self.log(m),
+                on_finished=self.auto_advance,
                 device_auth=bool(self.config.get("device_auth")),
             )
             self.supervisor.start()
@@ -381,6 +382,18 @@ class CastService:
         self._emit("remux", job.to_dict())
 
     # -- casting -----------------------------------------------------------
+
+    def auto_advance(self, source_path: str) -> None:
+        entries = self.library(deep=False)
+        for i, entry in enumerate(entries):
+            if entry["path"] == source_path:
+                if i + 1 < len(entries):
+                    next_entry = entries[i + 1]
+                    if os.path.dirname(next_entry["path"]) == os.path.dirname(source_path):
+                        self.log(f"auto-advancing to {next_entry['name']}")
+                        # Run cast in a background thread to avoid blocking the supervisor receiver thread
+                        threading.Thread(target=self.cast, args=(next_entry["path"],), daemon=True).start()
+                break
 
     def cast(self, path: str, *, allow_unsafe: bool = False,
              auto_prepare: bool = True, subtitle_path: str = "",
