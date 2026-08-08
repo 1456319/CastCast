@@ -145,6 +145,7 @@ export const daemon = {
   stop: () => post<Status>("/stop"),
   seek: (position: number) => post<Status>("/seek", { position }),
   volume: (level: number) => post<Status>("/volume", { level }),
+  mute: (muted: boolean) => post<Status>("/mute", { muted }),
   requestOpenSubtitles: (path: string, language = "eng") =>
     post<Preflight & { subtitles?: { path: string; language: string; url: string; label: string } }>(
       "/subtitles/opensubtitles",
