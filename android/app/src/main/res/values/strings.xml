@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">VideoQualityCheckerApp</string>
+    <string name="title_activity_main">VideoQualityCheckerApp</string>
+    <string name="package_name">app.videoqualitychecker.castcast</string>
+    <string name="custom_url_scheme">app.videoqualitychecker.castcast</string>
+</resources>

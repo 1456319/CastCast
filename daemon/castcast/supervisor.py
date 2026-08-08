@@ -82,6 +82,7 @@ class MediaSession:
     tracks: Optional[list] = None
     active_track_ids: Optional[list] = None
     queue_items: Optional[list] = None
+    queue_index: int = 0
 
 
 @dataclass
@@ -242,6 +243,9 @@ class Supervisor:
     def seek(self, position: float) -> None:
         self._media_command({"type": "SEEK", "currentTime": max(position, 0.0)})
 
+    def queue_remove(self, item_ids: list[int]) -> None:
+        self._media_command({"type": "QUEUE_REMOVE", "itemIds": item_ids})
+
     def stop_media(self) -> None:
         self._media_command({"type": "STOP"})
         with self._lock:
@@ -373,7 +377,7 @@ class Supervisor:
                 "sessionId": None,
                 "items": session.queue_items,
                 "repeatMode": "REPEAT_OFF",
-                "startIndex": 0,
+                "startIndex": session.queue_index,
             }
         else:
             payload = {
@@ -575,6 +579,25 @@ class Supervisor:
 
         media = entry.get("media") or {}
         with self._lock:
+            if self._session:
+                current_item_id = entry.get("currentItemId")
+                status_items = entry.get("items") or []
+                idx = -1
+                if current_item_id is not None and status_items:
+                    self._session.queue_items = status_items
+                    for i, item in enumerate(status_items):
+                        if item.get("itemId") == current_item_id:
+                            idx = i
+                            break
+                if idx == -1 and media.get("contentId") and self._session.queue_items:
+                    content_id = media["contentId"]
+                    for i, item in enumerate(self._session.queue_items):
+                        if item.get("media", {}).get("contentId") == content_id:
+                            idx = i
+                            break
+                if idx != -1:
+                    self._session.queue_index = idx
+
             custom_data = media.get("customData") or {}
             source_path = custom_data.get("sourcePath")
             if source_path:

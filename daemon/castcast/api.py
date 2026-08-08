@@ -83,6 +83,8 @@ class _Handler(BaseHTTPRequestHandler):
             elif route == "/library":
                 self._json({"items": self.service.library(
                     deep=one("deep") in ("1", "true", "yes"))})
+            elif route == "/trash":
+                self._json({"items": self.service.get_trash()})
             elif route == "/preflight":
                 path = one("path")
                 if not path:
@@ -137,6 +139,16 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(svc.prepare(path, force=bool(body.get("force"))))
             elif route == "/prepare/cancel":
                 self._json(svc.cancel_prepare())
+            elif route == "/trash":
+                path = body.get("path")
+                if not path:
+                    return self._json({"error": "path is required"}, 400)
+                self._json(svc.trash(path))
+            elif route == "/delete":
+                path = body.get("path")
+                if not path:
+                    return self._json({"error": "path is required"}, 400)
+                self._json(svc.delete(path))
             elif route == "/play":
                 self._json(svc.play())
             elif route == "/pause":
@@ -218,6 +230,7 @@ _ROUTES = {
     "GET /health": "readiness checklist: tools, storage, LAN -- each with a remedy",
     "GET /devices": "discover Chromecasts",
     "GET /library?deep=1": "list media, optionally with pre-flight verdicts",
+    "GET /trash": "list trashed media",
     "GET /preflight?path=": "probe + castability verdict + ffmpeg plan",
     "GET /logs?since=N": "recent log lines",
     "GET /events": "SSE stream of logs, state changes, media status",
@@ -228,6 +241,8 @@ _ROUTES = {
     "POST /subtitles/opensubtitles": "{path, language?} download and sideload subtitles",
     "POST /prepare": "{path, force?}  run the remux",
     "POST /prepare/cancel": "",
+    "POST /trash": "{path} move a file to the trash folder",
+    "POST /delete": "{path} permanently delete a file",
     "POST /play|/pause|/stop": "",
     "POST /seek": "{position}",
     "POST /volume": "{level 0..1}",

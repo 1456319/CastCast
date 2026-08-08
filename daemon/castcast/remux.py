@@ -171,6 +171,7 @@ class RemuxJob:
     state: str = "pending"      # pending | running | done | failed | cancelled
     progress: float = 0.0       # 0..1
     error: str = ""
+    warnings: List[str] = field(default_factory=list)
     started_at: float = 0.0
     finished_at: float = 0.0
 
@@ -179,6 +180,7 @@ class RemuxJob:
             "state": self.state,
             "progress": round(self.progress, 4),
             "error": self.error,
+            "warnings": self.warnings,
             "output_path": self.plan.output_path,
             "description": self.plan.description,
             "shell_command": self.plan.shell_command,
@@ -208,7 +210,7 @@ class Remuxer:
             if self.job and self.job.state == "running":
                 self.job.state = "cancelled"
 
-    def run(self, plan: RemuxPlan, duration_s: float = 0.0) -> RemuxJob:
+    def run(self, plan: RemuxPlan, duration_s: float = 0.0, original_info: Optional[MediaInfo] = None) -> RemuxJob:
         """Blocking.  Call from a worker thread."""
         if not have_ffmpeg():
             job = RemuxJob(plan=plan, state="failed",
@@ -248,6 +250,7 @@ class Remuxer:
                 if job.state == "cancelled":
                     _unlink(plan.output_path)
                     break
+
                 elif proc.returncode == 0:
                     # Verify HDR metadata on first attempt if it's a lossless copy
                     if attempt == 1 and plan.lossless_video and plan.expected_hdr_format != "SDR" and plan.video_codec in ("hevc", "h264", "vp9"):
