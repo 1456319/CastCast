@@ -489,3 +489,97 @@ def test_remuxer_run_success_empty_stderr(mock_makedirs, mock_popen, mock_have_f
 
     assert job.state == "done"
     assert job.progress == 1.0
+
+@patch("castcast.remux.have_ffmpeg", return_value=True)
+@patch("castcast.remux.probe")
+@patch("subprocess.Popen")
+@patch("os.makedirs")
+@patch("castcast.remux._unlink")
+def test_remuxer_run_hdr_metadata_loss_retry(mock_unlink, mock_makedirs, mock_popen, mock_probe, mock_have_ffmpeg):
+    mock_proc1 = MagicMock()
+    mock_proc1.stdout = []
+    mock_proc1.stderr.read.return_value = b""
+    mock_proc1.returncode = 0
+
+    mock_proc2 = MagicMock()
+    mock_proc2.stdout = []
+    mock_proc2.stderr.read.return_value = b""
+    mock_proc2.returncode = 0
+
+    mock_popen.side_effect = [mock_proc1, mock_proc2]
+
+    # First probe simulation: metadata lost
+    out_info_lost = MagicMock()
+    out_info_lost.primary_video = MagicMock(color_transfer="unspecified")
+    mock_probe.return_value = out_info_lost
+
+    events = []
+    def on_update(j):
+        if j.error:
+            events.append(j.error)
+
+    r = Remuxer(on_update=on_update)
+    plan = RemuxPlan(
+        input_path="/in/file.mkv",
+        output_path="/out/file.mp4",
+        lossless_video=True,
+        expected_hdr_format="HDR10",
+        expected_color_primaries="bt2020",
+        expected_color_transfer="smpte2084",
+        expected_color_space="bt2020nc",
+        video_codec="hevc",
+        args=["-c:v", "copy"]
+    )
+    job = r.run(plan)
+
+    assert job.state == "done"
+    assert mock_popen.call_count == 2
+    mock_probe.assert_called_once_with("/out/file.mp4")
+
+    # Assert args were modified
+    assert "-bsf:v" in plan.args
+    bsf_val = plan.args[plan.args.index("-bsf:v") + 1]
+    assert "hevc_metadata=colour_primaries=9:transfer_characteristics=16:matrix_coefficients=9" in bsf_val
+
+    # Assert warning event was emitted
+    assert "HDR metadata lost; retrying with bitstream filters" in events
+    # Unlink called once after first failed metadata check
+    mock_unlink.assert_called_once_with("/out/file.mp4")
+
+@patch("castcast.remux.have_ffmpeg", return_value=True)
+@patch("castcast.remux.probe")
+@patch("subprocess.Popen")
+@patch("os.makedirs")
+@patch("castcast.remux._unlink")
+def test_remuxer_run_hdr_metadata_preserved(mock_unlink, mock_makedirs, mock_popen, mock_probe, mock_have_ffmpeg):
+    mock_proc1 = MagicMock()
+    mock_proc1.stdout = []
+    mock_proc1.stderr.read.return_value = b""
+    mock_proc1.returncode = 0
+
+    mock_popen.side_effect = [mock_proc1]
+
+    # First probe simulation: metadata preserved
+    out_info_kept = MagicMock()
+    out_info_kept.primary_video = MagicMock(color_transfer="smpte2084")
+    mock_probe.return_value = out_info_kept
+
+    r = Remuxer()
+    plan = RemuxPlan(
+        input_path="/in/file.mkv",
+        output_path="/out/file.mp4",
+        lossless_video=True,
+        expected_hdr_format="HDR10",
+        expected_color_primaries="bt2020",
+        expected_color_transfer="smpte2084",
+        expected_color_space="bt2020nc",
+        video_codec="hevc",
+        args=["-c:v", "copy"]
+    )
+    job = r.run(plan)
+
+    assert job.state == "done"
+    assert mock_popen.call_count == 1
+    mock_probe.assert_called_once_with("/out/file.mp4")
+    assert "-bsf:v" not in plan.args
+    mock_unlink.assert_not_called()
