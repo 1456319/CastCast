@@ -16,7 +16,27 @@ from dataclasses import dataclass, field, asdict
 from typing import Callable, List, Optional
 
 from .capability import Verdict
-from .probe import FFMPEG, MediaInfo, have_ffmpeg
+from .probe import FFMPEG, MediaInfo, have_ffmpeg, probe
+
+COLOR_PRIMARIES = {
+    "bt709": 1, "unspecified": 2, "bt470m": 4, "bt470bg": 5, "smpte170m": 6,
+    "smpte240m": 7, "film": 8, "bt2020": 9, "smpte428": 10, "smpte428_1": 10,
+    "smpte431": 11, "smpte432": 12, "jedec-p22": 22,
+}
+
+COLOR_TRANSFER = {
+    "bt709": 1, "unspecified": 2, "gamma22": 4, "gamma28": 5, "smpte170m": 6,
+    "smpte240m": 7, "linear": 8, "log": 9, "log-sqrt": 10, "iec61966-2-4": 11,
+    "bt1361e": 12, "iec61966-2-1": 13, "bt2020-10": 14, "bt2020-12": 15,
+    "smpte2084": 16, "smpte428": 17, "smpte428_1": 17, "arib-std-b67": 18,
+}
+
+COLOR_SPACE = {
+    "rgb": 0, "bt709": 1, "unspecified": 2, "fcc": 4, "bt470bg": 5,
+    "smpte170m": 6, "smpte240m": 7, "ycgco": 8, "bt2020nc": 9, "bt2020c": 10,
+    "smpte2085": 11, "chroma-derived-nc": 12, "chroma-derived-c": 13, "ictcp": 14,
+}
+
 
 _PROGRESS_TIME = re.compile(rb"out_time_ms=(\d+)")
 
@@ -30,6 +50,11 @@ class RemuxPlan:
     lossless_audio: bool = True
     description: str = ""
     estimated: str = ""
+    expected_hdr_format: str = "SDR"
+    expected_color_primaries: str = ""
+    expected_color_transfer: str = ""
+    expected_color_space: str = ""
+    video_codec: str = ""
 
     @property
     def command(self) -> List[str]:
@@ -132,6 +157,11 @@ def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str) -> Optional[Rem
         lossless_audio=lossless_audio,
         description=desc,
         estimated=est,
+        expected_hdr_format=info.primary_video.hdr_format if info.primary_video else "SDR",
+        expected_color_primaries=info.primary_video.color_primaries if info.primary_video else "",
+        expected_color_transfer=info.primary_video.color_transfer if info.primary_video else "",
+        expected_color_space=info.primary_video.color_space if info.primary_video else "",
+        video_codec=info.primary_video.codec if info.primary_video else "",
     )
 
 
@@ -192,46 +222,84 @@ class Remuxer:
         self._emit(job)
 
         os.makedirs(os.path.dirname(plan.output_path) or ".", exist_ok=True)
-        cmd = plan.command + ["-progress", "pipe:1", "-nostats"]
 
-        try:
-            with self._lock:
-                self._proc = subprocess.Popen(
-                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            proc = self._proc
-            assert proc.stdout is not None
+        attempt = 1
+        while attempt <= 2:
+            cmd = plan.command + ["-progress", "pipe:1", "-nostats"]
+            try:
+                with self._lock:
+                    self._proc = subprocess.Popen(
+                        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                proc = self._proc
+                assert proc.stdout is not None
 
-            for line in proc.stdout:
-                match = _PROGRESS_TIME.search(line)
-                if match and duration_s > 0:
-                    done = int(match.group(1)) / 1_000_000.0
-                    new = min(done / duration_s, 0.999)
-                    if new - job.progress > 0.005:
-                        job.progress = new
-                        self._emit(job)
+                for line in proc.stdout:
+                    match = _PROGRESS_TIME.search(line)
+                    if match and duration_s > 0:
+                        done = int(match.group(1)) / 1_000_000.0
+                        new = min(done / duration_s, 0.999)
+                        if new - job.progress > 0.005:
+                            job.progress = new
+                            self._emit(job)
 
-            proc.wait()
-            stderr = (proc.stderr.read() if proc.stderr else b"").decode("utf-8", "replace")
+                proc.wait()
+                stderr = (proc.stderr.read() if proc.stderr else b"").decode("utf-8", "replace")
 
-            if job.state == "cancelled":
-                _unlink(plan.output_path)
-            elif proc.returncode == 0:
-                job.state = "done"
-                job.progress = 1.0
-            else:
+                if job.state == "cancelled":
+                    _unlink(plan.output_path)
+                    break
+                elif proc.returncode == 0:
+                    # Verify HDR metadata on first attempt if it's a lossless copy
+                    if attempt == 1 and plan.lossless_video and plan.expected_hdr_format != "SDR" and plan.video_codec in ("hevc", "h264", "vp9"):
+                        try:
+                            out_info = probe(plan.output_path)
+                            out_pv = out_info.primary_video
+                            if out_pv and out_pv.color_transfer != plan.expected_color_transfer:
+                                # Metadata was lost, we need to retry with a bitstream filter
+                                attempt = 2
+                                _unlink(plan.output_path)
+
+                                filter_name = f"{plan.video_codec}_metadata"
+                                bsf_args = []
+                                if plan.expected_color_primaries:
+                                    val = COLOR_PRIMARIES.get(plan.expected_color_primaries, 2)
+                                    bsf_args.append(f"colour_primaries={val}")
+                                if plan.expected_color_transfer:
+                                    val = COLOR_TRANSFER.get(plan.expected_color_transfer, 2)
+                                    bsf_args.append(f"transfer_characteristics={val}")
+                                if plan.expected_color_space:
+                                    val = COLOR_SPACE.get(plan.expected_color_space, 2)
+                                    bsf_args.append(f"matrix_coefficients={val}")
+
+                                if bsf_args and plan.video_codec != "vp9":
+                                    bsf = f"{filter_name}=" + ":".join(bsf_args)
+                                    plan.args.extend(["-bsf:v", bsf])
+                                    job.progress = 0.0
+                                    job.error = "HDR metadata lost; retrying with bitstream filters"
+                                    self._emit(job)
+                                    continue
+                        except Exception:
+                            pass # If probe fails, just accept the output
+
+                    job.state = "done"
+                    job.progress = 1.0
+                    break
+                else:
+                    job.state = "failed"
+                    tail = [ln for ln in stderr.strip().splitlines() if ln.strip()]
+                    job.error = tail[-1] if tail else f"ffmpeg exited {proc.returncode}"
+                    _unlink(plan.output_path)
+                    break
+            except Exception as exc:  # noqa: BLE001 - surfaced to the UI
                 job.state = "failed"
-                tail = [ln for ln in stderr.strip().splitlines() if ln.strip()]
-                job.error = tail[-1] if tail else f"ffmpeg exited {proc.returncode}"
+                job.error = str(exc)
                 _unlink(plan.output_path)
-        except Exception as exc:  # noqa: BLE001 - surfaced to the UI
-            job.state = "failed"
-            job.error = str(exc)
-            _unlink(plan.output_path)
-        finally:
-            job.finished_at = time.time()
-            with self._lock:
-                self._proc = None
-            self._emit(job)
+                break
+
+        job.finished_at = time.time()
+        with self._lock:
+            self._proc = None
+        self._emit(job)
 
         return job
 
