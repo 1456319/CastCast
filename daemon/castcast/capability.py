@@ -37,7 +37,10 @@ NEEDS_REMUX_CONTAINERS = {"matroska", "avi", "flv", "mov_quirky", "unknown"}
 
 #: video codec -> (max width, max height, max fps, note)
 VIDEO_CODECS = {
-    "h264": (3840, 2160, 30, "H.264 High Profile up to level 5.1 -- 4K is capped at 30fps"),
+    # Chromecast Ultra's published H.264 ceiling is 1080p60/level 4.2.
+    # 4K playback must use HEVC or VP9; blessing 2160p H.264 causes silent
+    # receiver failures or quality fallback.
+    "h264": (1920, 1080, 60, "H.264 High Profile up to level 4.2 (1080p/60fps); use HEVC or VP9 for 4K"),
     "hevc": (3840, 2160, 60, "HEVC Main/Main10 up to level 5.1"),
     "vp9":  (3840, 2160, 60, "VP9 Profile 0 and 2 up to level 5.1"),
     "vp8":  (3840, 2160, 30, "VP8 up to 4K/30"),
@@ -175,10 +178,9 @@ def _check_video(v: Optional[VideoStream], container: str, issues: List[Issue]) 
 
     if v.is_4k and v.codec == "h264":
         issues.append(Issue(
-            "info", "h264_4k_30fps_ceiling",
-            "This is 4K H.264. The Ultra can decode it, but only up to 30fps -- "
-            "H.264 cannot carry 4K60 on this device.",
-            "For 4K60, the source must be HEVC or VP9 Profile 2.",
+            "fatal", "h264_4k_unsupported",
+            "This is 4K H.264. Chromecast Ultra's published H.264 support stops at 1080p60.",
+            "Re-encode 4K video to HEVC or VP9 before casting.",
         ))
 
     if v.level and v.level > 5.1:
