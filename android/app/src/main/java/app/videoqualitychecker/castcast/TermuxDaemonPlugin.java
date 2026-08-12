@@ -14,6 +14,9 @@ import java.io.DataOutputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
+import android.os.PowerManager;
+import android.net.wifi.WifiManager;
+import android.content.Context;
 
 @CapacitorPlugin(name = "TermuxDaemon")
 public class TermuxDaemonPlugin extends Plugin {
@@ -30,6 +33,9 @@ public class TermuxDaemonPlugin extends Plugin {
     private static final String BASH = "/data/data/com.termux/files/usr/bin/bash";
     private static final String DAEMON_DIR = "/storage/emulated/0/Download/VideoQualityCheckerApp/daemon";
     private static final String BOOTSTRAP = DAEMON_DIR + "/termux_bootstrap.sh";
+
+    private PowerManager.WakeLock wakeLock;
+    private WifiManager.WifiLock wifiLock;
 
     @PluginMethod
     public void launch(PluginCall call) {
@@ -61,6 +67,18 @@ public class TermuxDaemonPlugin extends Plugin {
             } else {
                 getContext().startService(intent);
             }
+
+            if (wakeLock == null) {
+                PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CastCast:DaemonWakeLock");
+                wakeLock.acquire();
+            }
+            if (wifiLock == null) {
+                WifiManager wm = (WifiManager) getContext().getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "CastCast:DaemonWifiLock");
+                wifiLock.acquire();
+            }
+
             JSObject result = new JSObject();
             result.put("started", true);
             result.put("rootConfigured", true);
