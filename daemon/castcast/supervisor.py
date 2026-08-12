@@ -81,6 +81,8 @@ class MediaSession:
     autoplay: bool = True
     tracks: Optional[list] = None
     active_track_ids: Optional[list] = None
+    text_tracks: int = 0
+    has_text_tracks: bool = False
     queue_items: Optional[list] = None
     queue_index: int = 0
 
@@ -104,6 +106,8 @@ class Status:
     last_error: str = ""
     stream_stalls: int = 0
     active_track_ids: Optional[list] = None
+    text_tracks: int = 0
+    has_text_tracks: bool = False
 
 
 class Supervisor:
@@ -129,6 +133,7 @@ class Supervisor:
         self._state_changed = threading.Condition(self._lock)
 
         self._request_id = 1
+        self._pending_requests: dict[int, str] = {}
         self._app_transport_id = ""
         self._media_session_id: Optional[int] = None
         self._session: Optional[MediaSession] = None
@@ -192,6 +197,8 @@ class Supervisor:
             self.status.duration = duration
             self.status.idle_reason = ""
             self.status.active_track_ids = active_track_ids or []
+            self.status.text_tracks = len(tracks or [])
+            self.status.has_text_tracks = bool(tracks)
         self._log(f"queued LOAD {title or url}")
         self._try_load()
 
@@ -230,21 +237,25 @@ class Supervisor:
             self.status.source_path = source_path
             self.status.duration = duration
             self.status.idle_reason = ""
+            first_tracks = media.get("tracks") or []
+            self.status.active_track_ids = first.get("activeTrackIds") or []
+            self.status.text_tracks = len(first_tracks)
+            self.status.has_text_tracks = bool(first_tracks)
 
         self._log(f"queued QUEUE_LOAD with {len(items)} items")
         self._try_load()
 
-    def play(self) -> None:
-        self._media_command({"type": "PLAY"})
+    def play(self) -> Optional[int]:
+        return self._media_command({"type": "PLAY"})
 
-    def pause(self) -> None:
-        self._media_command({"type": "PAUSE"})
+    def pause(self) -> Optional[int]:
+        return self._media_command({"type": "PAUSE"})
 
-    def seek(self, position: float) -> None:
-        self._media_command({"type": "SEEK", "currentTime": max(position, 0.0)})
+    def seek(self, position: float) -> Optional[int]:
+        return self._media_command({"type": "SEEK", "currentTime": max(position, 0.0)})
 
-    def queue_remove(self, item_ids: list[int]) -> None:
-        self._media_command({"type": "QUEUE_REMOVE", "itemIds": item_ids})
+    def queue_remove(self, item_ids: list[int]) -> Optional[int]:
+        return self._media_command({"type": "QUEUE_REMOVE", "itemIds": item_ids})
 
     def stop_media(self) -> None:
         self._media_command({"type": "STOP"})
@@ -292,10 +303,19 @@ class Supervisor:
             except Exception:  # noqa: BLE001
                 pass
 
-    def _next_request_id(self) -> int:
+    def _next_request_id(self, kind: str = "") -> int:
         with self._lock:
             self._request_id += 1
-            return self._request_id
+            rid = self._request_id
+            if kind:
+                self._pending_requests[rid] = kind
+            return rid
+
+    def _pop_request_kind(self, request_id) -> str:
+        if request_id is None:
+            return ""
+        with self._lock:
+            return self._pending_requests.pop(int(request_id), "")
 
     def _extrapolated_position(self) -> float:
         """Interpolate between MEDIA_STATUS messages so the UI ticks smoothly."""
@@ -314,7 +334,7 @@ class Supervisor:
         if channel is None or not channel.connected:
             return None
         payload = dict(payload)
-        rid = self._next_request_id()
+        rid = self._next_request_id(str(payload.get("type") or "RECEIVER"))
         payload["requestId"] = rid
         try:
             channel.send_json(NS_RECEIVER, PLATFORM_RECEIVER, payload)
@@ -332,9 +352,27 @@ class Supervisor:
             self._log(f"dropping {payload.get('type')}: no active media session")
             return None
         payload = dict(payload)
-        rid = self._next_request_id()
+        command = str(payload.get("type") or "MEDIA")
+        rid = self._next_request_id(command)
         payload["requestId"] = rid
         payload["mediaSessionId"] = session_id
+        try:
+            channel.send_json(NS_MEDIA, transport, payload)
+            return rid
+        except ChannelClosed as exc:
+            self._set_state(State.DEAD, error=str(exc))
+            return None
+
+    def _media_command_without_session(self, payload: dict) -> Optional[int]:
+        channel = self._channel
+        with self._lock:
+            transport = self._app_transport_id
+        if channel is None or not channel.connected or not transport:
+            return None
+        payload = dict(payload)
+        command = str(payload.get("type") or "MEDIA")
+        rid = self._next_request_id(command)
+        payload["requestId"] = rid
         try:
             channel.send_json(NS_MEDIA, transport, payload)
             return rid
@@ -373,7 +411,7 @@ class Supervisor:
         if session.queue_items:
             payload = {
                 "type": "QUEUE_LOAD",
-                "requestId": self._next_request_id(),
+                "requestId": self._next_request_id("QUEUE_LOAD"),
                 "sessionId": None,
                 "items": session.queue_items,
                 "repeatMode": "REPEAT_OFF",
@@ -382,7 +420,7 @@ class Supervisor:
         else:
             payload = {
                 "type": "LOAD",
-                "requestId": self._next_request_id(),
+                "requestId": self._next_request_id("LOAD"),
                 "sessionId": None,
                 "autoplay": session.autoplay,
                 "currentTime": session.position,
@@ -541,12 +579,26 @@ class Supervisor:
 
         if kind in ("LOAD_FAILED", "INVALID_REQUEST"):
             reason = payload.get("reason") or payload.get("detail") or kind
-            # This is the silent-failure path the capability checker exists to
-            # prevent.  Say something useful about it rather than just retrying.
-            self._log(f"LOAD_FAILED: {reason} -- the receiver refused the media. "
-                      "This is almost always an unsupported codec or container.")
-            self._set_state(State.LOAD_FAILED, error=f"receiver rejected media: {reason}")
-            self._emit("load_failed", {"reason": str(reason)})
+            request_kind = self._pop_request_kind(payload.get("requestId"))
+            is_load_request = kind == "LOAD_FAILED" or request_kind in {"LOAD", "QUEUE_LOAD"}
+            if is_load_request:
+                # This is the silent-failure path the capability checker exists to
+                # prevent.  Say something useful about it rather than just retrying.
+                self._log(f"LOAD_FAILED: {reason} -- the receiver refused the media. "
+                          "This is almost always an unsupported codec or container.")
+                self._set_state(State.LOAD_FAILED, error=f"receiver rejected media: {reason}")
+                self._emit("load_failed", {"reason": str(reason), "request": request_kind or kind})
+            else:
+                self._log(
+                    f"media command failed: {request_kind or 'unknown'} rejected with {reason}; "
+                    "refreshing receiver status instead of marking the load failed"
+                )
+                if str(reason).lower() == "invalid_media_session_id":
+                    with self._lock:
+                        self._media_session_id = None
+                        self.status.media_session_id = None
+                    self._media_command_without_session({"type": "GET_STATUS"})
+                self._emit("command_failed", {"reason": str(reason), "request": request_kind})
             return True
 
         if kind == "LOAD_CANCELLED":
@@ -556,6 +608,7 @@ class Supervisor:
         if kind != "MEDIA_STATUS":
             return True
 
+        self._pop_request_kind(payload.get("requestId"))
         entries = payload.get("status") or []
         if not entries:
             # An empty status array after a LOAD means the session ended.
@@ -603,6 +656,11 @@ class Supervisor:
                 if self._session:
                     self._session.source_path = source_path
 
+            tracks = media.get("tracks") or []
+            self.status.text_tracks = len(tracks)
+            self.status.has_text_tracks = bool(tracks)
+            if "activeTrackIds" in entry:
+                self.status.active_track_ids = entry.get("activeTrackIds") or []
             if media.get("duration"):
                 self.status.duration = float(media["duration"])
                 if self._session:
