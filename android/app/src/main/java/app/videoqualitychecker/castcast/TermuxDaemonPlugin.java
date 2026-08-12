@@ -17,6 +17,9 @@ import java.util.concurrent.TimeUnit;
 import android.os.PowerManager;
 import android.net.wifi.WifiManager;
 import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
+import android.provider.Settings;
 
 @CapacitorPlugin(name = "TermuxDaemon")
 public class TermuxDaemonPlugin extends Plugin {
@@ -62,6 +65,16 @@ public class TermuxDaemonPlugin extends Plugin {
         intent.putExtra(EXTRA_SESSION_ACTION, "0");
 
         try {
+            PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                if (!pm.isIgnoringBatteryOptimizations(getContext().getPackageName())) {
+                    Intent intentBattery = new Intent();
+                    intentBattery.setAction(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                    intentBattery.setData(Uri.parse("package:" + getContext().getPackageName()));
+                    getContext().startActivity(intentBattery);
+                }
+            }
+
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                 getContext().startForegroundService(intent);
             } else {
@@ -69,7 +82,6 @@ public class TermuxDaemonPlugin extends Plugin {
             }
 
             if (wakeLock == null) {
-                PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
                 wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CastCast:DaemonWakeLock");
                 wakeLock.acquire();
             }
