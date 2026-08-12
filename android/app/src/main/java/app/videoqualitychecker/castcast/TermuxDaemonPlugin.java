@@ -74,9 +74,21 @@ public class TermuxDaemonPlugin extends Plugin {
         String packageName = getContext().getPackageName();
         // Each step echoes progress to stdout; on failure, the step prints the
         // error and exits so the user sees exactly what went wrong.
+        String apkPath = getContext().getApplicationInfo().sourceDir;
         String payload =
             "TERMUX_HOME=/data/data/com.termux/files/home\n" +
             "TERMUX_PROP=$TERMUX_HOME/.termux/termux.properties\n" +
+            "\n" +
+            "echo '[0/8] extracting bundled daemon code'\n" +
+            "if [ ! -d " + shellQuote(DAEMON_DIR) + " ]; then\n" +
+            "  mkdir -p /storage/emulated/0/Download/VideoQualityCheckerApp || { echo 'FAIL: create app dir'; exit 1; }\n" +
+            "  unzip -qo " + shellQuote(apkPath) + " \"assets/public/daemon/*\" -d /data/local/tmp/ || { echo 'FAIL: unzip daemon'; exit 1; }\n" +
+            "  cp -rf /data/local/tmp/assets/public/daemon " + shellQuote(DAEMON_DIR) + " || { echo 'FAIL: copy daemon'; exit 1; }\n" +
+            "  rm -rf /data/local/tmp/assets\n" +
+            "fi\n" +
+            "echo '[0/8] creating queue directories'\n" +
+            "mkdir -p /storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast/trash || { echo 'FAIL: create trash dir'; exit 1; }\n" +
+            "mkdir -p /storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast/.castcast || { echo 'FAIL: create castcast dir'; exit 1; }\n" +
             "\n" +
             "echo '[1/8] checking Termux home'\n" +
             "if [ ! -d \"$TERMUX_HOME\" ]; then echo 'FAIL: Termux home directory not found at '$TERMUX_HOME'. Is Termux installed and opened at least once?'; exit 1; fi\n" +
