@@ -162,6 +162,21 @@ export default function App() {
       const result = await daemon.cast(selected.path, allowUnsafe);
       if (result.error) setNotice(result.error);
       if (result.converting) setNotice("Conversion started — cast again when it finishes.");
+      if (result.casting) {
+        setStatus((prev) =>
+          prev
+            ? {
+                ...prev,
+                cast: {
+                  ...prev.cast,
+                  state: "loading",
+                  title: selected.name,
+                  source_path: selected.path,
+                },
+              }
+            : prev,
+        );
+      }
       setReport((prev) => ({ ...(prev || {}), ...result } as Preflight));
     });
 
@@ -341,16 +356,19 @@ export default function App() {
                   <><Pause className="h-4 w-4" /> pause</>
                 )}
               </button>
-              {(!cast.active_track_ids || cast.active_track_ids.length <= 1) && (
-                <button
-                  onClick={requestSubtitles}
-                  disabled={!cast.source_path || busy === "subtitles" || notice === "English subtitles loaded from OpenSubtitles."}
-                  className="flex items-center gap-1.5 rounded border border-emerald-500/25 px-4 py-2 hover:bg-emerald-500/10 disabled:opacity-40"
-                >
-                  {busy === "subtitles" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Subtitles className="h-3.5 w-3.5" />}
-                  {notice === "English subtitles loaded from OpenSubtitles." ? "loaded" : "subtitles"}
-                </button>
-              )}
+              <button
+                onClick={requestSubtitles}
+                disabled={!cast.source_path || busy === "subtitles" || cast.has_text_tracks}
+                className={`flex items-center gap-1.5 rounded border px-4 py-2 hover:bg-emerald-500/10 disabled:opacity-40 ${
+                  cast.has_text_tracks
+                    ? "border-emerald-400/60 bg-emerald-500/15 text-emerald-100"
+                    : "border-emerald-500/25"
+                }`}
+                title={cast.has_text_tracks ? "English subtitles are attached to this cast" : "Download English subtitles from OpenSubtitles"}
+              >
+                {busy === "subtitles" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Subtitles className="h-3.5 w-3.5" />}
+                {cast.has_text_tracks ? "subtitles on" : "subtitles"}
+              </button>
               <button
                 onClick={() => run("stop", daemon.stop)}
                 className="flex items-center gap-1.5 rounded border border-emerald-500/25 px-4 py-2 hover:bg-emerald-500/10"
