@@ -12,13 +12,17 @@
 # arbitrary destructive actions.
 # =======================================================================
 
-AUDIT_LOG="/storage/emulated/0/Download/VideoQualityCheckerApp/audit.log"
-APP_DIR="/storage/emulated/0/Download/VideoQualityCheckerApp"
-CHROMECAST_DIR="$APP_DIR/chromecast"
+# Canonical user-visible queue; /sdcard/Download/Chromecast is its Android
+# alias. Keep this case synchronized with CastService.DEFAULT_MEDIA_ROOT.
+CHROMECAST_DIR="/storage/emulated/0/Download/Chromecast"
 TRASH_DIR="$CHROMECAST_DIR/trash"
+# DEBUG-ONLY: runtime diagnostics are kept out of the visible queue.
+AUDIT_DIR="$CHROMECAST_DIR/.castcast"
+AUDIT_LOG="$AUDIT_DIR/audit.log"
 
-# Ensure the base app directory exists so we can write the log
-mkdir -p "$APP_DIR"
+# Ensure hidden daemon state exists so we can write the log without polluting
+# the media queue.
+mkdir -p "$AUDIT_DIR"
 
 log_action() {
     local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
@@ -74,7 +78,7 @@ log_action "Booting castcast daemon..."
 cd "$(dirname "$0")" || abort "Failed to navigate to daemon directory"
 
 # Run the daemon in the background and pipe output to the audit log
-python3 -m castcast serve >> "$AUDIT_LOG" 2>&1 &
+python3 -m castcast --media-root "$CHROMECAST_DIR" serve >> "$AUDIT_LOG" 2>&1 &
 DAEMON_PID=$!
 
 log_action "[OK] Daemon launched with PID: $DAEMON_PID"
