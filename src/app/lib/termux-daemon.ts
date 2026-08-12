@@ -4,6 +4,7 @@ export interface LaunchDaemonResult {
   started: boolean;
   auditLog?: string;
   note?: string;
+  rootConfigured?: boolean;
 }
 
 interface TermuxDaemonPlugin {
