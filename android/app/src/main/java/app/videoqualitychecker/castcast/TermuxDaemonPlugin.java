@@ -111,7 +111,9 @@ public class TermuxDaemonPlugin extends Plugin {
         Process process = null;
         try {
             // Merge stderr into stdout so all diagnostics are captured together
-            ProcessBuilder pb = new ProcessBuilder("su");
+            // Use -M (Mount Master) to run in the global mount namespace, otherwise
+            // isolated app namespaces will hide Termux's /data/data directory.
+            ProcessBuilder pb = new ProcessBuilder("su", "-M");
             pb.redirectErrorStream(true);
             process = pb.start();
             try (DataOutputStream stdin = new DataOutputStream(process.getOutputStream())) {
