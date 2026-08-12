@@ -7,6 +7,8 @@ from __future__ import annotations
 import collections
 import hashlib
 import os
+import re
+import shutil
 import subprocess
 import threading
 import time
@@ -21,6 +23,8 @@ from .probe import FFMPEG, MediaInfo, ProbeError, have_ffmpeg, have_ffprobe, pro
 from .supervisor import State, Supervisor
 
 DEFAULT_MEDIA_ROOT = "/storage/emulated/0/Download/Chromecast"
+
+SUBTITLE_EXTENSIONS = {".vtt", ".srt", ".ass", ".ssa"}
 
 VIDEO_EXTENSIONS = {
     ".avi",
@@ -707,29 +711,38 @@ class CastService:
         return os.path.join(self.work_dir, f"{stem}.{language}.{digest}.cast.mp4")
 
     def _extract_default_subtitle(self, path: str, info: dict) -> str:
-        subtitles = info.get("subtitles") or []
-        if not subtitles or not have_ffmpeg():
-            return ""
         preferred = self.default_language
+        sidecar = self._find_sidecar_subtitle(path, preferred)
+        if sidecar:
+            self.log(f"DEBUG-ONLY: selected sidecar {preferred} subtitles: {os.path.basename(sidecar)}", "debug")
+            return sidecar
+
+        subtitles = info.get("subtitles") or []
+        if not subtitles:
+            self.log(f"DEBUG-ONLY: no sidecar or embedded {preferred} subtitles found", "debug")
+            return ""
+        if not have_ffmpeg():
+            self.log(f"DEBUG-ONLY: embedded {preferred} subtitles found but ffmpeg is unavailable", "debug")
+            return ""
         selected = self._first_stream_for_language(subtitles, preferred, forced=False)
         selected = selected or self._first_stream_for_language(
             subtitles,
             preferred,
         )
         if not selected:
-            self.log(f"no embedded {preferred} subtitle track found", "debug")
+            self.log(f"DEBUG-ONLY: no embedded {preferred} subtitle track found", "debug")
             return ""
         stem = hashlib.sha1((path + preferred + "sub").encode()).hexdigest()[:12]
         out = os.path.join(self.work_dir, f"{stem}.{preferred}.vtt")
         if os.path.exists(out) and os.path.getmtime(out) >= os.path.getmtime(path):
             self.log(
-                f"using cached embedded {preferred} subtitles: {os.path.basename(out)}",
+                f"DEBUG-ONLY: using cached embedded {preferred} subtitles: {os.path.basename(out)}",
                 "debug",
             )
             return out
         cmd = self._subtitle_extract_command(path, selected, out)
         self.log(
-            f"extracting embedded {preferred} subtitles for sideload: {' '.join(cmd)}",
+            f"DEBUG-ONLY: extracting embedded {preferred} subtitles for sideload: {' '.join(cmd)}",
             "debug",
         )
         proc = subprocess.run(cmd, capture_output=True, timeout=300)
@@ -739,6 +752,52 @@ class CastService:
             self.log(f"embedded subtitle extraction failed: {reason}", "warn")
             return ""
         return out
+
+    def _find_sidecar_subtitle(self, path: str, language: str) -> str:
+        directory = os.path.dirname(path)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        if not os.path.isdir(directory):
+            return ""
+
+        lang = language3(language)
+        candidates = []
+        for filename in os.listdir(directory):
+            full = os.path.join(directory, filename)
+            name_stem, ext = os.path.splitext(filename)
+            if ext.lower() not in SUBTITLE_EXTENSIONS or not os.path.isfile(full):
+                continue
+            if name_stem == stem:
+                candidates.append((2, full))
+            elif name_stem.lower() in {f"{stem}.{lang}".lower(), f"{stem}.{lang[:2]}".lower(), f"{stem}.english".lower(), f"{stem}.eng".lower(), f"{stem}.en".lower()}:
+                candidates.append((0, full))
+            elif name_stem.lower().startswith(stem.lower() + ".") and re.search(r"(^|[._ -])(eng|en|english)([._ -]|$)", name_stem.lower()):
+                candidates.append((1, full))
+        if not candidates:
+            return ""
+        candidates.sort(key=lambda item: (item[0], item[1].lower()))
+        selected = candidates[0][1]
+        if os.path.splitext(selected)[1].lower() == ".vtt":
+            return selected
+        if not have_ffmpeg():
+            self.log(f"DEBUG-ONLY: sidecar subtitles require WebVTT conversion but ffmpeg is unavailable: {os.path.basename(selected)}", "warn")
+            return ""
+        out = self._sidecar_vtt_path(selected, lang)
+        if os.path.exists(out) and os.path.getmtime(out) >= os.path.getmtime(selected):
+            return out
+        cmd = [FFMPEG, "-hide_banner", "-y", "-i", selected, "-f", "webvtt", out]
+        self.log(f"DEBUG-ONLY: converting sidecar subtitles to WebVTT: {' '.join(cmd)}", "debug")
+        proc = subprocess.run(cmd, capture_output=True, timeout=120)
+        if proc.returncode != 0:
+            detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+            reason = detail[-1] if detail else proc.returncode
+            self.log(f"sidecar subtitle conversion failed: {reason}", "warn")
+            return ""
+        return out
+
+    def _sidecar_vtt_path(self, path: str, language: str) -> str:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        digest = hashlib.sha1((path + language + "sidecar").encode()).hexdigest()[:12]
+        return os.path.join(self.work_dir, f"{stem}.{language}.{digest}.vtt")
 
     def request_subtitles(self, path: str, language: str = "") -> dict:
         """Download the best OpenSubtitles match and re-LOAD current media with it."""
@@ -800,27 +859,26 @@ class CastService:
         return self.status()
 
     def trash(self, path: str) -> dict:
-        import shutil
-        target_root = None
-        for root in self.media_roots:
-            if path.startswith(root):
-                target_root = root
-                break
-        if not target_root:
+        resolved = self._resolve_under_media_root(path)
+        if not resolved:
             return {"error": "file not in media roots"}
+        target_root, safe_path = resolved
         trash_dir = os.path.join(target_root, "trash")
         os.makedirs(trash_dir, exist_ok=True)
-        dest = os.path.join(trash_dir, os.path.basename(path))
-        shutil.move(path, dest)
+        rel = os.path.relpath(safe_path, target_root)
+        dest = self._unique_trash_path(os.path.join(trash_dir, rel))
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.move(safe_path, dest)
         
         # Check if in queue and remove
-        if self.supervisor and self.supervisor._session and self.supervisor._session.queue_items:
+        session = getattr(self.supervisor, "_session", None) if self.supervisor else None
+        if session and session.queue_items:
             item_ids_to_remove = []
-            for item in self.supervisor._session.queue_items:
+            for item in session.queue_items:
                 media = item.get("media", {})
                 custom_data = media.get("customData", {})
                 content_id = media.get("contentId", "")
-                if custom_data.get("sourcePath") == path or os.path.basename(path) in content_id:
+                if custom_data.get("sourcePath") in {path, safe_path} or os.path.basename(safe_path) in content_id:
                     item_id = item.get("itemId")
                     if item_id is not None:
                         item_ids_to_remove.append(item_id)
@@ -830,10 +888,48 @@ class CastService:
         return {"trashed": dest}
 
     def delete(self, path: str) -> dict:
-        if os.path.exists(path):
-            os.remove(path)
-            return {"deleted": path}
-        return {"error": "file not found"}
+        resolved = self._resolve_under_trash(path)
+        if not resolved:
+            return {"error": "file not found in trash"}
+        os.remove(resolved)
+        return {"deleted": resolved}
+
+    def _resolve_under_media_root(self, path: str) -> Optional[tuple[str, str]]:
+        real_path = os.path.realpath(os.path.expanduser(path))
+        for root in self.media_roots:
+            real_root = os.path.realpath(root)
+            try:
+                rel = os.path.relpath(real_path, real_root)
+            except ValueError:
+                continue
+            if rel == "trash" or rel.startswith("trash" + os.sep):
+                return None
+            if rel != os.pardir and not rel.startswith(os.pardir + os.sep) and os.path.isfile(real_path):
+                return real_root, real_path
+        return None
+
+    def _resolve_under_trash(self, path: str) -> str:
+        real_path = os.path.realpath(os.path.expanduser(path))
+        for root in self.media_roots:
+            trash_root = os.path.realpath(os.path.join(root, "trash"))
+            try:
+                rel = os.path.relpath(real_path, trash_root)
+            except ValueError:
+                continue
+            if rel != os.pardir and not rel.startswith(os.pardir + os.sep) and os.path.isfile(real_path):
+                return real_path
+        return ""
+
+    def _unique_trash_path(self, path: str) -> str:
+        if not os.path.exists(path):
+            return path
+        stem, ext = os.path.splitext(path)
+        counter = 1
+        while True:
+            candidate = f"{stem}.{counter}{ext}"
+            if not os.path.exists(candidate):
+                return candidate
+            counter += 1
 
     def get_trash(self) -> List[dict]:
         entries = []
