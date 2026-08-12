@@ -16,6 +16,9 @@ import {
   Trash2,
   Volume2,
   VolumeX,
+  Gamepad2,
+  FastForward,
+  Rewind,
 } from "lucide-react";
 import {
   DAEMON_BASE,
@@ -30,6 +33,14 @@ import {
 } from "./lib/daemon";
 import { PreflightPanel } from "./components/preflight-panel";
 import { TERMUX_MANUAL_COMMAND, launchTermuxDaemon } from "./lib/termux-daemon";
+import {
+  Drawer,
+  DrawerContent,
+  DrawerTrigger,
+  DrawerHeader,
+  DrawerTitle,
+  DrawerDescription
+} from "./components/ui/drawer";
 
 const LIVE_STATES = new Set(["playing", "buffering", "paused", "loading"]);
 
@@ -645,6 +656,102 @@ export default function App() {
           </div>
         </section>
       </div>
+
+      {/* Floating Remote FAB */}
+      {live && cast && (
+        <Drawer>
+          <DrawerTrigger asChild>
+            <button className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500 text-[#050807] shadow-[0_0_15px_rgba(16,185,129,0.3)] transition-transform hover:scale-105 active:scale-95">
+              <Gamepad2 className="h-6 w-6" />
+            </button>
+          </DrawerTrigger>
+          <DrawerContent className="border-emerald-500/20 bg-[#0a100d] text-emerald-300 font-sans">
+            <DrawerHeader>
+              <DrawerTitle className="text-emerald-400">Remote Control</DrawerTitle>
+              <DrawerDescription className="truncate text-emerald-500/60">
+                {cast.title || "Now Playing"}
+              </DrawerDescription>
+            </DrawerHeader>
+            <div className="p-6 pt-0 space-y-8">
+              {/* Media Progress */}
+              <div className="space-y-3">
+                <div
+                  className="h-3 overflow-hidden rounded-full bg-emerald-500/15 cursor-pointer"
+                  onClick={(e) => {
+                    if (!cast || !cast.duration) return;
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const percent = (e.clientX - rect.left) / rect.width;
+                    run("seek", () => daemon.seek(percent * cast.duration!));
+                  }}
+                >
+                  <div
+                    className="h-full bg-emerald-400 transition-all pointer-events-none"
+                    style={{
+                      width: `${cast.duration ? Math.min((cast.position / cast.duration) * 100, 100) : 0}%`,
+                    }}
+                  />
+                </div>
+                <div className="flex justify-between font-mono text-sm text-emerald-500/60">
+                  <span>{formatDuration(cast.position)}</span>
+                  <span>{formatDuration(cast.duration)}</span>
+                </div>
+              </div>
+
+              {/* Transport Controls */}
+              <div className="flex items-center justify-center gap-8">
+                <button
+                  onClick={() => run("seek-back", () => daemon.seek(Math.max(0, cast.position - 10)))}
+                  className="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 active:scale-95"
+                >
+                  <Rewind className="h-6 w-6" />
+                </button>
+
+                <button
+                  onClick={() => run("toggle", cast.state === "paused" ? daemon.play : daemon.pause)}
+                  className="flex h-20 w-20 items-center justify-center rounded-full bg-emerald-500 text-[#050807] hover:bg-emerald-400 active:scale-95"
+                >
+                  {cast.state === "paused" ? (
+                    <Play className="h-10 w-10 ml-1" />
+                  ) : (
+                    <Pause className="h-10 w-10" />
+                  )}
+                </button>
+
+                <button
+                  onClick={() => run("seek-forward", () => daemon.seek(Math.min(cast.duration || 0, cast.position + 10)))}
+                  className="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 active:scale-95"
+                >
+                  <FastForward className="h-6 w-6" />
+                </button>
+              </div>
+
+              {/* Volume & Stop */}
+              <div className="flex items-center gap-4 pb-4">
+                <button
+                  onClick={() => run("mute", () => daemon.mute(!cast.muted))}
+                  className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 active:scale-95"
+                >
+                  {cast.muted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
+                </button>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={(cast.volume ?? 1) * 100}
+                  onChange={(e) => run("volume", () => daemon.volume(parseInt(e.target.value) / 100))}
+                  className="flex-1 accent-emerald-500"
+                />
+                <button
+                  onClick={() => run("stop", daemon.stop)}
+                  className="flex h-10 w-10 items-center justify-center rounded-full border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 active:scale-95"
+                >
+                  <Square className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          </DrawerContent>
+        </Drawer>
+      )}
     </div>
   );
 }
