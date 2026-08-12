@@ -34,7 +34,7 @@ public class TermuxDaemonPlugin extends Plugin {
     private static final int ROOT_TIMEOUT_SECONDS = 15;
 
     private static final String BASH = "/data/data/com.termux/files/usr/bin/bash";
-    private static final String DAEMON_DIR = "/storage/emulated/0/Download/VideoQualityCheckerApp/daemon";
+    private static final String DAEMON_DIR = "/data/data/com.termux/files/home/VideoQualityCheckerApp/daemon";
     private static final String BOOTSTRAP = DAEMON_DIR + "/termux_bootstrap.sh";
 
     private PowerManager.WakeLock wakeLock;
