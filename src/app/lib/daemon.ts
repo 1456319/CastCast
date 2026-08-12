@@ -138,6 +138,8 @@ export const daemon = {
       "/cast",
       { path, allow_unsafe: allowUnsafe },
     ),
+  queue: (paths: string[]) =>
+    post<{ queued?: number; skipped?: number; preparing?: number; error?: string }>("/queue", { paths }),
   prepare: (path: string) => post<Preflight>("/prepare", { path }),
   cancelPrepare: () => post<Status>("/prepare/cancel"),
   trash: (path: string) => post<{ trashed?: string; error?: string }>("/trash", { path }),

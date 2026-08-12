@@ -149,6 +149,16 @@ export default function App() {
     });
   };
 
+  const emptyTrash = () =>
+    run("empty-trash", async () => {
+      for (const item of trashItems) {
+        const result = await daemon.delete(item.path);
+        if (result.error) throw new Error(`${item.rel}: ${result.error}`);
+      }
+      await loadLibrary();
+      setNotice("Trash emptied permanently.");
+    });
+
   const select = (item: LibraryItem) =>
     run("preflight", async () => {
       setSelected(item);
@@ -156,30 +166,45 @@ export default function App() {
       setReport(await daemon.preflight(item.path));
     });
 
+  const markLoading = (name: string, path: string) =>
+    setStatus((prev) =>
+      prev
+        ? {
+            ...prev,
+            cast: {
+              ...prev.cast,
+              state: "loading",
+              title: name,
+              source_path: path,
+            },
+          }
+        : prev,
+    );
+
   const doCast = (allowUnsafe = false) =>
     selected &&
     run("cast", async () => {
       const result = await daemon.cast(selected.path, allowUnsafe);
       if (result.error) setNotice(result.error);
       if (result.converting) setNotice("Conversion started — cast again when it finishes.");
-      if (result.casting) {
-        setStatus((prev) =>
-          prev
-            ? {
-                ...prev,
-                cast: {
-                  ...prev.cast,
-                  state: "loading",
-                  title: selected.name,
-                  source_path: selected.path,
-                },
-              }
-            : prev,
-        );
-      }
+      if (result.casting) markLoading(selected.name, selected.path);
       setReport((prev) => ({ ...(prev || {}), ...result } as Preflight));
     });
 
+
+  const castQueue = () =>
+    run("queue", async () => {
+      if (!library.length) throw new Error("Scan the queue before casting it.");
+      const selectedIndex = selected ? library.findIndex((item) => item.path === selected.path) : -1;
+      const ordered = selectedIndex >= 0
+        ? [...library.slice(selectedIndex), ...library.slice(0, selectedIndex)]
+        : library;
+      const result = await daemon.queue(ordered.map((item) => item.path));
+      if (result.error) throw new Error(result.error);
+      const first = ordered[0];
+      markLoading(first.name, first.path);
+      setNotice(`Queued ${result.queued ?? 0} item(s); ${result.preparing ?? 0} preparing, ${result.skipped ?? 0} skipped.`);
+    });
 
   const requestSubtitles = () =>
     cast?.source_path &&
@@ -423,13 +448,23 @@ export default function App() {
         <section className="rounded border border-emerald-500/20 bg-black/40 p-3">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-emerald-500/50 uppercase tracking-wider">Queue</span>
-            <button
-              onClick={loadLibrary}
-              className="flex items-center gap-1.5 text-emerald-400/70 hover:text-emerald-300"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${busy === "library" ? "animate-spin" : ""}`} />
-              scan
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={castQueue}
+                disabled={!status?.device || !library.length || busy === "queue"}
+                className="flex items-center gap-1.5 rounded border border-emerald-500/30 px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-40"
+              >
+                {busy === "queue" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Cast className="h-3.5 w-3.5" />}
+                cast queue
+              </button>
+              <button
+                onClick={loadLibrary}
+                className="flex items-center gap-1.5 text-emerald-400/70 hover:text-emerald-300"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${busy === "library" ? "animate-spin" : ""}`} />
+                scan
+              </button>
+            </div>
           </div>
 
           {library.length === 0 ? (
@@ -467,6 +502,14 @@ export default function App() {
         <section className="rounded border border-emerald-500/20 bg-black/40 p-3">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-emerald-500/50 uppercase tracking-wider">Trash</span>
+            <button
+              onClick={emptyTrash}
+              disabled={!trashItems.length || busy === "empty-trash"}
+              className="flex items-center gap-1.5 rounded border border-rose-500/30 px-2 py-1 text-xs text-rose-400 hover:bg-rose-500/20 disabled:opacity-40"
+            >
+              {busy === "empty-trash" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+              empty trash
+            </button>
           </div>
 
           {trashItems.length === 0 ? (
