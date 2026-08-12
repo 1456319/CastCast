@@ -90,6 +90,8 @@ export interface CastState {
   idle_reason: string;
   source_path: string;
   active_track_ids?: number[];
+  text_tracks?: number;
+  has_text_tracks?: boolean;
 }
 
 export interface Status {
@@ -190,6 +192,7 @@ export function subscribe(handlers: {
   bind("reconnecting", () => handlers.onState?.());
   bind("stall", () => handlers.onState?.());
   bind("load_failed", () => handlers.onState?.());
+  bind("command_failed", () => handlers.onState?.());
   bind("remux", () => handlers.onRemux?.());
 
   return () => source?.close();
