@@ -29,6 +29,7 @@ import {
   type Status,
 } from "./lib/daemon";
 import { PreflightPanel } from "./components/preflight-panel";
+import { TERMUX_MANUAL_COMMAND, launchTermuxDaemon } from "./lib/termux-daemon";
 
 const LIVE_STATES = new Set(["playing", "buffering", "paused", "loading"]);
 
@@ -57,6 +58,7 @@ export default function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [host, setHost] = useState("192.168.1.50");
   const [notice, setNotice] = useState<string | null>(null);
+  const [launchMessage, setLaunchMessage] = useState<string | null>(null);
 
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -121,6 +123,17 @@ export default function App() {
       setBusy(null);
     }
   };
+
+  const launchDaemon = () =>
+    run("launch-daemon", async () => {
+      setLaunchMessage("Sending Termux RUN_COMMAND intent…");
+      const result = await launchTermuxDaemon();
+      setLaunchMessage(
+        `Launch request sent to Termux. Waiting for ${DAEMON_BASE}. Audit log: ${result.auditLog ?? "Download/Chromecast/.castcast/audit.log"}. ${result.note ?? ""}`.trim(),
+      );
+      await new Promise((resolve) => window.setTimeout(resolve, 2500));
+      await refreshStatus();
+    });
 
   const loadLibrary = () =>
     run("library", async () => {
@@ -232,18 +245,30 @@ export default function App() {
             cannot speak CASTv2 itself — the protocol needs a raw TLS socket — so the daemon does all
             the device work and this talks to it over localhost.
           </p>
-          <a
-            href="intent:#Intent;action=com.termux.RUN_COMMAND;S.com.termux.RUN_COMMAND_PATH=/data/data/com.termux/files/usr/bin/bash;S.com.termux.RUN_COMMAND_ARGUMENTS=-c%20/data/data/com.termux/files/usr/bin/bash%20/storage/emulated/0/Download/VideoQualityCheckerApp/daemon/termux_bootstrap.sh;B.com.termux.RUN_COMMAND_BACKGROUND=true;package=com.termux;end"
-            className="block text-center rounded border border-emerald-500/50 bg-emerald-500/20 px-4 py-3 text-emerald-100 hover:bg-emerald-500/30 font-bold tracking-wide shadow-lg"
-          >
-            Launch Daemon (Termux)
-          </a>
-          <div className="font-mono text-emerald-500/50">expecting: {DAEMON_BASE}</div>
           <button
-            onClick={refreshStatus}
-            className="rounded border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-emerald-300 hover:bg-emerald-500/20"
+            type="button"
+            onClick={launchDaemon}
+            disabled={busy === "launch-daemon"}
+            className="block w-full rounded border border-emerald-500/50 bg-emerald-500/20 px-4 py-3 text-center font-bold tracking-wide text-emerald-100 shadow-lg hover:bg-emerald-500/30 disabled:cursor-wait disabled:opacity-60"
           >
-            retry
+            {busy === "launch-daemon" ? "Launching Termux…" : "Launch Daemon (Termux)"}
+          </button>
+          <div className="font-mono text-emerald-500/50">expecting: {DAEMON_BASE}</div>
+          {(launchMessage || notice) && (
+            <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-300">
+              {notice ?? launchMessage}
+            </div>
+          )}
+          <div className="rounded border border-emerald-500/20 bg-black/40 p-3 text-xs text-emerald-500/70">
+            <div className="mb-1 text-emerald-400/80">Manual fallback command:</div>
+            <code className="break-words font-mono">{TERMUX_MANUAL_COMMAND}</code>
+          </div>
+          <button
+            onClick={() => run("retry", refreshStatus)}
+            disabled={busy === "retry"}
+            className="rounded border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-emerald-300 hover:bg-emerald-500/20 disabled:cursor-wait disabled:opacity-60"
+          >
+            {busy === "retry" ? "checking…" : "retry"}
           </button>
         </div>
       </div>
