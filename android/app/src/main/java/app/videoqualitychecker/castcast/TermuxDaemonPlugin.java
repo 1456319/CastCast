@@ -60,7 +60,7 @@ public class TermuxDaemonPlugin extends Plugin {
             JSObject result = new JSObject();
             result.put("started", true);
             result.put("rootConfigured", true);
-            result.put("auditLog", "/storage/emulated/0/Download/Chromecast/.castcast/audit.log");
+            result.put("auditLog", "/storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast/.castcast/audit.log");
             result.put("note", "Root configured Termux allow-external-apps and granted RUN_COMMAND. If the daemon stays offline, check that the repo exists at " + DAEMON_DIR + " and inspect the audit log.");
             call.resolve(result);
         } catch (SecurityException e) {

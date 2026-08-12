@@ -14,7 +14,7 @@
 
 # Canonical user-visible queue; /sdcard/Download/Chromecast is its Android
 # alias. Keep this case synchronized with CastService.DEFAULT_MEDIA_ROOT.
-CHROMECAST_DIR="/storage/emulated/0/Download/Chromecast"
+CHROMECAST_DIR="/storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast"
 TRASH_DIR="$CHROMECAST_DIR/trash"
 # DEBUG-ONLY: runtime diagnostics are kept out of the visible queue.
 AUDIT_DIR="$CHROMECAST_DIR/.castcast"

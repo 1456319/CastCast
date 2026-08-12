@@ -129,7 +129,7 @@ export default function App() {
       setLaunchMessage("Sending Termux RUN_COMMAND intent…");
       const result = await launchTermuxDaemon();
       setLaunchMessage(
-        `Root configured Termux and sent launch request. Waiting for ${DAEMON_BASE}. Audit log: ${result.auditLog ?? "Download/Chromecast/.castcast/audit.log"}. ${result.note ?? ""}`.trim(),
+        `Root configured Termux and sent launch request. Waiting for ${DAEMON_BASE}. Audit log: ${result.auditLog ?? "/storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast/.castcast/audit.log"}. ${result.note ?? ""}`.trim(),
       );
       await new Promise((resolve) => window.setTimeout(resolve, 2500));
       await refreshStatus();
