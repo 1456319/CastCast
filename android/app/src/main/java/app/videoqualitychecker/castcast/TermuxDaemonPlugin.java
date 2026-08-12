@@ -56,7 +56,11 @@ public class TermuxDaemonPlugin extends Plugin {
         intent.putExtra(EXTRA_SESSION_ACTION, "0");
 
         try {
-            getContext().startService(intent);
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                getContext().startForegroundService(intent);
+            } else {
+                getContext().startService(intent);
+            }
             JSObject result = new JSObject();
             result.put("started", true);
             result.put("rootConfigured", true);
