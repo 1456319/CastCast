@@ -101,8 +101,10 @@ public class TermuxDaemonPlugin extends Plugin {
             "chmod 600 \"$TERMUX_PROP\" || { echo 'FAIL: chmod 600 termux.properties'; exit 1; }\n" +
             "command -v restorecon >/dev/null 2>&1 && restorecon -R \"$TERMUX_HOME/.termux\" || true\n" +
             "\n" +
-            "echo '[7/8] granting RUN_COMMAND permission'\n" +
+            "echo '[7/8] granting Android permissions'\n" +
             "pm grant " + shellQuote(packageName) + " com.termux.permission.RUN_COMMAND 2>&1 || { echo 'FAIL: pm grant RUN_COMMAND'; exit 1; }\n" +
+            "appops set com.termux SYSTEM_ALERT_WINDOW allow 2>&1 || { echo 'FAIL: appops SYSTEM_ALERT_WINDOW'; exit 1; }\n" +
+            "appops set com.termux MANAGE_EXTERNAL_STORAGE allow 2>&1 || { echo 'FAIL: appops MANAGE_EXTERNAL_STORAGE'; exit 1; }\n" +
             "\n" +
             "echo '[8/8] reloading Termux config'\n" +
             "am broadcast -a com.termux.app.reload_style com.termux >/dev/null 2>&1 || true\n" +
