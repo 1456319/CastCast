@@ -94,5 +94,59 @@ class TestServiceQueue(unittest.TestCase):
         self.assertEqual(arg["media"]["contentId"], "http://localhost:8080//work/later.mp4")
         self.assertEqual(arg["media"]["duration"], 300)
 
+    def test_sidecar_subtitle_prefers_language_marker(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            media = Path(tmp) / "Movie.mkv"
+            media.write_text("video")
+            generic = Path(tmp) / "Movie.srt"
+            generic.write_text("generic")
+            english = Path(tmp) / "Movie.en.vtt"
+            english.write_text("WEBVTT")
+
+            self.assertEqual(self.svc._find_sidecar_subtitle(str(media), "eng"), str(english))
+
+    def test_trash_preserves_relative_path_and_avoids_collisions(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "Season1" / "Episode.mkv"
+            second = root / "Season2" / "Episode.mkv"
+            first.parent.mkdir()
+            second.parent.mkdir()
+            first.write_text("one")
+            second.write_text("two")
+            self.svc.media_roots = [str(root)]
+
+            first_result = self.svc.trash(str(first))
+            second_result = self.svc.trash(str(second))
+
+            self.assertTrue(first_result["trashed"].endswith("trash/Season1/Episode.mkv"))
+            self.assertTrue(second_result["trashed"].endswith("trash/Season2/Episode.mkv"))
+            self.assertTrue(Path(first_result["trashed"]).exists())
+            self.assertTrue(Path(second_result["trashed"]).exists())
+
+    def test_delete_only_removes_trash_items(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            media = root / "Movie.mkv"
+            trash = root / "trash" / "Movie.mkv"
+            trash.parent.mkdir()
+            media.write_text("keep")
+            trash.write_text("delete")
+            self.svc.media_roots = [str(root)]
+
+            self.assertEqual(self.svc.delete(str(media)), {"error": "file not found in trash"})
+            self.assertTrue(media.exists())
+            self.assertEqual(self.svc.delete(str(trash)), {"deleted": str(trash)})
+            self.assertFalse(trash.exists())
+
 if __name__ == '__main__':
     unittest.main()
