@@ -50,7 +50,7 @@ public class TermuxDaemonPlugin extends Plugin {
         Intent intent = new Intent(ACTION_RUN_COMMAND);
         intent.setClassName(TERMUX_PACKAGE, RUN_COMMAND_SERVICE);
         intent.putExtra(EXTRA_COMMAND_PATH, BASH);
-        intent.putExtra(EXTRA_ARGUMENTS, new String[] { "-lc", "chmod +x '" + BOOTSTRAP + "' && exec '" + BOOTSTRAP + "'" });
+        intent.putExtra(EXTRA_ARGUMENTS, new String[] { "-lc", "bash '" + BOOTSTRAP + "'" });
         intent.putExtra(EXTRA_WORKDIR, DAEMON_DIR);
         intent.putExtra(EXTRA_BACKGROUND, true);
         intent.putExtra(EXTRA_SESSION_ACTION, "0");
