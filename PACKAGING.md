@@ -27,3 +27,29 @@ python -m castcast server status
 python -m castcast server kill
 python -m castcast serve --restart
 ```
+
+## APK-triggered Termux launch
+
+The Android APK uses Termux's `com.termux.RUN_COMMAND` service rather than an
+`intent://` link in the WebView. For Termux to accept the request, the user must
+install Termux from F-Droid/GitHub and set this in Termux:
+
+```sh
+mkdir -p ~/.termux
+echo allow-external-apps=true >> ~/.termux/termux.properties
+termux-reload-settings
+```
+
+Android may also prompt for the `Run commands in Termux` permission because the
+APK declares `com.termux.permission.RUN_COMMAND`. The automatic launch expects
+the repository to be copied to:
+
+```sh
+/storage/emulated/0/Download/VideoQualityCheckerApp/daemon
+```
+
+If automatic launch is blocked, the APK shows the manual fallback command:
+
+```sh
+cd /storage/emulated/0/Download/VideoQualityCheckerApp/daemon && chmod +x ./termux_bootstrap.sh && ./termux_bootstrap.sh
+```
