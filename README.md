@@ -4,6 +4,11 @@ Castcast is a robust, autonomous Android media casting application that complete
 
 It is designed for power users who want guaranteed compatibility, gapless playback, and total control over their local media streaming experience.
 
+## Requirements
+- **Root Access Required:** The app requires root (`su`) to break out of isolated application mount namespaces, securely configure the Termux environment, and grant necessary permissions.
+- **Termux:** Must be installed on the device to host the Python/FFmpeg backend.
+- **Android 8.0+**: Modern Android execution methods (`startForegroundService`) are utilized for the daemon.
+
 ## Features & Abilities
 
 ### Direct Cast V2 Communication
