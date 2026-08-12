@@ -72,25 +72,48 @@ public class TermuxDaemonPlugin extends Plugin {
 
     private RootResult configureTermuxWithRoot() {
         String packageName = getContext().getPackageName();
-        String payload = "set -eu\n" +
+        // Each step echoes progress to stdout; on failure, the step prints the
+        // error and exits so the user sees exactly what went wrong.
+        String payload =
             "TERMUX_HOME=/data/data/com.termux/files/home\n" +
             "TERMUX_PROP=$TERMUX_HOME/.termux/termux.properties\n" +
-            "test -d $TERMUX_HOME\n" +
-            "TERMUX_UID=$(stat -c %u $TERMUX_HOME)\n" +
-            "TERMUX_GID=$(stat -c %g $TERMUX_HOME)\n" +
-            "mkdir -p $TERMUX_HOME/.termux\n" +
-            "touch $TERMUX_PROP\n" +
-            "grep -q '^allow-external-apps=true$' $TERMUX_PROP 2>/dev/null || echo allow-external-apps=true >> $TERMUX_PROP\n" +
-            "chown -R $TERMUX_UID:$TERMUX_GID $TERMUX_HOME/.termux\n" +
-            "chmod 700 $TERMUX_HOME/.termux\n" +
-            "chmod 600 $TERMUX_PROP\n" +
-            "command -v restorecon >/dev/null 2>&1 && restorecon -R $TERMUX_HOME/.termux || true\n" +
-            "pm grant " + shellQuote(packageName) + " com.termux.permission.RUN_COMMAND\n" +
-            "am broadcast -a com.termux.app.reload_style com.termux >/dev/null 2>&1 || true\n";
+            "\n" +
+            "echo '[1/8] checking Termux home'\n" +
+            "if [ ! -d \"$TERMUX_HOME\" ]; then echo 'FAIL: Termux home directory not found at '$TERMUX_HOME'. Is Termux installed and opened at least once?'; exit 1; fi\n" +
+            "\n" +
+            "echo '[2/8] reading Termux UID/GID'\n" +
+            "TERMUX_UID=$(stat -c %u \"$TERMUX_HOME\" 2>/dev/null) || { echo 'FAIL: stat -c %u failed; trying ls fallback'; TERMUX_UID=$(ls -ldn \"$TERMUX_HOME\" | awk '{print $3}'); }\n" +
+            "TERMUX_GID=$(stat -c %g \"$TERMUX_HOME\" 2>/dev/null) || { echo 'FAIL: stat -c %g failed; trying ls fallback'; TERMUX_GID=$(ls -ldn \"$TERMUX_HOME\" | awk '{print $4}'); }\n" +
+            "echo \"  uid=$TERMUX_UID gid=$TERMUX_GID\"\n" +
+            "\n" +
+            "echo '[3/8] creating .termux dir'\n" +
+            "mkdir -p \"$TERMUX_HOME/.termux\" || { echo 'FAIL: mkdir -p .termux'; exit 1; }\n" +
+            "\n" +
+            "echo '[4/8] ensuring termux.properties exists'\n" +
+            "touch \"$TERMUX_PROP\" || { echo 'FAIL: touch termux.properties'; exit 1; }\n" +
+            "\n" +
+            "echo '[5/8] setting allow-external-apps=true'\n" +
+            "grep -q '^allow-external-apps=true$' \"$TERMUX_PROP\" 2>/dev/null || echo 'allow-external-apps=true' >> \"$TERMUX_PROP\" || { echo 'FAIL: write termux.properties'; exit 1; }\n" +
+            "\n" +
+            "echo '[6/8] fixing ownership and permissions'\n" +
+            "chown -R $TERMUX_UID:$TERMUX_GID \"$TERMUX_HOME/.termux\" || { echo 'FAIL: chown .termux'; exit 1; }\n" +
+            "chmod 700 \"$TERMUX_HOME/.termux\" || { echo 'FAIL: chmod 700 .termux'; exit 1; }\n" +
+            "chmod 600 \"$TERMUX_PROP\" || { echo 'FAIL: chmod 600 termux.properties'; exit 1; }\n" +
+            "command -v restorecon >/dev/null 2>&1 && restorecon -R \"$TERMUX_HOME/.termux\" || true\n" +
+            "\n" +
+            "echo '[7/8] granting RUN_COMMAND permission'\n" +
+            "pm grant " + shellQuote(packageName) + " com.termux.permission.RUN_COMMAND 2>&1 || { echo 'FAIL: pm grant RUN_COMMAND'; exit 1; }\n" +
+            "\n" +
+            "echo '[8/8] reloading Termux config'\n" +
+            "am broadcast -a com.termux.app.reload_style com.termux >/dev/null 2>&1 || true\n" +
+            "echo 'OK: all steps completed'\n";
 
         Process process = null;
         try {
-            process = Runtime.getRuntime().exec("su");
+            // Merge stderr into stdout so all diagnostics are captured together
+            ProcessBuilder pb = new ProcessBuilder("su");
+            pb.redirectErrorStream(true);
+            process = pb.start();
             try (DataOutputStream stdin = new DataOutputStream(process.getOutputStream())) {
                 stdin.write(payload.getBytes(StandardCharsets.UTF_8));
                 stdin.writeBytes("\nexit\n");
@@ -103,10 +126,9 @@ public class TermuxDaemonPlugin extends Plugin {
                 return new RootResult(false, -1, "root command timed out", "");
             }
 
-            String stdout = readStream(process.getInputStream());
-            String stderr = readStream(process.getErrorStream());
+            String output = readStream(process.getInputStream());
             int exitCode = process.exitValue();
-            return new RootResult(exitCode == 0, exitCode, stdout, stderr);
+            return new RootResult(exitCode == 0, exitCode, output, "");
         } catch (Exception e) {
             return new RootResult(false, -1, "", e.getMessage());
         } finally {
@@ -147,8 +169,8 @@ public class TermuxDaemonPlugin extends Plugin {
 
         String summary() {
             String output = stderr.isEmpty() ? stdout : stderr;
-            if (output.length() > 240) {
-                output = output.substring(0, 240) + "…";
+            if (output.length() > 800) {
+                output = output.substring(output.length() - 800);
             }
             return "exit=" + exitCode + (output.isEmpty() ? "" : ", output=" + output);
         }
