@@ -471,6 +471,11 @@ class CastService:
         if not self.supervisor:
             return {"error": "not connected to a device"}
 
+        import re
+        url_match = re.search(r'(https?://[^\s]+)', path)
+        if url_match:
+            path = url_match.group(1)
+
         if path.startswith("http://") or path.startswith("https://"):
             self.log(f"Extracting web stream via yt-dlp: {path}")
             try:
