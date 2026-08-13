@@ -132,12 +132,10 @@ public class TermuxDaemonPlugin extends Plugin {
             "TERMUX_PROP=$TERMUX_HOME/.termux/termux.properties\n" +
             "\n" +
             "echo '[0/8] extracting bundled daemon code'\n" +
-            "if [ ! -d " + shellQuote(DAEMON_DIR) + " ]; then\n" +
-            "  mkdir -p /storage/emulated/0/Download/VideoQualityCheckerApp || { echo 'FAIL: create app dir'; exit 1; }\n" +
-            "  unzip -qo " + shellQuote(apkPath) + " \"assets/public/daemon/*\" -d /data/local/tmp/ || { echo 'FAIL: unzip daemon'; exit 1; }\n" +
-            "  cp -rf /data/local/tmp/assets/public/daemon " + shellQuote(DAEMON_DIR) + " || { echo 'FAIL: copy daemon'; exit 1; }\n" +
-            "  rm -rf /data/local/tmp/assets\n" +
-            "fi\n" +
+            "mkdir -p /storage/emulated/0/Download/VideoQualityCheckerApp || { echo 'FAIL: create app dir'; exit 1; }\n" +
+            "unzip -qo " + shellQuote(apkPath) + " \"assets/public/daemon/*\" -d /data/local/tmp/ || { echo 'FAIL: unzip daemon'; exit 1; }\n" +
+            "cp -rf /data/local/tmp/assets/public/daemon " + shellQuote(DAEMON_DIR) + " || { echo 'FAIL: copy daemon'; exit 1; }\n" +
+            "rm -rf /data/local/tmp/assets\n" +
             "echo '[0/8] creating queue directories'\n" +
             "mkdir -p /storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast/trash || { echo 'FAIL: create trash dir'; exit 1; }\n" +
             "mkdir -p /storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast/.castcast || { echo 'FAIL: create castcast dir'; exit 1; }\n" +
@@ -169,6 +167,9 @@ public class TermuxDaemonPlugin extends Plugin {
             "pm grant " + shellQuote(packageName) + " com.termux.permission.RUN_COMMAND 2>&1 || { echo 'FAIL: pm grant RUN_COMMAND'; exit 1; }\n" +
             "appops set com.termux SYSTEM_ALERT_WINDOW allow 2>&1 || { echo 'FAIL: appops SYSTEM_ALERT_WINDOW'; exit 1; }\n" +
             "appops set com.termux MANAGE_EXTERNAL_STORAGE allow 2>&1 || { echo 'FAIL: appops MANAGE_EXTERNAL_STORAGE'; exit 1; }\n" +
+            "\n" +
+            "echo '[8/8] killing old daemon instance'\n" +
+            "pkill -f mediaserver.py || true\n" +
             "\n" +
             "echo '[8/8] reloading Termux config'\n" +
             "am broadcast -a com.termux.app.reload_style com.termux >/dev/null 2>&1 || true\n" +
