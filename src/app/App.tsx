@@ -139,10 +139,13 @@ export default function App() {
     try {
       const result = await getSharedUrl();
       if (result.url) {
-        setNotice(`Received shared link: ${result.url}`);
-        run("cast", async () => {
+        setNotice(`Extracting YouTube streams, please wait...`);
+        try {
           await daemon.cast(result.url as string, true);
-        });
+          setNotice(`Success! Sending stream to TV...`);
+        } catch (err) {
+          setNotice(err instanceof Error ? err.message : String(err));
+        }
       }
     } catch (e) {
       console.error(e);
