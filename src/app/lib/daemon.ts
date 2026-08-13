@@ -116,7 +116,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok && !body?.error) {
+  if (body?.error) {
+    throw new Error(body.error);
+  }
+  if (!res.ok) {
     throw new Error(`${res.status} ${res.statusText}`);
   }
   return body as T;
