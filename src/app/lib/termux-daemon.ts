@@ -9,6 +9,7 @@ export interface LaunchDaemonResult {
 
 interface TermuxDaemonPlugin {
   launch(): Promise<LaunchDaemonResult>;
+  getSharedUrl(): Promise<{ url?: string }>;
 }
 
 const TermuxDaemon = registerPlugin<TermuxDaemonPlugin>("TermuxDaemon");
@@ -22,6 +23,11 @@ export async function launchTermuxDaemon() {
     throw new Error("Automatic launch is only available in the Android APK. In a browser, copy the Termux command below.");
   }
   return TermuxDaemon.launch();
+}
+
+export async function getSharedUrl() {
+  if (!canLaunchTermuxDaemon()) return { url: undefined };
+  return TermuxDaemon.getSharedUrl();
 }
 
 export const TERMUX_MANUAL_COMMAND = [

@@ -32,7 +32,7 @@ import {
   type Status,
 } from "./lib/daemon";
 import { PreflightPanel } from "./components/preflight-panel";
-import { TERMUX_MANUAL_COMMAND, launchTermuxDaemon } from "./lib/termux-daemon";
+import { TERMUX_MANUAL_COMMAND, launchTermuxDaemon, getSharedUrl } from "./lib/termux-daemon";
 import {
   Drawer,
   DrawerContent,
@@ -134,6 +134,28 @@ export default function App() {
       setBusy(null);
     }
   };
+
+  const checkSharedUrl = useCallback(async () => {
+    if (status && !status.connected) return;
+    try {
+      const result = await getSharedUrl();
+      if (result.url) {
+        setNotice(`Received shared link: ${result.url}`);
+        run("cast", async () => {
+          await daemon.cast(result.url as string, true);
+        });
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }, [status?.connected]);
+
+  useEffect(() => {
+    checkSharedUrl();
+    const handleVis = () => { if (document.visibilityState === "visible") checkSharedUrl(); };
+    document.addEventListener("visibilitychange", handleVis);
+    return () => document.removeEventListener("visibilitychange", handleVis);
+  }, [checkSharedUrl]);
 
   const launchDaemon = () =>
     run("launch-daemon", async () => {

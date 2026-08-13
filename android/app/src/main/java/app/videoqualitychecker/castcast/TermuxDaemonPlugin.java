@@ -104,6 +104,24 @@ public class TermuxDaemonPlugin extends Plugin {
         }
     }
 
+    @PluginMethod
+    public void getSharedUrl(PluginCall call) {
+        Intent intent = getActivity().getIntent();
+        String action = intent.getAction();
+        String type = intent.getType();
+
+        JSObject ret = new JSObject();
+        if (Intent.ACTION_SEND.equals(action) && type != null && "text/plain".equals(type)) {
+            String sharedText = intent.getStringExtra(Intent.EXTRA_TEXT);
+            if (sharedText != null) {
+                ret.put("url", sharedText);
+                // Clear the extra so we don't process it multiple times on resume
+                intent.removeExtra(Intent.EXTRA_TEXT);
+            }
+        }
+        call.resolve(ret);
+    }
+
     private RootResult configureTermuxWithRoot() {
         String packageName = getContext().getPackageName();
         // Each step echoes progress to stdout; on failure, the step prints the
