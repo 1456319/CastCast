@@ -136,7 +136,6 @@ export default function App() {
   };
 
   const checkSharedUrl = useCallback(async () => {
-    if (status && !status.connected) return;
     try {
       const result = await getSharedUrl();
       if (result.url) {
@@ -148,7 +147,7 @@ export default function App() {
     } catch (e) {
       console.error(e);
     }
-  }, [status?.connected]);
+  }, []);
 
   useEffect(() => {
     checkSharedUrl();
