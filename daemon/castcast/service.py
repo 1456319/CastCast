@@ -493,7 +493,7 @@ class CastService:
                 
                 stream_url = self.media_server.register_live_stream(v_url, a_url)
                 self.log("Casting proxied stream...")
-                self.supervisor.cast(stream_url, content_type="video/mp2t", metadata={"title": "Web Stream", "subtitle": path})
+                self.supervisor.load(stream_url, content_type="video/mp2t", title="Web Stream", source_path=path)
                 return {"casting": True, "url": stream_url}
             except Exception as exc:
                 return {"error": f"yt-dlp extraction failed: {str(exc)}"}
