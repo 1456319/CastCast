@@ -43,6 +43,9 @@ VIDEO_EXTENSIONS = {
     ".wmv",
 }
 
+def have_ytdlp() -> bool:
+    return bool(shutil.which("yt-dlp"))
+
 
 class LogBuffer:
     """Ring buffer of log lines, with fan-out to live listeners (SSE)."""
@@ -240,7 +243,7 @@ class CastService:
                 "port": self.media_server.port,
                 "roots": self.media_roots,
             },
-            "tools": {"ffmpeg": have_ffmpeg(), "ffprobe": have_ffprobe()},
+            "tools": {"ffmpeg": have_ffmpeg(), "ffprobe": have_ffprobe(), "yt_dlp": have_ytdlp()},
             "remux": self._remuxer.job.to_dict() if self._remuxer.job else None,
         }
         out["cast"] = self.supervisor.snapshot() if self.supervisor else {
