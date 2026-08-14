@@ -501,6 +501,7 @@ class CastService:
                 cmd = [
                     "yt-dlp", "--newline", "--no-continue",
                     "--ffmpeg-location", ffmpeg_path,
+                    "--sponsorblock-remove", "sponsor,intro,outro,selfpromo,interaction",
                     "-o", os.path.join(youtube_dir, "%(title)s.%(ext)s"),
                     "-f", "bestvideo[vcodec^=vp9]+bestaudio/bestvideo[vcodec^=avc]+bestaudio/best",
                     "--merge-output-format", "mkv",
