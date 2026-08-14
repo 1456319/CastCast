@@ -480,7 +480,6 @@ class CastService:
             path = url_match.group(1)
 
         if path.startswith("http://") or path.startswith("https://"):
-            from .probe import have_ytdlp
             if not have_ytdlp():
                 return {"error": "yt-dlp is required to download web streams."}
 
