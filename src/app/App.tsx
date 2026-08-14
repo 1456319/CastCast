@@ -8,6 +8,7 @@ import {
   Loader2,
   Pause,
   Play,
+  Power,
   RefreshCw,
   Search,
   Square,
@@ -70,6 +71,7 @@ export default function App() {
   const [host, setHost] = useState("192.168.1.50");
   const [notice, setNotice] = useState<string | null>(null);
   const [launchMessage, setLaunchMessage] = useState<string | null>(null);
+  const [missingDep, setMissingDep] = useState<string | null>(null);
 
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -129,7 +131,14 @@ export default function App() {
       await fn();
       await refreshStatus();
     } catch (err) {
-      setNotice(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      const match = msg.match(/No such file or directory: '([^']+)'/);
+      if (match) {
+        setMissingDep(match[1]);
+        setNotice(`'${match[1]}' is not installed. Install it?`);
+      } else {
+        setNotice(msg);
+      }
     } finally {
       setBusy(null);
     }
@@ -144,7 +153,14 @@ export default function App() {
           await daemon.cast(result.url as string, true);
           setNotice(`Success! Sending stream to TV...`);
         } catch (err) {
-          setNotice(err instanceof Error ? err.message : String(err));
+          const msg = err instanceof Error ? err.message : String(err);
+          const match = msg.match(/No such file or directory: '([^']+)'/);
+          if (match) {
+            setMissingDep(match[1]);
+            setNotice(`'${match[1]}' is not installed. Install it?`);
+          } else {
+            setNotice(msg);
+          }
         }
       }
     } catch (e) {
@@ -339,6 +355,28 @@ export default function App() {
           <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3 text-amber-300">
             ffprobe not found — pre-flight checks are disabled, so unsupported files will fail
             silently on the device. <span className="font-mono">pkg install ffmpeg</span>
+          </div>
+        )}
+
+        {status && !status.tools.yt_dlp && (
+          <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3 text-amber-300">
+            yt-dlp not found — YouTube sharing is disabled. Run <span className="font-mono">pip install yt-dlp</span> in Termux.
+          </div>
+        )}
+
+        {missingDep && (
+          <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3 flex items-center justify-between text-amber-300">
+            <div>Open Termux and run: <span className="font-mono">pip install {missingDep}</span></div>
+            <button
+              onClick={() => {
+                setMissingDep(null);
+                setNotice(null);
+                checkSharedUrl();
+              }}
+              className="rounded border border-amber-500/40 bg-amber-500/10 px-4 py-1 hover:bg-amber-500/20"
+            >
+              Done
+            </button>
           </div>
         )}
 
@@ -644,12 +682,23 @@ export default function App() {
         <section className="rounded border border-emerald-500/20 bg-black/60 p-3">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-emerald-500/50 uppercase tracking-wider">daemon log</span>
-            <button
-              onClick={() => setShowDebugLogs((value) => !value)}
-              className="rounded border border-emerald-500/25 px-2 py-1 text-xs text-emerald-400/70 hover:bg-emerald-500/10"
-            >
-              {showDebugLogs ? "hide debug" : "show debug"}
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowDebugLogs((value) => !value)}
+                className="rounded border border-emerald-500/25 px-2 py-1 text-xs text-emerald-400/70 hover:bg-emerald-500/10"
+              >
+                {showDebugLogs ? "hide debug" : "show debug"}
+              </button>
+              <button
+                onClick={() => {
+                  daemon.shutdown().catch(() => {});
+                  setOnline(false);
+                }}
+                className="flex items-center gap-1.5 rounded border border-rose-500/30 px-2 py-1 text-xs text-rose-400 hover:bg-rose-500/10"
+              >
+                <Power className="h-3 w-3" /> kill server
+              </button>
+            </div>
           </div>
           <div
             ref={logRef}

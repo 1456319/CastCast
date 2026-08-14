@@ -98,7 +98,7 @@ export interface Status {
   connected: boolean;
   device: { host: string; friendly_name: string; model: string; is_ultra: boolean } | null;
   media_server: { base_url: string; lan_ip: string; port: number; roots: string[] };
-  tools: { ffmpeg: boolean; ffprobe: boolean };
+  tools: { ffmpeg: boolean; ffprobe: boolean; yt_dlp: boolean };
   remux: { state: string; progress: number; error: string; description: string } | null;
   cast: CastState;
 }
@@ -153,6 +153,7 @@ export const daemon = {
   seek: (position: number) => post<Status>("/seek", { position }),
   volume: (level: number) => post<Status>("/volume", { level }),
   mute: (muted: boolean) => post<Status>("/mute", { muted }),
+  shutdown: () => post<{}>("/shutdown"),
   requestOpenSubtitles: (path: string, language = "eng") =>
     post<Preflight & { subtitles?: { path: string; language: string; url: string; label: string } }>(
       "/subtitles/opensubtitles",

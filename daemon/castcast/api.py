@@ -161,6 +161,9 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(svc.set_volume(float(body.get("level") or 0.0)))
             elif route == "/mute":
                 self._json(svc.set_muted(bool(body.get("muted"))))
+            elif route == "/shutdown":
+                import os
+                os._exit(0)
             else:
                 self._json({"error": "not found"}, 404)
         except RuntimeError as exc:
@@ -247,6 +250,7 @@ _ROUTES = {
     "POST /seek": "{position}",
     "POST /volume": "{level 0..1}",
     "POST /mute": "{muted}",
+    "POST /shutdown": "kill the daemon",
 }
 
 
