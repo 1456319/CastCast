@@ -513,7 +513,7 @@ class CastService:
                 
                 with self._remuxer._lock:
                     self._remuxer.job = job
-                self._publish("remux", None)
+                self._on_remux_update(job)
 
                 try:
                     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -524,7 +524,7 @@ class CastService:
                         m = re.search(r'\[download\]\s+([\d\.]+)%', line)
                         if m:
                             job.progress = float(m.group(1)) / 100.0
-                            self._publish("remux", None)
+                            self._on_remux_update(job)
                     proc.wait()
                     if proc.returncode != 0:
                         job.state = "failed"
@@ -537,7 +537,7 @@ class CastService:
                     job.error = str(exc)
                 finally:
                     job.finished_at = time.time()
-                    self._publish("remux", None)
+                    self._on_remux_update(job)
                     if job.state == "done":
                         self.log("Download complete! Refresh the queue to cast it.")
                         time.sleep(4)
@@ -549,7 +549,7 @@ class CastService:
                         if self._remuxer.job is job:
                             self._remuxer.job = None
                             self._remuxer._proc = None
-                    self._publish("remux", None)
+                    self._on_remux_update(job)
 
             import threading
             threading.Thread(target=download_worker, daemon=True).start()
