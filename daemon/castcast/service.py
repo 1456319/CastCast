@@ -492,15 +492,17 @@ class CastService:
             os.makedirs(youtube_dir, exist_ok=True)
 
             def download_worker():
-                import subprocess, time, re
+                import subprocess, time, re, shutil
                 from .remux import RemuxJob, RemuxPlan
                 from .probe import FFMPEG
                 
+                ffmpeg_path = shutil.which(FFMPEG) or FFMPEG
+                
                 cmd = [
                     "yt-dlp", "--newline", "--no-continue",
-                    "--ffmpeg-location", FFMPEG,
+                    "--ffmpeg-location", ffmpeg_path,
                     "-o", os.path.join(youtube_dir, "%(title)s.%(ext)s"),
-                    "-f", "bestvideo+bestaudio/best",
+                    "-f", "bestvideo[vcodec^=vp9]+bestaudio/bestvideo[vcodec^=avc]+bestaudio/best",
                     "--merge-output-format", "mkv",
                     path
                 ]
