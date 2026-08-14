@@ -480,23 +480,81 @@ class CastService:
             path = url_match.group(1)
 
         if path.startswith("http://") or path.startswith("https://"):
-            self.log(f"Extracting web stream via yt-dlp: {path}")
-            try:
-                import subprocess
-                cmd = ["yt-dlp", "-g", "-f", "bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4][vcodec^=avc]/best", path]
-                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-                urls = [u for u in result.stdout.strip().split("\n") if u.strip()]
-                if not urls:
-                    return {"error": "yt-dlp extracted no URLs"}
-                v_url = urls[0]
-                a_url = urls[1] if len(urls) > 1 else urls[0]
+            from .probe import have_ytdlp
+            if not have_ytdlp():
+                return {"error": "yt-dlp is required to download web streams."}
+
+            if self._remuxer.busy:
+                return {"error": "Another conversion or download is currently running."}
+
+            self.log(f"Downloading web stream to Queue: {path}")
+            
+            youtube_dir = os.path.join(self.media_roots[0], "youtube")
+            os.makedirs(youtube_dir, exist_ok=True)
+
+            def download_worker():
+                import subprocess, time, re
+                from .remux import RemuxJob, RemuxPlan
                 
-                stream_url = self.media_server.register_live_stream(v_url, a_url)
-                self.log("Casting proxied stream...")
-                self.supervisor.load(stream_url, content_type="video/mp2t", title="Web Stream", source_path=path)
-                return {"casting": True, "url": stream_url}
-            except Exception as exc:
-                return {"error": f"yt-dlp extraction failed: {str(exc)}"}
+                cmd = [
+                    "yt-dlp", "--newline",
+                    "-o", os.path.join(youtube_dir, "%(title)s.%(ext)s"),
+                    "-f", "bestvideo+bestaudio/best",
+                    "--merge-output-format", "mkv",
+                    path
+                ]
+                
+                plan = RemuxPlan(
+                    input_path=path,
+                    output_path=os.path.join(youtube_dir, "downloading..."),
+                    description=f"Downloading {path} to Queue",
+                    estimated="A few minutes depending on network"
+                )
+                job = RemuxJob(plan=plan, state="running", started_at=time.time())
+                
+                with self._remuxer._lock:
+                    self._remuxer.job = job
+                self._publish("remux", None)
+
+                try:
+                    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                    with self._remuxer._lock:
+                        self._remuxer._proc = proc
+                        
+                    for line in proc.stdout:
+                        m = re.search(r'\[download\]\s+([\d\.]+)%', line)
+                        if m:
+                            job.progress = float(m.group(1)) / 100.0
+                            self._publish("remux", None)
+                    proc.wait()
+                    if proc.returncode != 0:
+                        job.state = "failed"
+                        job.error = "yt-dlp returned non-zero exit code"
+                    else:
+                        job.state = "done"
+                        job.progress = 1.0
+                except Exception as exc:
+                    job.state = "failed"
+                    job.error = str(exc)
+                finally:
+                    job.finished_at = time.time()
+                    self._publish("remux", None)
+                    if job.state == "done":
+                        self.log("Download complete! Refresh the queue to cast it.")
+                        time.sleep(4)
+                    else:
+                        self.log(f"Download failed: {job.error}", "warn")
+                        time.sleep(4)
+                    
+                    with self._remuxer._lock:
+                        if self._remuxer.job is job:
+                            self._remuxer.job = None
+                            self._remuxer._proc = None
+                    self._publish("remux", None)
+
+            import threading
+            threading.Thread(target=download_worker, daemon=True).start()
+            return {"converting": True, "description": "Downloading to Queue..."}
 
         report = self.preflight(path)
         if report.get("error") and not allow_unsafe:
