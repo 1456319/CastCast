@@ -494,9 +494,11 @@ class CastService:
             def download_worker():
                 import subprocess, time, re
                 from .remux import RemuxJob, RemuxPlan
+                from .probe import FFMPEG
                 
                 cmd = [
-                    "yt-dlp", "--newline",
+                    "yt-dlp", "--newline", "--no-continue",
+                    "--ffmpeg-location", FFMPEG,
                     "-o", os.path.join(youtube_dir, "%(title)s.%(ext)s"),
                     "-f", "bestvideo+bestaudio/best",
                     "--merge-output-format", "mkv",
@@ -520,7 +522,11 @@ class CastService:
                     with self._remuxer._lock:
                         self._remuxer._proc = proc
                         
+                    last_error = ""
                     for line in proc.stdout:
+                        if line.startswith("ERROR:") or line.startswith("WARNING:"):
+                            self.log(f"[yt-dlp] {line.strip()}", "warn")
+                            last_error = line.strip()
                         m = re.search(r'\[download\]\s+([\d\.]+)%', line)
                         if m:
                             job.progress = float(m.group(1)) / 100.0
@@ -528,7 +534,7 @@ class CastService:
                     proc.wait()
                     if proc.returncode != 0:
                         job.state = "failed"
-                        job.error = "yt-dlp returned non-zero exit code"
+                        job.error = last_error or "yt-dlp returned non-zero exit code"
                     else:
                         job.state = "done"
                         job.progress = 1.0
