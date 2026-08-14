@@ -483,7 +483,7 @@ class CastService:
             self.log(f"Extracting web stream via yt-dlp: {path}")
             try:
                 import subprocess
-                cmd = ["yt-dlp", "-g", "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best", path]
+                cmd = ["yt-dlp", "-g", "-f", "bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4][vcodec^=avc]/best", path]
                 result = subprocess.run(cmd, capture_output=True, text=True, check=True)
                 urls = [u for u in result.stdout.strip().split("\n") if u.strip()]
                 if not urls:

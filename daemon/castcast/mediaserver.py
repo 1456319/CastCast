@@ -128,7 +128,11 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             cmd = ["ffmpeg", "-i", cfg["v"], "-i", cfg["a"], "-c", "copy", "-f", "mpegts", "pipe:1"]
             try:
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                def log_err():
+                    for line in proc.stderr:
+                        server.log(f"[ffmpeg] {line.decode('utf-8', errors='replace').strip()}")
+                threading.Thread(target=log_err, daemon=True).start()
                 while True:
                     chunk = proc.stdout.read(256 * 1024)
                     if not chunk:
