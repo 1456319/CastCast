@@ -570,7 +570,8 @@ class CastService:
                         "yt-dlp", "--newline", "--no-continue",
                         "--ffmpeg-location", ffmpeg_path,
                         "--sponsorblock-remove", "sponsor,intro,outro,selfpromo,interaction",
-                        "--write-subs", "--write-auto-subs", "--sub-langs", "en,en-US,en-GB", "--embed-subs",
+                        "--write-subs", "--write-auto-subs", "--sub-langs", "en.*,eng,en-US,en-GB", "--embed-subs",
+                        "--compat-options", "embed-subs",
                         "-o", os.path.join(youtube_dir, "%(title)s.%(ext)s"),
                         "-f", "bestvideo[vcodec^=vp9]+bestaudio/bestvideo[vcodec^=avc]+bestaudio/best",
                         "--merge-output-format", "mkv",
@@ -699,13 +700,6 @@ class CastService:
         
         if subtitle_index is not None:
             active_track_ids.append(subtitle_index)
-        elif not subtitle_path:
-            # Auto-select embedded English subtitles by default
-            for t in info.get("subtitles", []):
-                lang = (t.get("language") or "und").lower()
-                if lang in ("eng", "en", "en-us", "en-gb"):
-                    active_track_ids.append(t.get("index"))
-                    break
 
         content_type = self._get_content_type(target, info)
 
