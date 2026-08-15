@@ -510,19 +510,34 @@ export default function App() {
                   <><Pause className="h-4 w-4" /> pause</>
                 )}
               </button>
-              <button
-                onClick={requestSubtitles}
-                disabled={!cast.source_path || busy === "subtitles" || cast.has_text_tracks}
-                className={`flex items-center gap-1.5 rounded border px-4 py-2 hover:bg-emerald-500/10 disabled:opacity-40 ${
-                  cast.has_text_tracks
-                    ? "border-emerald-400/60 bg-emerald-500/15 text-emerald-100"
-                    : "border-emerald-500/25"
-                }`}
-                title={cast.has_text_tracks ? "English subtitles are attached to this cast" : "Download English subtitles from OpenSubtitles"}
-              >
-                {busy === "subtitles" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Subtitles className="h-3.5 w-3.5" />}
-                {cast.has_text_tracks ? "subtitles on" : "subtitles"}
-              </button>
+              {(() => {
+                const hasEmbeddedSubs = (cast.active_track_ids?.length || 0) > 0;
+                const isSubtitlesOn = cast.has_text_tracks || hasEmbeddedSubs;
+                const isYouTube = cast.source_path?.includes("youtube") ?? false;
+                const tooltipTitle = cast.has_text_tracks
+                  ? "External English subtitles are attached to this cast"
+                  : hasEmbeddedSubs
+                  ? "Embedded subtitles are active"
+                  : isYouTube
+                  ? "No subtitles embedded by yt-dlp"
+                  : "Download English subtitles from OpenSubtitles";
+
+                return (
+                  <button
+                    onClick={requestSubtitles}
+                    disabled={!cast.source_path || busy === "subtitles" || isSubtitlesOn || isYouTube}
+                    className={`flex items-center gap-1.5 rounded border px-4 py-2 hover:bg-emerald-500/10 disabled:opacity-40 ${
+                      isSubtitlesOn
+                        ? "border-emerald-400/60 bg-emerald-500/15 text-emerald-100"
+                        : "border-emerald-500/25"
+                    }`}
+                    title={tooltipTitle}
+                  >
+                    {busy === "subtitles" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Subtitles className="h-3.5 w-3.5" />}
+                    {isSubtitlesOn ? "subtitles on" : "subtitles"}
+                  </button>
+                );
+              })()}
               <button
                 onClick={() => run("stop", daemon.stop)}
                 className="flex items-center gap-1.5 rounded border border-emerald-500/25 px-4 py-2 hover:bg-emerald-500/10"
