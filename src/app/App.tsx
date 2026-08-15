@@ -693,8 +693,8 @@ export default function App() {
                 <Loader2 className="h-4 w-4 animate-spin" /> probing…
               </div>
             ) : (
-              report && <PreflightPanel 
-                report={report} 
+              report && <PreflightPanel
+                report={report}
                 selectedAudioId={selectedAudioId}
                 setSelectedAudioId={setSelectedAudioId}
                 selectedSubtitleId={selectedSubtitleId}
