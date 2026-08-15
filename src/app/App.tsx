@@ -513,7 +513,7 @@ export default function App() {
               {(() => {
                 const hasEmbeddedSubs = (cast.active_track_ids?.length || 0) > 0;
                 const isSubtitlesOn = cast.has_text_tracks || hasEmbeddedSubs;
-                const isYouTube = cast.source_path?.includes("youtube") ?? false;
+                const isYouTube = cast.source_path?.includes("/youtube/") ?? false;
                 const tooltipTitle = cast.has_text_tracks
                   ? "External English subtitles are attached to this cast"
                   : hasEmbeddedSubs

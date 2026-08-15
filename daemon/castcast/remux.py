@@ -58,7 +58,10 @@ class RemuxPlan:
 
     @property
     def command(self) -> List[str]:
-        return [FFMPEG, "-hide_banner", "-y", "-i", self.input_path] + self.args + [self.output_path]
+        cmd = [shutil.which(FFMPEG) or FFMPEG, "-hide_banner", "-y", "-i", self.input_path] + self.args + [self.output_path]
+        if "Overnight 4K Remaster" in self.description:
+            cmd = ["nice", "-n", "19"] + cmd
+        return cmd
 
     @property
     def shell_command(self) -> str:
@@ -185,24 +188,24 @@ def build_4k_remaster_plan(info: MediaInfo, work_dir: str) -> Optional[RemuxPlan
     if width >= 3800:
         return None
 
-    out = output_path_for(info.path, work_dir, "mp4", "hevc")
+    out = output_path_for(info.path, work_dir, "mkv", "hevc")
 
     args = [
         "-map", f"0:{info.primary_video.index}",
         "-c:v", "libx265",
-        "-preset", "slow",
+        "-preset", "medium",  # Replaced 'slow' with 'medium' to prevent thermal throttling
         "-crf", "18",
         "-vf", "scale=3840:2160:flags=lanczos",
         "-pix_fmt", "yuv420p10le",
     ]
 
-    # Map the first audio track
+    # Map all audio tracks
     if info.audio:
-        args.extend(["-map", f"0:{info.audio[0].index}", "-c:a", "copy"])
+        args.extend(["-map", "0:a", "-c:a", "copy"])
     
     # Embed subtitles
     for sub in info.subtitles:
-        args.extend(["-map", f"0:{sub['index']}", "-c:s", "mov_text"])
+        args.extend(["-map", f"0:{sub.index}", "-c:s", "copy"])
 
     return RemuxPlan(
         input_path=info.path,
