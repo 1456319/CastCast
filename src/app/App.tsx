@@ -722,8 +722,21 @@ export default function App() {
                   }
                   disabled={remux?.state === "running"}
                   className="rounded border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-amber-300 hover:bg-amber-500/20 disabled:opacity-40"
+                  title={report.plan.description}
                 >
                   convert
+                </button>
+              )}
+              {report?.remaster_plan && (
+                <button
+                  onClick={() =>
+                    selected && run("remaster", () => daemon.remaster(selected.path))
+                  }
+                  disabled={remux?.state === "running"}
+                  className="rounded border border-blue-500/40 bg-blue-500/10 px-4 py-2.5 text-blue-300 hover:bg-blue-500/20 disabled:opacity-40 font-bold tracking-wide"
+                  title={report.remaster_plan.description}
+                >
+                  4K Remaster
                 </button>
               )}
             </div>

@@ -64,6 +64,7 @@ export interface Preflight {
   media: MediaInfo | null;
   verdict: Verdict | null;
   plan: { description: string; shell_command: string; estimated: string } | null;
+  remaster_plan?: { description: string; shell_command: string; estimated: string } | null;
   prepared_path?: string | null;
   tools_missing?: boolean;
   warning?: string;
@@ -143,7 +144,8 @@ export const daemon = {
     ),
   queue: (paths: string[]) =>
     post<{ queued?: number; skipped?: number; preparing?: number; error?: string }>("/queue", { paths }),
-  prepare: (path: string) => post<Preflight>("/prepare", { path }),
+  prepare: (path: string, force = false) => post<Preflight>("/prepare", { path, force }),
+  remaster: (path: string) => post<Preflight>("/remaster", { path }),
   cancelPrepare: () => post<Status>("/prepare/cancel"),
   trash: (path: string) => post<{ trashed?: string; error?: string }>("/trash", { path }),
   delete: (path: string) => post<{ deleted?: string; error?: string }>("/delete", { path }),

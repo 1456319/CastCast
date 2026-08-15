@@ -139,6 +139,11 @@ class _Handler(BaseHTTPRequestHandler):
                 if not path:
                     return self._json({"error": "path is required"}, 400)
                 self._json(svc.prepare(path, force=bool(body.get("force"))))
+            elif route == "/remaster":
+                path = body.get("path")
+                if not path:
+                    return self._json({"error": "path is required"}, 400)
+                self._json(svc.remaster(path))
             elif route == "/prepare/cancel":
                 self._json(svc.cancel_prepare())
             elif route == "/trash":

@@ -173,6 +173,53 @@ def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str, is_ultra: bool 
     )
 
 
+def build_4k_remaster_plan(info: MediaInfo, work_dir: str) -> Optional[RemuxPlan]:
+    """Generates a plan to upconvert a 1080p source to 4K HEVC via lanczos."""
+    if not info.primary_video:
+        return None
+        
+    width = info.primary_video.width
+    height = info.primary_video.height
+    
+    # We only upconvert 1080p (or around there). If it's already 4K, skip it.
+    if width >= 3800:
+        return None
+
+    out = output_path_for(info.path, work_dir, "mp4", "hevc")
+
+    args = [
+        "-map", f"0:{info.primary_video.index}",
+        "-c:v", "libx265",
+        "-preset", "slow",
+        "-crf", "18",
+        "-vf", "scale=3840:2160:flags=lanczos",
+        "-pix_fmt", "yuv420p10le",
+    ]
+
+    # Map the first audio track
+    if info.audio:
+        args.extend(["-map", f"0:{info.audio[0].index}", "-c:a", "copy"])
+    
+    # Embed subtitles
+    for sub in info.subtitles:
+        args.extend(["-map", f"0:{sub['index']}", "-c:s", "mov_text"])
+
+    return RemuxPlan(
+        input_path=info.path,
+        output_path=out,
+        args=args,
+        lossless_video=False,
+        lossless_audio=True,
+        description="High-fidelity Overnight 4K Remaster (Lanczos scaling, HEVC). Extremely slow.",
+        estimated="Hours to Days depending on device power",
+        expected_hdr_format="SDR",
+        expected_color_primaries="",
+        expected_color_transfer="",
+        expected_color_space="",
+        video_codec="hevc",
+    )
+
+
 @dataclass
 class RemuxJob:
     plan: RemuxPlan
