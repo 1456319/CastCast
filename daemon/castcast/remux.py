@@ -97,7 +97,7 @@ def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str, is_ultra: bool 
     # -- video ----------------------------------------------------------
     if verdict.video_action == "transcode":
         v = info.primary_video
-        
+
         if is_ultra:
             # Preserve HDR by staying 10-bit when the source is; otherwise the
             # picture comes back washed out.
@@ -181,10 +181,10 @@ def build_4k_remaster_plan(info: MediaInfo, work_dir: str) -> Optional[RemuxPlan
     """Generates a plan to upconvert a 1080p source to 4K HEVC via lanczos."""
     if not info.primary_video:
         return None
-        
+
     width = info.primary_video.width
-    height = info.primary_video.height
     
+
     # We only upconvert 1080p (or around there). If it's already 4K, skip it.
     if width >= 3800:
         return None
@@ -203,7 +203,7 @@ def build_4k_remaster_plan(info: MediaInfo, work_dir: str) -> Optional[RemuxPlan
     # Map all audio tracks
     if info.audio:
         args.extend(["-map", "0:a", "-c:a", "copy"])
-    
+
     # Embed subtitles
     for sub in info.subtitles:
         args.extend(["-map", f"0:{sub.index}", "-c:s", "copy"])

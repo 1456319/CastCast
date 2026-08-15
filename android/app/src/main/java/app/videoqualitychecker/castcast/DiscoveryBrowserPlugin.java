@@ -42,7 +42,7 @@ public class DiscoveryBrowserPlugin extends Plugin {
             settings.setJavaScriptEnabled(true);
             settings.setDomStorageEnabled(true);
             settings.setMediaPlaybackRequiresUserGesture(false);
-            
+
             // This is the core interception engine for Phase 1
             webView.setWebViewClient(new WebViewClient() {
                 @Override
@@ -50,31 +50,31 @@ public class DiscoveryBrowserPlugin extends Plugin {
                     String reqUrl = request.getUrl().toString();
                     String method = request.getMethod();
                     Map<String, String> headers = request.getRequestHeaders();
-                    
+
                     boolean isManifest = reqUrl.contains(".m3u8") || reqUrl.contains(".mpd");
                     boolean isDrm = reqUrl.toLowerCase().contains("widevine") || reqUrl.toLowerCase().contains("drm");
-                    
+
                     if (isManifest || isDrm) {
                         JSObject eventData = new JSObject();
                         eventData.put("url", reqUrl);
                         eventData.put("method", method);
-                        
+
                         JSObject headersJson = new JSObject();
                         for (Map.Entry<String, String> entry : headers.entrySet()) {
                             headersJson.put(entry.getKey(), entry.getValue());
                         }
                         eventData.put("headers", headersJson);
-                        
+
                         if (isDrm) {
                             eventData.put("type", "drm");
                         } else {
                             eventData.put("type", "manifest");
                         }
-                        
+
                         // Emit event back to Capacitor / React frontend
                         notifyListeners("onStreamDetected", eventData);
                     }
-                    
+
                     return super.shouldInterceptRequest(view, request);
                 }
             });
@@ -82,10 +82,10 @@ public class DiscoveryBrowserPlugin extends Plugin {
             browserDialog.setContentView(webView, new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT));
-            
+
             webView.loadUrl(url);
             browserDialog.show();
-            
+
             call.resolve();
         });
     }
