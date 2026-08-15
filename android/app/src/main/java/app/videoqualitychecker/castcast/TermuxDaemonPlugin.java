@@ -143,9 +143,6 @@ public class TermuxDaemonPlugin extends Plugin {
             "echo '[1/8] checking Termux home'\n" +
             "if [ ! -d \"$TERMUX_HOME\" ]; then echo 'FAIL: Termux home directory not found at '$TERMUX_HOME'. Is Termux installed and opened at least once?'; exit 1; fi\n" +
             "\n" +
-            "echo '[1.5/8] checking nodejs'\n" +
-            "if [ ! -f /data/data/com.termux/files/usr/bin/node ]; then echo 'FAIL: nodejs is not installed. Open Termux and run: pkg install nodejs'; exit 1; fi\n" +
-            "\n" +
             "echo '[2/8] reading Termux UID/GID'\n" +
             "TERMUX_UID=$(stat -c %u \"$TERMUX_HOME\" 2>/dev/null) || { echo 'FAIL: stat -c %u failed; trying ls fallback'; TERMUX_UID=$(ls -ldn \"$TERMUX_HOME\" | awk '{print $3}'); }\n" +
             "TERMUX_GID=$(stat -c %g \"$TERMUX_HOME\" 2>/dev/null) || { echo 'FAIL: stat -c %g failed; trying ls fallback'; TERMUX_GID=$(ls -ldn \"$TERMUX_HOME\" | awk '{print $4}'); }\n" +
