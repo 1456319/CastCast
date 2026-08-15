@@ -71,6 +71,11 @@ if ! command -v ffmpeg &> /dev/null; then
     log_action "FFmpeg not found. Installing ffmpeg..."
     pkg install -y ffmpeg || abort "Failed to install FFmpeg"
 fi
+
+if ! command -v node &> /dev/null; then
+    log_action "NodeJS not found. Installing nodejs..."
+    pkg install -y nodejs || abort "Failed to install NodeJS"
+fi
 log_action "[OK] Dependencies verified."
 
 # 4. Launch the Daemon
