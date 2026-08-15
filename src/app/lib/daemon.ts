@@ -116,7 +116,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
   });
-  const body = await res.json().catch(() => ({}));
+  const body = await res.json().catch((e) => {
+    console.error("Failed to parse daemon response:", e);
+    return { error: "Failed to parse daemon response." };
+  });
   if (body?.error) {
     throw new Error(body.error);
   }
@@ -211,7 +214,7 @@ export function subscribe(handlers: SubscribeArgs): () => void {
 }
 
 export function formatDuration(seconds: number): string {
-  if (!seconds || !isFinite(seconds)) return "0:00";
+  if (isNaN(seconds) || !isFinite(seconds)) return "0:00";
   const total = Math.floor(seconds);
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);

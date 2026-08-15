@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -76,7 +77,7 @@ class RemuxPlan:
 
 def output_path_for(input_path: str, work_dir: str, container: str, video_codec: str = "") -> str:
     stem = os.path.splitext(os.path.basename(input_path))[0]
-    ext = "webm" if container == "webm" else "mp4"
+    ext = container if container in ("webm", "mkv") else "mp4"
     codec_tag = f".{video_codec}" if video_codec else ""
     suffix = f".cast{codec_tag}.fmp4.mp4" if container == "fmp4" else f".cast{codec_tag}.{ext}"
     return os.path.join(work_dir, stem + suffix)
