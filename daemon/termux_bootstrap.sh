@@ -7,8 +7,8 @@
 # Intent (com.termux.app.RunCommandService). It ensures the environment
 # is safely established and logs every action to a user-readable audit log.
 #
-# Trust & Transparency: 
-# If a critical failure occurs, the script will ABORT rather than taking 
+# Trust & Transparency:
+# If a critical failure occurs, the script will ABORT rather than taking
 # arbitrary destructive actions.
 # =======================================================================
 
