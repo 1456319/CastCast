@@ -126,7 +126,9 @@ class _Handler(BaseHTTPRequestHandler):
                     return self._json({"error": "path is required"}, 400)
                 self._json(svc.cast(path,
                                     allow_unsafe=bool(body.get("allow_unsafe")),
-                                    auto_prepare=body.get("auto_prepare", True)))
+                                    auto_prepare=body.get("auto_prepare", True),
+                                    audio_index=body.get("audio_index"),
+                                    subtitle_index=body.get("subtitle_index")))
             elif route == "/subtitles/opensubtitles":
                 path = body.get("path")
                 if not path:
@@ -164,6 +166,8 @@ class _Handler(BaseHTTPRequestHandler):
             elif route == "/shutdown":
                 import os
                 os._exit(0)
+            elif route == "/discovery/intercept":
+                self._json(svc.handle_intercept(body))
             else:
                 self._json({"error": "not found"}, 404)
         except RuntimeError as exc:

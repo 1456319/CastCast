@@ -34,6 +34,7 @@ import {
 } from "./lib/daemon";
 import { PreflightPanel } from "./components/preflight-panel";
 import { TERMUX_MANUAL_COMMAND, launchTermuxDaemon, getSharedUrl } from "./lib/termux-daemon";
+import { DiscoveryBrowser } from "./lib/discovery-browser";
 import {
   Drawer,
   DrawerContent,
@@ -72,8 +73,12 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [launchMessage, setLaunchMessage] = useState<string | null>(null);
   const [missingDep, setMissingDep] = useState<string | null>(null);
+  const [selectedAudioId, setSelectedAudioId] = useState<number | null>(null);
+  const [selectedSubtitleId, setSelectedSubtitleId] = useState<number | null>(null);
 
   const logRef = useRef<HTMLDivElement>(null);
+
+  const [anomaly, setAnomaly] = useState<any | null>(null);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -99,6 +104,7 @@ export default function App() {
       onRemux: refreshStatus,
       onMedia: (media) =>
         setStatus((prev) => (prev ? { ...prev, cast: { ...prev.cast, ...media } } : prev)),
+      onTelemetryAnomaly: (data) => setAnomaly(data),
     });
     const timer = window.setInterval(refreshStatus, 5000);
     return () => {
@@ -175,6 +181,18 @@ export default function App() {
     return () => document.removeEventListener("visibilitychange", handleVis);
   }, [checkSharedUrl]);
 
+  useEffect(() => {
+    const handle = DiscoveryBrowser.addListener("onStreamDetected", async (event) => {
+      console.log("Stream detected from WebView!", event);
+      try {
+        await daemon.interceptDiscovery(event);
+      } catch (err) {
+        console.error("Failed to bridge interception to daemon", err);
+      }
+    });
+    return () => { handle.then(h => h.remove()); };
+  }, []);
+
   const launchDaemon = () =>
     run("launch-daemon", async () => {
       setLaunchMessage("Sending Termux RUN_COMMAND intent…");
@@ -226,6 +244,8 @@ export default function App() {
   const select = (item: LibraryItem) =>
     run("preflight", async () => {
       setSelected(item);
+      setSelectedAudioId(null);
+      setSelectedSubtitleId(null);
       setReport(null);
       setReport(await daemon.preflight(item.path));
     });
@@ -248,7 +268,7 @@ export default function App() {
   const doCast = (allowUnsafe = false) =>
     selected &&
     run("cast", async () => {
-      const result = await daemon.cast(selected.path, allowUnsafe);
+      const result = await daemon.cast(selected.path, allowUnsafe, selectedAudioId, selectedSubtitleId);
       if (result.error) setNotice(result.error);
       if (result.converting) setNotice("Conversion started — cast again when it finishes.");
       if (result.casting) markLoading(selected.name, selected.path);
@@ -339,9 +359,20 @@ export default function App() {
             <Cast className="h-5 w-5 text-emerald-400" />
             <span className="tracking-wide">castcast</span>
           </div>
-          <div className="flex items-center gap-2 font-mono text-emerald-500/60">
-            <Wifi className="h-3.5 w-3.5" />
-            {status?.media_server.lan_ip}:{status?.media_server.port}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                const url = prompt("Enter a URL to discover (e.g. https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8):", "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8");
+                if (url) DiscoveryBrowser.open({ url });
+              }}
+              className="rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-300 hover:bg-emerald-500/20"
+            >
+              Discovery Mode
+            </button>
+            <div className="flex items-center gap-2 font-mono text-emerald-500/60">
+              <Wifi className="h-3.5 w-3.5" />
+              {status?.media_server.lan_ip}:{status?.media_server.port}
+            </div>
           </div>
         </header>
 
@@ -647,7 +678,13 @@ export default function App() {
                 <Loader2 className="h-4 w-4 animate-spin" /> probing…
               </div>
             ) : (
-              report && <PreflightPanel report={report} />
+              report && <PreflightPanel 
+                report={report} 
+                selectedAudioId={selectedAudioId}
+                setSelectedAudioId={setSelectedAudioId}
+                selectedSubtitleId={selectedSubtitleId}
+                setSelectedSubtitleId={setSelectedSubtitleId}
+              />
             )}
 
             <div className="flex gap-2">
@@ -824,6 +861,45 @@ export default function App() {
             </div>
           </DrawerContent>
         </Drawer>
+      )}
+
+      {/* Gamified Telemetry Modal */}
+      {anomaly && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-xl border border-amber-500/50 bg-[#0a100d] p-6 shadow-[0_0_30px_rgba(245,158,11,0.15)]">
+            <div className="mb-4 flex items-center gap-3 text-amber-400">
+              <CircleAlert className="h-8 w-8" />
+              <h2 className="text-xl font-bold tracking-wide">Rare Anomaly Discovered!</h2>
+            </div>
+            <div className="mb-6 space-y-3 text-sm text-emerald-100/80">
+              <p>
+                You've stumbled upon a highly complex streaming architecture at <span className="font-mono text-amber-300">{anomaly.domain}</span> that our engine hasn't seen before.
+              </p>
+              <p>
+                We have captured a diagnostic signature. Would you like to submit this to the developers and get credited as a Contributor?
+              </p>
+            </div>
+            <div className="flex flex-col gap-3">
+              <button
+                onClick={() => {
+                  const issueTitle = encodeURIComponent(`Anomaly Report: ${anomaly.domain}`);
+                  const issueBody = encodeURIComponent(`I encountered an anomaly while casting.\n\n\`\`\`json\n${JSON.stringify(anomaly, null, 2)}\n\`\`\`\n\n_Submitted via CastCast Telemetry Engine_`);
+                  window.open(`https://github.com/1456319/openchromecast/issues/new?title=${issueTitle}&body=${issueBody}`, "_blank");
+                  setAnomaly(null);
+                }}
+                className="rounded-lg border border-amber-500/50 bg-amber-500/20 py-3 font-bold text-amber-300 transition-colors hover:bg-amber-500/30"
+              >
+                Submit & Claim Credit
+              </button>
+              <button
+                onClick={() => setAnomaly(null)}
+                className="rounded-lg border border-emerald-500/20 px-4 py-3 text-emerald-500/60 hover:bg-emerald-500/10"
+              >
+                Ignore
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

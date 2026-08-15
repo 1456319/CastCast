@@ -136,10 +136,10 @@ export const daemon = {
   preflight: (path: string) => request<Preflight>(`/preflight?path=${encodeURIComponent(path)}`),
   connect: (host: string, port = 8009) => post<Status>("/connect", { host, port }),
   disconnect: () => post<Status>("/disconnect"),
-  cast: (path: string, allowUnsafe = false) =>
+  cast: (path: string, allowUnsafe = false, audioIndex?: number | null, subtitleIndex?: number | null) =>
     post<Preflight & { casting?: boolean; url?: string; converting?: boolean; requires_confirmation?: boolean }>(
       "/cast",
-      { path, allow_unsafe: allowUnsafe },
+      { path, allow_unsafe: allowUnsafe, audio_index: audioIndex, subtitle_index: subtitleIndex },
     ),
   queue: (paths: string[]) =>
     post<{ queued?: number; skipped?: number; preparing?: number; error?: string }>("/queue", { paths }),
@@ -154,6 +154,7 @@ export const daemon = {
   volume: (level: number) => post<Status>("/volume", { level }),
   mute: (muted: boolean) => post<Status>("/mute", { muted }),
   shutdown: () => post<{}>("/shutdown"),
+  interceptDiscovery: (payload: any) => post<any>("/discovery/intercept", payload),
   requestOpenSubtitles: (path: string, language = "eng") =>
     post<Preflight & { subtitles?: { path: string; language: string; url: string; label: string } }>(
       "/subtitles/opensubtitles",
@@ -161,16 +162,18 @@ export const daemon = {
     ),
 };
 
-/** Subscribe to the daemon's SSE stream. Returns an unsubscribe function. */
-export function subscribe(handlers: {
-  onStatus?: (s: Status) => void;
-  onLog?: (l: LogLine) => void;
-  onMedia?: (m: CastState) => void;
+export interface SubscribeArgs {
+  onStatus?: (status: Status) => void;
+  onLog?: (line: LogLine) => void;
   onState?: () => void;
   onRemux?: () => void;
+  onMedia?: (media: CastState) => void;
+  onTelemetryAnomaly?: (data: any) => void;
   onOpen?: () => void;
   onError?: () => void;
-}): () => void {
+}
+
+export function subscribe(handlers: SubscribeArgs): () => void {
   let source: EventSource | null = null;
   try {
     source = new EventSource(`${DAEMON_BASE}/events`);
@@ -200,6 +203,7 @@ export function subscribe(handlers: {
   bind("load_failed", () => handlers.onState?.());
   bind("command_failed", () => handlers.onState?.());
   bind("remux", () => handlers.onRemux?.());
+  bind("telemetry_anomaly", handlers.onTelemetryAnomaly);
 
   return () => source?.close();
 }
