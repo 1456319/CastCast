@@ -408,20 +408,28 @@ class CastService:
             self.log(f"reusing existing remastered file: {plan.output_path}")
             return report
             
-        if self._remuxer.busy:
-            return {**report, "error": "another conversion is already running"}
+        if not hasattr(self, "_remaster_queue"):
+            import queue
+            self._remaster_queue = queue.Queue()
+            def queue_worker():
+                while True:
+                    path, job_plan, duration = self._remaster_queue.get()
+                    self.log(f"Starting queued remaster: {job_plan.description}")
+                    # wait until not busy
+                    import time
+                    while self._remuxer.busy:
+                        time.sleep(5)
+                    self._remuxer.run(job_plan, duration_s=duration)
+                    self._remaster_queue.task_done()
+            t = threading.Thread(target=queue_worker, daemon=True, name="castcast-remaster-queue")
+            t.start()
 
-        self.log(f"remastering: {plan.description}")
-        self.log(f"$ {plan.shell_command}")
-
-        def worker():
-            duration = report.get("media", {}).get("duration_s", 0.0)
-            self._remuxer.run(plan, duration_s=duration)
-
-        self._remux_thread = threading.Thread(target=worker, name="castcast-remux",
-                                              daemon=True)
-        self._remux_thread.start()
-        return report
+        duration = report.get("media", {}).get("duration_s", 0.0)
+        self._remaster_queue.put((path, plan, duration))
+        
+        qsize = self._remaster_queue.qsize()
+        self.log(f"Queued for overnight remastering: {os.path.basename(path)} (Queue position: {qsize})")
+        return {**report, "queued": True, "queue_position": qsize}
 
     def cancel_prepare(self) -> dict:
         self._remuxer.cancel()
