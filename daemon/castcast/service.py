@@ -105,7 +105,7 @@ class CastService:
             port=int(config.get("media_port") or 0),
             bind=config.get("bind") or "0.0.0.0",
             logger=lambda msg: self.log(msg, "debug"),
-            on_telemetry=lambda data: self._notify("telemetry_anomaly", data)
+            on_telemetry=lambda data: self._emit("telemetry_anomaly", data)
         )
 
         self.supervisor: Optional[Supervisor] = None
@@ -484,9 +484,9 @@ class CastService:
             "media": {
                 "contentId": url,
                 "streamType": "BUFFERED",
-"contentType": self._get_content_type(target, info),
+                "contentType": self._get_content_type(target, info),
                 "customData": {
-                    "sourcePath": target
+                    "sourcePath": path
                 },
                 "metadata": {
                     "metadataType": 1,
@@ -670,7 +670,7 @@ class CastService:
                         "requires_confirmation": True}
 
         original_info = report.get("media") or {}
-        info = probe(target) if target != path else original_info
+        info = probe(target).to_dict() if target != path else original_info
         target, language_note = self._target_for_default_language(target, info)
         if language_note:
             self.log(language_note, "debug")
@@ -711,7 +711,7 @@ class CastService:
             poster_url=poster_url,
             backdrop_url=enriched.get("backdrop_url", ""),
             duration=float(info.get("duration_s") or 0.0),
-            source_path=target,
+            source_path=path,
             tracks=tracks,
             active_track_ids=active_track_ids,
         )
@@ -772,10 +772,10 @@ class CastService:
                 "media": {
                     "contentId": url,
                     "streamType": "BUFFERED",
-"contentType": self._get_content_type(target, info),
-                "customData": {
-                    "sourcePath": target
-                },
+                    "contentType": self._get_content_type(target, info),
+                    "customData": {
+                        "sourcePath": path
+                    },
                     "metadata": {
                         "metadataType": 1,
                         "title": title

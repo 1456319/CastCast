@@ -1,7 +1,10 @@
 import json
 import os
 import time
+import logging
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 class RuleManager:
     def __init__(self, work_dir: str):
@@ -10,13 +13,16 @@ class RuleManager:
         self.rules = self._load()
 
     def _load(self) -> dict:
+        rules = {"domains": {}, "drm_blacklist": []}
         if os.path.exists(self.rules_file):
             try:
                 with open(self.rules_file, "r") as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return {"domains": {}, "drm_blacklist": []}
+                    loaded = json.load(f)
+                    rules["domains"].update(loaded.get("domains", {}))
+                    rules["drm_blacklist"].extend(loaded.get("drm_blacklist", []))
+            except Exception as e:
+                logger.warning(f"Failed to load rulesets.json, resetting rules: {e}")
+        return rules
 
     def _save(self):
         os.makedirs(os.path.dirname(self.rules_file), exist_ok=True)
@@ -24,6 +30,8 @@ class RuleManager:
             json.dump(self.rules, f, indent=2)
 
     def _log_telemetry(self, domain: str, rule_type: str, data: dict):
+        if os.environ.get("CASTCAST_TELEMETRY_OPTOUT") == "1":
+            return
         os.makedirs(os.path.dirname(self.telemetry_file), exist_ok=True)
         # Opt-out telemetry for automatically generated rulesets
         with open(self.telemetry_file, "a") as f:

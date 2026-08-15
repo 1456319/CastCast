@@ -113,15 +113,18 @@ class _Handler(BaseHTTPRequestHandler):
     # -- verbs ------------------------------------------------------------
 
     def do_HEAD(self):  # noqa: N802
-        self._serve(body=False)
+        if self.path.startswith("/proxy/"):
+            self._serve_proxy(body=False)
+        else:
+            self._serve(body=False)
 
     def do_GET(self):  # noqa: N802
         if self.path.startswith("/proxy/"):
-            self._serve_proxy()
+            self._serve_proxy(body=True)
         else:
             self._serve(body=True)
 
-    def _serve_proxy(self):
+    def _serve_proxy(self, body: bool = True):
         import base64
         import urllib.request
         import urllib.error
@@ -153,11 +156,14 @@ class _Handler(BaseHTTPRequestHandler):
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
 
+                if not body:
+                    return
+
                 # If this is an HLS manifest, rewrite it!
                 if "mpegurl" in content_type.lower() or target_url.endswith(".m3u8"):
-                    body = response.read().decode("utf-8", "replace")
+                    body_content = response.read().decode("utf-8", "replace")
                     rewritten = []
-                    for line in body.splitlines():
+                    for line in body_content.splitlines():
                         line = line.strip()
                         if line and not line.startswith("#"):
                             abs_uri = urllib.parse.urljoin(target_url, line)
@@ -198,21 +204,24 @@ class _Handler(BaseHTTPRequestHandler):
             if not body:
                 return
             cmd = ["ffmpeg", "-i", cfg["v"], "-i", cfg["a"], "-c", "copy", "-f", "mpegts", "pipe:1"]
+            proc = None
             try:
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 def log_err():
-                    for line in proc.stderr:
-                        server.log(f"[ffmpeg] {line.decode('utf-8', errors='replace').strip()}")
+                    if proc and proc.stderr:
+                        for line in proc.stderr:
+                            server.log(f"[ffmpeg] {line.decode('utf-8', errors='replace').strip()}")
                 threading.Thread(target=log_err, daemon=True).start()
                 while True:
                     chunk = proc.stdout.read(256 * 1024)
                     if not chunk:
                         break
                     self.wfile.write(chunk)
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, FileNotFoundError, OSError):
                 pass
             finally:
-                proc.kill()
+                if proc:
+                    proc.kill()
             return
 
         full = self._resolve()
@@ -297,7 +306,10 @@ class MediaServer:
         self.intercept_rules: dict[str, dict] = {}
         
         telemetry_dir = "/storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast/.castcast/telemetry"
-        os.makedirs(telemetry_dir, exist_ok=True)
+        try:
+            os.makedirs(telemetry_dir, exist_ok=True)
+        except OSError as e:
+            if self._logger: self._logger(f"Could not create telemetry dir: {e}")
         self.telemetry_log = os.path.join(telemetry_dir, "failed_manifests.jsonl")
 
     def log(self, message: str) -> None:

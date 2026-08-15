@@ -631,7 +631,7 @@ class Supervisor:
         with self._lock:
             if session_id is not None:
                 if self._media_session_id is not None and session_id != self._media_session_id:
-                    self._log(f"media session changed from {self._media_session_id} to {session_id}", "debug")
+                    self._log(f"[debug] media session changed from {self._media_session_id} to {session_id}")
                 self._media_session_id = session_id
                 self.status.media_session_id = session_id
 
