@@ -344,6 +344,7 @@ class CastService:
             is_ultra=is_ultra
         )
         plan = remux.build_plan(info, verdict, self.work_dir, is_ultra=is_ultra)
+        remaster_plan = remux.build_4k_remaster_plan(info, self.work_dir)
 
         # If we already produced a converted copy, point at it.
         ready = None
@@ -354,6 +355,7 @@ class CastService:
             "media": info.to_dict(),
             "verdict": verdict.to_dict(),
             "plan": plan.to_dict() if plan else None,
+            "remaster_plan": remaster_plan.to_dict() if remaster_plan else None,
             "prepared_path": ready,
         }
 
@@ -386,7 +388,40 @@ class CastService:
         self._remux_thread = threading.Thread(target=worker, name="castcast-remux",
                                               daemon=True)
         self._remux_thread.start()
-        return {**report, "started": True}
+        return report
+
+    def remaster(self, path: str, force: bool = False) -> dict:
+        """Run the high-fidelity 4K remaster in the background."""
+        report = self.preflight(path)
+        if report.get("error"):
+            return report
+        plan_dict = report.get("remaster_plan")
+        if not plan_dict:
+            return {**report, "error": "file does not qualify for 4K remastering (already 4K or not video)"}
+        
+        # Check if output already exists
+        plan_kwargs = dict(plan_dict)
+        plan_kwargs.pop("shell_command", None)
+        plan = remux.RemuxPlan(**plan_kwargs)
+
+        if os.path.exists(plan.output_path) and not force:
+            self.log(f"reusing existing remastered file: {plan.output_path}")
+            return report
+            
+        if self._remuxer.busy:
+            return {**report, "error": "another conversion is already running"}
+
+        self.log(f"remastering: {plan.description}")
+        self.log(f"$ {plan.shell_command}")
+
+        def worker():
+            duration = report.get("media", {}).get("duration_s", 0.0)
+            self._remuxer.run(plan, duration_s=duration)
+
+        self._remux_thread = threading.Thread(target=worker, name="castcast-remux",
+                                              daemon=True)
+        self._remux_thread.start()
+        return report
 
     def cancel_prepare(self) -> dict:
         self._remuxer.cancel()
