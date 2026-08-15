@@ -49,7 +49,15 @@ MIME_TYPES = {
 
 
 def guess_mime(path: str) -> str:
-    return MIME_TYPES.get(os.path.splitext(path)[1].lower(), "video/mp4")
+    import urllib.parse, base64
+    if "/proxy/" in path and "url=" in path:
+        try:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+            if "url" in query:
+                path = base64.b64decode(query["url"][0]).decode("utf-8")
+        except Exception:
+            pass
+    return MIME_TYPES.get(os.path.splitext(urllib.parse.urlsplit(path).path)[1].lower(), "video/mp4")
 
 
 def detect_lan_ip(target: str = "8.8.8.8") -> str:
@@ -108,7 +116,70 @@ class _Handler(BaseHTTPRequestHandler):
         self._serve(body=False)
 
     def do_GET(self):  # noqa: N802
-        self._serve(body=True)
+        if self.path.startswith("/proxy/"):
+            self._serve_proxy()
+        else:
+            self._serve(body=True)
+
+    def _serve_proxy(self):
+        import base64
+        import urllib.request
+        import urllib.error
+        server: "MediaServer" = self.server.media_server
+        
+        path_obj = urllib.parse.urlsplit(self.path)
+        query = urllib.parse.parse_qs(path_obj.query)
+        encoded_url = query.get("url", [""])[0]
+        if not encoded_url:
+            self.send_error(400, "Missing url parameter")
+            return
+
+        try:
+            target_url = base64.b64decode(encoded_url).decode("utf-8")
+        except Exception:
+            self.send_error(400, "Invalid base64 url")
+            return
+
+        domain = urllib.parse.urlsplit(target_url).netloc
+        headers = server.get_intercept_headers(domain)
+
+        try:
+            req = urllib.request.Request(target_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as response:
+                content_type = response.headers.get("Content-Type", "application/octet-stream")
+                
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+
+                # If this is an HLS manifest, rewrite it!
+                if "mpegurl" in content_type.lower() or target_url.endswith(".m3u8"):
+                    body = response.read().decode("utf-8", "replace")
+                    rewritten = []
+                    for line in body.splitlines():
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            abs_uri = urllib.parse.urljoin(target_url, line)
+                            encoded = base64.b64encode(abs_uri.encode("utf-8")).decode("utf-8")
+                            rewritten.append(f"http://{server.lan_ip}:{server.port}/proxy/?url={encoded}")
+                        else:
+                            rewritten.append(line)
+                    self.wfile.write("\n".join(rewritten).encode("utf-8"))
+                else:
+                    # Stream the raw chunks directly to the TV
+                    import shutil
+                    shutil.copyfileobj(response, self.wfile)
+                    
+        except Exception as e:
+            server.log(f"Proxy error for {target_url}: {e}")
+            if not self.wfile.closed:
+                try:
+                    self.send_error(500, "Proxy error")
+                except:
+                    pass
+            # Trigger shadow telemetry for the failure
+            server.trigger_telemetry(target_url, str(e))
 
     def _serve(self, body: bool) -> None:
         server: "MediaServer" = self.server.media_server  # type: ignore
@@ -212,16 +283,22 @@ class _Handler(BaseHTTPRequestHandler):
 class MediaServer:
     """Threaded HTTP server exposing one or more directories under a random path."""
 
-    def __init__(self, roots, port: int = 0, bind: str = "0.0.0.0", logger=None):
+    def __init__(self, roots, port: int = 0, bind: str = "0.0.0.0", logger=None, on_telemetry=None):
         self.roots = [os.path.realpath(r) for r in roots]
         self.root_token = secrets.token_urlsafe(12)
         self._bind = bind
         self._requested_port = port
         self._logger = logger
+        self._on_telemetry = on_telemetry
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self.lan_ip = detect_lan_ip()
         self.live_streams: dict[str, dict] = {}
+        self.intercept_rules: dict[str, dict] = {}
+        
+        telemetry_dir = "/storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast/.castcast/telemetry"
+        os.makedirs(telemetry_dir, exist_ok=True)
+        self.telemetry_log = os.path.join(telemetry_dir, "failed_manifests.jsonl")
 
     def log(self, message: str) -> None:
         if self._logger:
@@ -243,6 +320,45 @@ class MediaServer:
         stream_id = secrets.token_urlsafe(8)
         self.live_streams[stream_id] = {"v": v_url, "a": a_url}
         return f"http://{self.lan_ip}:{self.port}/{self.root_token}/live/{stream_id}.ts"
+
+    def register_intercept(self, url: str, headers: dict):
+        domain = urllib.parse.urlsplit(url).netloc
+        
+        # Clean headers (remove forbidden/problematic headers for proxying)
+        clean_headers = {}
+        for k, v in headers.items():
+            k_lower = k.lower()
+            if k_lower not in ("host", "connection", "accept-encoding"):
+                clean_headers[k] = v
+                
+        self.intercept_rules[domain] = clean_headers
+        self.log(f"Registered proxy ruleset for domain: {domain}")
+
+    def get_intercept_headers(self, domain: str) -> dict:
+        return self.intercept_rules.get(domain, {})
+
+    def trigger_telemetry(self, failed_url: str, error_msg: str):
+        import json, time
+        # Anonymized logging: we do NOT log full URLs or query params to protect PII/tokens
+        domain = urllib.parse.urlsplit(failed_url).netloc
+        ext = os.path.splitext(urllib.parse.urlsplit(failed_url).path)[1]
+        
+        telemetry_data = {
+            "timestamp": int(time.time()),
+            "domain": domain,
+            "extension": ext,
+            "error": error_msg,
+        }
+        
+        try:
+            with open(self.telemetry_log, "a") as f:
+                f.write(json.dumps(telemetry_data) + "\n")
+            self.log(f"Shadow Telemetry: Logged anonymous failure signature for {domain}")
+            
+            if self._on_telemetry:
+                self._on_telemetry(telemetry_data)
+        except Exception as e:
+            self.log(f"Failed to write telemetry: {e}")
 
     def start(self) -> None:
         if self._httpd:

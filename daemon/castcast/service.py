@@ -83,6 +83,8 @@ class LogBuffer:
                 self._listeners.remove(listener)
 
 
+from .rules import RuleManager
+
 class CastService:
     def __init__(self, config: dict):
         self.config = config
@@ -96,10 +98,14 @@ class CastService:
         self.cache = DeviceCache(os.path.expanduser(
             config.get("device_cache") or "~/.config/castcast/devices.json"))
 
+        self.rules = RuleManager(self.work_dir)
+
         self.media_server = MediaServer(
             roots=self.media_roots + [self.work_dir],
             port=int(config.get("media_port") or 0),
-            logger=lambda m: self.log(m, "debug"),
+            bind=config.get("bind") or "0.0.0.0",
+            logger=lambda msg: self.log(msg, "debug"),
+            on_telemetry=lambda data: self._notify("telemetry_anomaly", data)
         )
 
         self.supervisor: Optional[Supervisor] = None
@@ -327,12 +333,17 @@ class CastService:
         except ProbeError as exc:
             return {"error": str(exc), "media": None, "verdict": None, "plan": None}
 
+        is_ultra = False
+        if self.supervisor:
+            is_ultra = getattr(self.supervisor.device, "is_ultra", False)
+            
         verdict = capability.evaluate(
             info,
             prefer_fmp4=bool(self.config.get("prefer_fmp4")),
             assume_avr_passthrough=bool(self.config.get("avr_passthrough")),
+            is_ultra=is_ultra
         )
-        plan = remux.build_plan(info, verdict, self.work_dir)
+        plan = remux.build_plan(info, verdict, self.work_dir, is_ultra=is_ultra)
 
         # If we already produced a converted copy, point at it.
         ready = None
@@ -469,7 +480,8 @@ class CastService:
 
     def cast(self, path: str, *, allow_unsafe: bool = False,
              auto_prepare: bool = True, subtitle_path: str = "",
-             subtitle_language: str = "") -> dict:
+             subtitle_language: str = "", audio_index: int = None,
+             subtitle_index: int = None) -> dict:
         """The whole pipeline: pre-flight, convert if needed, serve, LOAD."""
         if not self.supervisor:
             return {"error": "not connected to a device"}
@@ -480,89 +492,102 @@ class CastService:
             path = url_match.group(1)
 
         if path.startswith("http://") or path.startswith("https://"):
-            if not have_ytdlp():
-                return {"error": "yt-dlp is required to download web streams."}
-
-            if self._remuxer.busy:
-                return {"error": "Another conversion or download is currently running."}
-
-            self.log(f"Downloading web stream to Queue: {path}")
             
-            youtube_dir = os.path.join(self.media_roots[0], "youtube")
-            os.makedirs(youtube_dir, exist_ok=True)
+            if self.rules.is_drm(path):
+                self.log(f"Warning: {path} has previously triggered DRM flags. Playback may fail organically.", "warn")
+                
+            headers = self.rules.get_headers(path)
+            if headers:
+                self.log(f"Applying persistent ruleset headers for {path}")
+                self.media_server.register_intercept(path, headers)
+                import base64
+                encoded = base64.b64encode(path.encode("utf-8")).decode("utf-8")
+                path = f"http://{self.media_server.lan_ip}:{self.media_server.port}/proxy/?url={encoded}"
+                # We skip yt-dlp for proxied streams
+            else:
+                if not have_ytdlp():
+                    return {"error": "yt-dlp is required to download web streams."}
 
-            def download_worker():
-                import subprocess, time, re, shutil
-                from .remux import RemuxJob, RemuxPlan
-                from .probe import FFMPEG
-                
-                ffmpeg_path = shutil.which(FFMPEG) or FFMPEG
-                
-                cmd = [
-                    "yt-dlp", "--newline", "--no-continue",
-                    "--ffmpeg-location", ffmpeg_path,
-                    "--sponsorblock-remove", "sponsor,intro,outro,selfpromo,interaction",
-                    "-o", os.path.join(youtube_dir, "%(title)s.%(ext)s"),
-                    "-f", "bestvideo[vcodec^=vp9]+bestaudio/bestvideo[vcodec^=avc]+bestaudio/best",
-                    "--merge-output-format", "mkv",
-                    path
-                ]
-                
-                plan = RemuxPlan(
-                    input_path=path,
-                    output_path=os.path.join(youtube_dir, "downloading..."),
-                    description=f"Downloading {path} to Queue",
-                    estimated="A few minutes depending on network"
-                )
-                job = RemuxJob(plan=plan, state="running", started_at=time.time())
-                
-                with self._remuxer._lock:
-                    self._remuxer.job = job
-                self._on_remux_update(job)
+                if self._remuxer.busy:
+                    return {"error": "Another conversion or download is currently running."}
 
-                try:
-                    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-                    with self._remuxer._lock:
-                        self._remuxer._proc = proc
-                        
-                    last_error = ""
-                    for line in proc.stdout:
-                        if line.startswith("ERROR:") or line.startswith("WARNING:"):
-                            self.log(f"[yt-dlp] {line.strip()}", "warn")
-                            last_error = line.strip()
-                        m = re.search(r'\[download\]\s+([\d\.]+)%', line)
-                        if m:
-                            job.progress = float(m.group(1)) / 100.0
-                            self._on_remux_update(job)
-                    proc.wait()
-                    if proc.returncode != 0:
-                        job.state = "failed"
-                        job.error = last_error or "yt-dlp returned non-zero exit code"
-                    else:
-                        job.state = "done"
-                        job.progress = 1.0
-                except Exception as exc:
-                    job.state = "failed"
-                    job.error = str(exc)
-                finally:
-                    job.finished_at = time.time()
-                    self._on_remux_update(job)
-                    if job.state == "done":
-                        self.log("Download complete! Refresh the queue to cast it.")
-                        time.sleep(4)
-                    else:
-                        self.log(f"Download failed: {job.error}", "warn")
-                        time.sleep(4)
+                self.log(f"Downloading web stream to Queue: {path}")
+                
+                youtube_dir = os.path.join(self.media_roots[0], "youtube")
+                os.makedirs(youtube_dir, exist_ok=True)
+
+                def download_worker():
+                    import subprocess, time, re, shutil
+                    from .remux import RemuxJob, RemuxPlan
+                    from .probe import FFMPEG
+                    
+                    ffmpeg_path = shutil.which(FFMPEG) or FFMPEG
+                    
+                    cmd = [
+                        "yt-dlp", "--newline", "--no-continue",
+                        "--ffmpeg-location", ffmpeg_path,
+                        "--sponsorblock-remove", "sponsor,intro,outro,selfpromo,interaction",
+                        "-o", os.path.join(youtube_dir, "%(title)s.%(ext)s"),
+                        "-f", "bestvideo[vcodec^=vp9]+bestaudio/bestvideo[vcodec^=avc]+bestaudio/best",
+                        "--merge-output-format", "mkv",
+                        path
+                    ]
+                    
+                    plan = RemuxPlan(
+                        input_path=path,
+                        output_path=os.path.join(youtube_dir, "downloading..."),
+                        description=f"Downloading {path} to Queue",
+                        estimated="A few minutes depending on network"
+                    )
+                    job = RemuxJob(plan=plan, state="running", started_at=time.time())
                     
                     with self._remuxer._lock:
-                        if self._remuxer.job is job:
-                            self._remuxer.job = None
-                            self._remuxer._proc = None
+                        self._remuxer.job = job
                     self._on_remux_update(job)
-
-            import threading
-            threading.Thread(target=download_worker, daemon=True).start()
-            return {"converting": True, "description": "Downloading to Queue..."}
+    
+                    try:
+                        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                        with self._remuxer._lock:
+                            self._remuxer._proc = proc
+                            
+                        last_error = ""
+                        for line in proc.stdout:
+                            if line.startswith("ERROR:") or line.startswith("WARNING:"):
+                                self.log(f"[yt-dlp] {line.strip()}", "warn")
+                                last_error = line.strip()
+                            m = re.search(r'\[download\]\s+([\d\.]+)%', line)
+                            if m:
+                                job.progress = float(m.group(1)) / 100.0
+                                self._on_remux_update(job)
+                        proc.wait()
+                        if proc.returncode != 0:
+                            job.state = "failed"
+                            job.error = last_error or "yt-dlp returned non-zero exit code"
+                        else:
+                            job.state = "done"
+                            job.progress = 1.0
+                    except Exception as exc:
+                        job.state = "failed"
+                        job.error = str(exc)
+                    finally:
+                        job.finished_at = time.time()
+                        self._on_remux_update(job)
+                        if job.state == "done":
+                            self.log("Download complete! Refresh the queue to cast it.")
+                            time.sleep(4)
+                        else:
+                            self.log(f"Download failed: {job.error}", "warn")
+                            time.sleep(4)
+                        
+                        with self._remuxer._lock:
+                            if self._remuxer.job is job:
+                                self._remuxer.job = None
+                                self._remuxer._proc = None
+                        self._on_remux_update(job)
+    
+                import threading
+                threading.Thread(target=download_worker, daemon=True).start()
+                return {"converting": True, "description": "Downloading to Queue..."}
 
         report = self.preflight(path)
         if report.get("error") and not allow_unsafe:
@@ -612,8 +637,23 @@ class CastService:
         except ValueError as exc:
             return {**report, "error": str(exc)}
 
-        title = os.path.splitext(os.path.basename(path))[0]
+        title_base = os.path.basename(path)
+        tmdb_key = self.config.get("tmdb_api_key", "")
+        
+        # Fast non-blocking TMDB scrape
+        from .metadata import TMDBClient
+        tmdb = TMDBClient(tmdb_key)
+        enriched = tmdb.enrich(title_base)
+        
+        title = enriched["title"]
+        subtitle = enriched["subtitle"]
+        poster_url = enriched["poster_url"]
+
         tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
+        if audio_index is not None:
+            active_track_ids.append(audio_index)
+        if subtitle_index is not None:
+            active_track_ids.append(subtitle_index)
 
         content_type = self._get_content_type(target, info)
 
@@ -621,6 +661,9 @@ class CastService:
             url,
             content_type=content_type,
             title=title,
+            subtitle=subtitle,
+            poster_url=poster_url,
+            backdrop_url=enriched.get("backdrop_url", ""),
             duration=float(info.get("duration_s") or 0.0),
             source_path=target,
             tracks=tracks,
@@ -1044,6 +1087,36 @@ class CastService:
     def set_muted(self, muted: bool):
         self._require().set_muted(muted)
         return self.status()
+
+    def handle_intercept(self, payload: dict) -> dict:
+        url = payload.get("url")
+        if not url: return {"error": "missing url"}
+        req_type = payload.get("type")
+        headers = payload.get("headers", {})
+        
+        if req_type == "drm":
+            self.log(f"Discovery: DRM flag detected on {url}. Playback may fail.", "warn")
+            self.rules.register_drm(url)
+        elif req_type == "manifest":
+            self.log(f"Discovery: Valid stream detected ({url}) with {len(headers)} headers.", "info")
+            self.rules.register_manifest(url, headers)
+            # Phase 3: Register the proxy ruleset
+            self.media_server.register_intercept(url, headers)
+            
+            # Auto-cast the proxied stream!
+            import base64
+            encoded = base64.b64encode(url.encode("utf-8")).decode("utf-8")
+            proxy_url = f"http://{self.media_server.lan_ip}:{self.media_server.port}/proxy/?url={encoded}"
+            
+            if getattr(self, "supervisor", None):
+                self.log(f"Discovery: Routing intercepted stream through local proxy to TV...", "info")
+                try:
+                    self.cast(proxy_url, allow_unsafe=True, auto_prepare=False)
+                except Exception as e:
+                    self.log(f"Discovery Cast failed: {e}", "warn")
+                    self.media_server.trigger_telemetry(url, str(e))
+        
+        return {"status": "intercept_logged", "url": url}
 
 
 

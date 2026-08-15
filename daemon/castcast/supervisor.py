@@ -75,6 +75,9 @@ class MediaSession:
     url: str = ""
     content_type: str = "video/mp4"
     title: str = ""
+    subtitle: str = ""
+    poster_url: str = ""
+    backdrop_url: str = ""
     duration: float = 0.0
     source_path: str = ""
     position: float = 0.0
@@ -180,6 +183,7 @@ class Supervisor:
             return True
 
     def load(self, url: str, content_type: str = "video/mp4", title: str = "",
+             subtitle: str = "", poster_url: str = "", backdrop_url: str = "",
              duration: float = 0.0, source_path: str = "", autoplay: bool = True,
              tracks: Optional[list] = None, active_track_ids: Optional[list] = None) -> None:
         """Queue a LOAD.  Safe to call before the link is even up."""
@@ -187,6 +191,7 @@ class Supervisor:
             self._media_session_id = None
             self.status.media_session_id = None
             self._session = MediaSession(url=url, content_type=content_type, title=title,
+                                         subtitle=subtitle, poster_url=poster_url, backdrop_url=backdrop_url,
                                          duration=duration, source_path=source_path,
                                          position=0.0, autoplay=autoplay, tracks=tracks or [],
                                          active_track_ids=active_track_ids or [])
@@ -431,6 +436,8 @@ class Supervisor:
                     "metadata": {
                         "metadataType": 1,
                         "title": session.title or "castcast",
+                        "subtitle": session.subtitle or "",
+                        "images": [{"url": session.poster_url}] if session.poster_url else []
                     },
                 },
             }

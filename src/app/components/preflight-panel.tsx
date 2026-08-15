@@ -17,7 +17,19 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function PreflightPanel({ report }: { report: Preflight }) {
+export function PreflightPanel({
+  report,
+  selectedAudioId,
+  setSelectedAudioId,
+  selectedSubtitleId,
+  setSelectedSubtitleId,
+}: {
+  report: Preflight;
+  selectedAudioId?: number | null;
+  setSelectedAudioId?: (id: number | null) => void;
+  selectedSubtitleId?: number | null;
+  setSelectedSubtitleId?: (id: number | null) => void;
+}) {
   if (report.tools_missing) {
     return (
       <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3 text-amber-300">
@@ -39,6 +51,14 @@ export function PreflightPanel({ report }: { report: Preflight }) {
   const video = media.video[0];
   const audio = media.audio[0];
   const clean = verdict.castable && !verdict.needs_processing;
+
+  const renderTrackOption = (t: any) => {
+    const lang = (t.language || "und").toLowerCase();
+    const isTarget = lang === "eng" || lang === "jpn" || lang === "en" || lang === "ja";
+    const label = `${t.index}: ${t.codec} ${lang}`;
+    if (isTarget) return <option key={t.index} value={t.index} className="font-bold bg-emerald-900/50">{label} ★</option>;
+    return <option key={t.index} value={t.index} className="bg-black">{label}</option>;
+  };
 
   return (
     <div className="space-y-3">
@@ -84,14 +104,36 @@ export function PreflightPanel({ report }: { report: Preflight }) {
         <Field label="bit depth" value={video ? `${video.bit_depth}-bit` : "--"} />
         <Field label="container" value={media.container} />
         <Field label="duration" value={formatDuration(media.duration_s)} />
-        <Field
-          label="audio"
-          value={audio ? `${audio.codec.toUpperCase()} ${audio.channels}ch` : "--"}
-        />
-        <Field
-          label="bitrate"
-          value={media.bitrate_kbps ? `${(media.bitrate_kbps / 1000).toFixed(1)} Mbps` : "--"}
-        />
+      </div>
+      
+      {/* Track Selection */}
+      <div className="grid grid-cols-2 gap-3 rounded border border-emerald-500/20 bg-black/40 p-3">
+        <div>
+          <div className="text-emerald-500/40 uppercase tracking-wider mb-1">Audio</div>
+          {media.audio.length > 0 ? (
+            <select 
+              className="w-full bg-black/60 border border-emerald-500/20 rounded p-1 text-emerald-200 outline-none focus:border-emerald-500/50"
+              value={selectedAudioId ?? ""}
+              onChange={(e) => setSelectedAudioId?.(e.target.value ? Number(e.target.value) : null)}
+            >
+              <option value="" className="bg-black">Default</option>
+              {media.audio.map(renderTrackOption)}
+            </select>
+          ) : <div className="text-emerald-200 font-mono">--</div>}
+        </div>
+        <div>
+          <div className="text-emerald-500/40 uppercase tracking-wider mb-1">Subtitles</div>
+          {media.subtitles.length > 0 ? (
+            <select 
+              className="w-full bg-black/60 border border-emerald-500/20 rounded p-1 text-emerald-200 outline-none focus:border-emerald-500/50"
+              value={selectedSubtitleId ?? ""}
+              onChange={(e) => setSelectedSubtitleId?.(e.target.value ? Number(e.target.value) : null)}
+            >
+              <option value="" className="bg-black">None / Default</option>
+              {media.subtitles.map(renderTrackOption)}
+            </select>
+          ) : <div className="text-emerald-200 font-mono">--</div>}
+        </div>
       </div>
 
       {/* issues */}

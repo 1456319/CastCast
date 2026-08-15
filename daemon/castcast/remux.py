@@ -71,20 +71,20 @@ class RemuxPlan:
         return d
 
 
-def output_path_for(input_path: str, work_dir: str, container: str) -> str:
+def output_path_for(input_path: str, work_dir: str, container: str, video_codec: str = "") -> str:
     stem = os.path.splitext(os.path.basename(input_path))[0]
     ext = "webm" if container == "webm" else "mp4"
-    suffix = ".cast.fmp4.mp4" if container == "fmp4" else f".cast.{ext}"
+    codec_tag = f".{video_codec}" if video_codec else ""
+    suffix = f".cast{codec_tag}.fmp4.mp4" if container == "fmp4" else f".cast{codec_tag}.{ext}"
     return os.path.join(work_dir, stem + suffix)
 
-
-def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str) -> Optional[RemuxPlan]:
+def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str, is_ultra: bool = True) -> Optional[RemuxPlan]:
     """Return the plan needed to make ``info`` castable, or ``None`` if it already is."""
     if not verdict.needs_processing:
         return None
 
     container = verdict.target_container or "mp4"
-    out = output_path_for(info.path, work_dir, container)
+    out = output_path_for(info.path, work_dir, container, "hevc" if is_ultra and verdict.video_action == "transcode" else "h264" if verdict.video_action == "transcode" else "")
 
     args: List[str] = ["-map", "0:v:0"]
     lossless_video = True
@@ -93,12 +93,20 @@ def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str) -> Optional[Rem
     # -- video ----------------------------------------------------------
     if verdict.video_action == "transcode":
         v = info.primary_video
-        # Preserve HDR by staying 10-bit when the source is; otherwise the
-        # picture comes back washed out.
-        ten_bit = bool(v and v.bit_depth >= 10)
-        args += ["-c:v", "libx265", "-preset", "medium", "-crf", "20",
-                 "-pix_fmt", "yuv420p10le" if ten_bit else "yuv420p",
-                 "-tag:v", "hvc1"]
+        
+        if is_ultra:
+            # Preserve HDR by staying 10-bit when the source is; otherwise the
+            # picture comes back washed out.
+            ten_bit = bool(v and v.bit_depth >= 10)
+            args += ["-c:v", "libx265", "-preset", "superfast", "-crf", "18",
+                     "-pix_fmt", "yuv420p10le" if ten_bit else "yuv420p",
+                     "-tag:v", "hvc1"]
+        else:
+            # Standard Chromecast maxes out at 1080p H.264
+            args += ["-c:v", "libx264", "-preset", "superfast", "-crf", "18",
+                     "-profile:v", "high", "-level", "4.1", "-pix_fmt", "yuv420p"]
+            if v and v.width > 1920:
+                args += ["-vf", "scale=-2:1080"]
         lossless_video = False
     else:
         args += ["-c:v", "copy"]
