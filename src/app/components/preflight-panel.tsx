@@ -105,13 +105,13 @@ export function PreflightPanel({
         <Field label="container" value={media.container} />
         <Field label="duration" value={formatDuration(media.duration_s)} />
       </div>
-      
+
       {/* Track Selection */}
       <div className="grid grid-cols-2 gap-3 rounded border border-emerald-500/20 bg-black/40 p-3">
         <div>
           <div className="text-emerald-500/40 uppercase tracking-wider mb-1">Audio</div>
           {media.audio.length > 0 ? (
-            <select 
+            <select
               className="w-full bg-black/60 border border-emerald-500/20 rounded p-1 text-emerald-200 outline-none focus:border-emerald-500/50"
               value={selectedAudioId ?? ""}
               onChange={(e) => setSelectedAudioId?.(e.target.value ? Number(e.target.value) : null)}
@@ -124,7 +124,7 @@ export function PreflightPanel({
         <div>
           <div className="text-emerald-500/40 uppercase tracking-wider mb-1">Subtitles</div>
           {media.subtitles.length > 0 ? (
-            <select 
+            <select
               className="w-full bg-black/60 border border-emerald-500/20 rounded p-1 text-emerald-200 outline-none focus:border-emerald-500/50"
               value={selectedSubtitleId ?? ""}
               onChange={(e) => setSelectedSubtitleId?.(e.target.value ? Number(e.target.value) : null)}

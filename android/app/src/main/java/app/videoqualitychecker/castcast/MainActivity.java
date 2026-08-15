@@ -19,4 +19,3 @@ public class MainActivity extends BridgeActivity {
         setIntent(intent);
     }
 }
-

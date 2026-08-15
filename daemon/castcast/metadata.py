@@ -7,15 +7,15 @@ def parse_filename(filename: str):
     """Parses S01E02 or similar patterns to extract title, season, and episode."""
     import os
     name = os.path.splitext(os.path.basename(filename))[0]
-    
+
     # Clean up common release group tags
     name = re.sub(r'\[.*?\]', '', name)
     name = re.sub(r'\(.*?\)', '', name)
     name = re.sub(r'(1080p|720p|2160p|4k|x264|x265|hevc|web-dl|bluray|hdtv|xvid|aac|ac3|dts)', '', name, flags=re.IGNORECASE)
-    
+
     # Try to match S01E02 or 01x02 or Season 1 Episode 2
     match = re.search(r'([Ss]\d+[Ee]\d+|\d+x\d+)', name)
-    
+
     if match:
         show_name = name[:match.start()].replace('.', ' ').replace('_', ' ').strip()
         ep_code = match.group(1).upper()
@@ -23,13 +23,13 @@ def parse_filename(filename: str):
         nums = re.findall(r'\d+', ep_code)
         if len(nums) == 2:
             return {"type": "tv", "title": show_name, "season": int(nums[0]), "episode": int(nums[1])}
-            
+
     # Try year format for movies: Movie Title (2020)
     year_match = re.search(r'(19|20)\d{2}', name)
     if year_match:
         movie_name = name[:year_match.start()].replace('.', ' ').replace('_', ' ').strip()
         return {"type": "movie", "title": movie_name, "year": int(year_match.group(0))}
-        
+
     # Fallback
     clean_name = name.replace('.', ' ').replace('_', ' ').strip()
     return {"type": "unknown", "title": clean_name}
@@ -39,7 +39,7 @@ class TMDBClient:
         self.api_key = api_key
         self.base_url = "https://api.themoviedb.org/3"
         self.image_base = "https://image.tmdb.org/t/p/w780"
-        
+
     def _request(self, endpoint: str, params: dict):
         if not self.api_key:
             return None
@@ -52,15 +52,15 @@ class TMDBClient:
                 return json.loads(resp.read().decode())
         except Exception:
             return None
-            
+
     def enrich(self, filename: str) -> dict:
         parsed = parse_filename(filename)
         title = parsed["title"]
         result = {"title": title, "subtitle": "", "poster_url": "", "backdrop_url": ""}
-        
+
         if not self.api_key:
             return result
-            
+
         if parsed["type"] == "tv":
             # Search for the show
             search = self._request("/search/tv", {"query": title})
@@ -70,7 +70,7 @@ class TMDBClient:
                 result["title"] = show.get("name", title)
                 if show.get("backdrop_path"):
                     result["backdrop_url"] = self.image_base + show["backdrop_path"]
-                    
+
                 # Get episode details
                 ep = self._request(f"/tv/{show_id}/season/{parsed['season']}/episode/{parsed['episode']}", {})
                 if ep:
@@ -92,5 +92,5 @@ class TMDBClient:
                     result["poster_url"] = self.image_base + movie["poster_path"]
                 if movie.get("backdrop_path"):
                     result["backdrop_url"] = self.image_base + movie["backdrop_path"]
-                    
+
         return result

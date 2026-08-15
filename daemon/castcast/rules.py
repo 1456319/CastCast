@@ -53,10 +53,10 @@ class RuleManager:
     def register_manifest(self, url: str, headers: dict):
         domain = urlparse(url).netloc
         if not domain: return
-        
+
         # Filter out ephemeral cookies/tokens, keep standard auth bypass headers
         clean_headers = {k: v for k, v in headers.items() if k.lower() in ("referer", "origin", "user-agent", "accept")}
-        
+
         if domain not in self.rules["domains"] or self.rules["domains"][domain] != clean_headers:
             self.rules["domains"][domain] = clean_headers
             self._save()
@@ -65,7 +65,7 @@ class RuleManager:
     def get_headers(self, url: str) -> dict:
         domain = urlparse(url).netloc
         return self.rules["domains"].get(domain, {})
-        
+
     def is_drm(self, url: str) -> bool:
         domain = urlparse(url).netloc
         return domain in self.rules["drm_blacklist"]

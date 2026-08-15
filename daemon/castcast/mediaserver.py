@@ -129,7 +129,7 @@ class _Handler(BaseHTTPRequestHandler):
         import urllib.request
         import urllib.error
         server: "MediaServer" = self.server.media_server
-        
+
         path_obj = urllib.parse.urlsplit(self.path)
         query = urllib.parse.parse_qs(path_obj.query)
         encoded_url = query.get("url", [""])[0]
@@ -150,7 +150,7 @@ class _Handler(BaseHTTPRequestHandler):
             req = urllib.request.Request(target_url, headers=headers)
             with urllib.request.urlopen(req, timeout=10) as response:
                 content_type = response.headers.get("Content-Type", "application/octet-stream")
-                
+
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Access-Control-Allow-Origin", "*")
@@ -176,7 +176,7 @@ class _Handler(BaseHTTPRequestHandler):
                     # Stream the raw chunks directly to the TV
                     import shutil
                     shutil.copyfileobj(response, self.wfile)
-                    
+
         except Exception as e:
             server.log(f"Proxy error for {target_url}: {e}")
             if not self.wfile.closed:
@@ -304,7 +304,7 @@ class MediaServer:
         self.lan_ip = detect_lan_ip()
         self.live_streams: dict[str, dict] = {}
         self.intercept_rules: dict[str, dict] = {}
-        
+
         telemetry_dir = "/storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast/.castcast/telemetry"
         try:
             os.makedirs(telemetry_dir, exist_ok=True)
@@ -335,14 +335,14 @@ class MediaServer:
 
     def register_intercept(self, url: str, headers: dict):
         domain = urllib.parse.urlsplit(url).netloc
-        
+
         # Clean headers (remove forbidden/problematic headers for proxying)
         clean_headers = {}
         for k, v in headers.items():
             k_lower = k.lower()
             if k_lower not in ("host", "connection", "accept-encoding"):
                 clean_headers[k] = v
-                
+
         self.intercept_rules[domain] = clean_headers
         self.log(f"Registered proxy ruleset for domain: {domain}")
 
@@ -354,19 +354,19 @@ class MediaServer:
         # Anonymized logging: we do NOT log full URLs or query params to protect PII/tokens
         domain = urllib.parse.urlsplit(failed_url).netloc
         ext = os.path.splitext(urllib.parse.urlsplit(failed_url).path)[1]
-        
+
         telemetry_data = {
             "timestamp": int(time.time()),
             "domain": domain,
             "extension": ext,
             "error": error_msg,
         }
-        
+
         try:
             with open(self.telemetry_log, "a") as f:
                 f.write(json.dumps(telemetry_data) + "\n")
             self.log(f"Shadow Telemetry: Logged anonymous failure signature for {domain}")
-            
+
             if self._on_telemetry:
                 self._on_telemetry(telemetry_data)
         except Exception as e:
