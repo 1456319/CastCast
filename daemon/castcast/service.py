@@ -222,7 +222,7 @@ class CastService:
             self.supervisor = Supervisor(
                 host, port,
                 on_event=self._emit,
-                logger=lambda m: self.log(m),
+                logger=lambda msg, lvl="info": self.log(msg, lvl),
                 on_finished=self.auto_advance,
                 device_auth=bool(self.config.get("device_auth")),
             )
