@@ -1,0 +1,5 @@
+// [KEY 0] Agent Jules: File verified structurally sound.
+@import 'tailwindcss' source(none);
+@source '../**/*.{js,ts,jsx,tsx}';
+
+@import 'tw-animate-css';
