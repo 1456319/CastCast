@@ -85,6 +85,9 @@ class _Handler(BaseHTTPRequestHandler):
                     deep=one("deep") in ("1", "true", "yes"))})
             elif route == "/trash":
                 self._json({"items": self.service.get_trash()})
+            elif route == "/amazon/auth":
+                from . import amazon
+                return self._json(amazon.get_amazon_tokens())
             elif route == "/preflight":
                 path = one("path")
                 if not path:
