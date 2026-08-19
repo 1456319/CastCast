@@ -113,7 +113,7 @@ class _Handler(BaseHTTPRequestHandler):
     # -- verbs ------------------------------------------------------------
 
     def do_OPTIONS(self):  # noqa: N802
-        if self.path.startswith("/drm/"):
+        if self.path.startswith("/drm/") or self.path.startswith("/amazon/license"):
             self.send_response(200)
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
@@ -122,8 +122,44 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self.send_error(405)
 
-    def do_POST(self):  # noqa: N802
-        if self.path.startswith("/drm/"):
+    def do_POST(self):
+
+        if self.path.startswith("/amazon/license"):
+            import urllib.parse
+            from . import amazon_drm
+            
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            title_id = qs.get("title_id", [""])[0]
+            
+            amazon_data = self.server.drm_tokens.get(f"amazon_{title_id}")
+            if not amazon_data:
+                self.send_response(404)
+                self.end_headers()
+                return
+                
+            content_length = int(self.headers.get('Content-Length', 0))
+            challenge_bytes = self.rfile.read(content_length)
+            
+            print(f"Proxying Amazon Widevine License for {title_id}")
+            try:
+                license_bytes = amazon_drm.fetch_widevine_license(
+                    amazon_data["actor_token"],
+                    amazon_data["playback_envelope"],
+                    challenge_bytes
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(license_bytes)
+            except Exception as e:
+                print(f"Amazon License Proxy Error: {e}")
+                self.send_response(500)
+                self.end_headers()
+            return
+
+  # noqa: N802
+        if self.path.startswith("/drm/") or self.path.startswith("/amazon/license"):
             self._serve_drm()
         else:
             self.send_error(405)
