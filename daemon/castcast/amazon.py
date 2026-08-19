@@ -6,7 +6,21 @@ import os
 
 HOST_API = "https://api.amazon.com"
 DEVICE_TYPE_ID = "A3REWRVYBYPKUM"  
-DEVICE_ID = "1234567890"  
+
+DEVICE_ID_FILE = os.path.expanduser("~/.config/castcast/amazon_device_id")
+def get_device_id():
+    if os.path.exists(DEVICE_ID_FILE):
+        with open(DEVICE_ID_FILE, 'r') as f:
+            return f.read().strip()
+    import uuid
+    new_id = str(uuid.uuid4()).replace('-', '')[:16]
+    os.makedirs(os.path.dirname(DEVICE_ID_FILE), exist_ok=True)
+    with open(DEVICE_ID_FILE, 'w') as f:
+        f.write(new_id)
+    return new_id
+
+DEVICE_ID = get_device_id()
+  
 
 AUTH_FILE = os.path.expanduser("~/.config/castcast/amazon_auth.json")
 
@@ -63,4 +77,22 @@ def get_saved_auth():
     if os.path.exists(AUTH_FILE):
         with open(AUTH_FILE, "r") as f:
             return json.load(f)
+    return None
+
+def refresh_access_token(refresh_token):
+    payload = {
+        "app_name": "AIV",
+        "requested_token_type": "access_token",
+        "source_token": refresh_token,
+        "source_token_type": "refresh_token"
+    }
+    res = _do_post(f"{HOST_API}/auth/token", payload)
+    
+    if "access_token" in res:
+        auth = get_saved_auth()
+        if auth and "tokens" in auth and "bearer" in auth["tokens"]:
+            auth["tokens"]["bearer"]["access_token"] = res["access_token"]
+            with open(AUTH_FILE, "w") as f:
+                json.dump(auth, f, indent=2)
+            return res["access_token"]
     return None
