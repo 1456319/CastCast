@@ -543,7 +543,7 @@ class CastService:
             qs = urllib.parse.parse_qs(parsed.query)
             title_id = qs.get("gti", [""])[0]
             if not title_id:
-                title_id = "amzn1.dv.gti.301ac00a-933f-41bd-a3a8-e29be37a6e09" # fallback
+                return {"error": "Could not extract Amazon title ID (gti) from URL"}
                 
             self.log(f"Detected Amazon Title ID: {title_id}")
             amazon_data = amazon_drm.fetch_amazon_4k_manifest(title_id)

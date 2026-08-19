@@ -143,7 +143,7 @@ class _Handler(BaseHTTPRequestHandler):
             content_length = int(self.headers.get('Content-Length', 0))
             challenge_bytes = self.rfile.read(content_length)
             
-            self._logger(f"Proxying Amazon Widevine License for {title_id}")
+            self.server.media_server._logger(f"Proxying Amazon Widevine License for {title_id}")
             try:
                 license_bytes = amazon_drm.fetch_widevine_license(
                     amazon_data["actor_token"],
@@ -156,13 +156,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(license_bytes)
             except Exception as e:
-                self._logger(f"Amazon License Proxy Error: {e}")
+                self.server.media_server._logger(f"Amazon License Proxy Error: {e}")
                 self.send_response(500)
                 self.end_headers()
             return
 
-  # noqa: N802
-        if self.path.startswith("/drm/") or self.path.startswith("/amazon/license"):
+        if self.path.startswith("/drm/"):
             self._serve_drm()
         else:
             self.send_error(405)
