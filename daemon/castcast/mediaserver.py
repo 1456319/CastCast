@@ -113,16 +113,19 @@ class _Handler(BaseHTTPRequestHandler):
     # -- verbs ------------------------------------------------------------
 
     def do_OPTIONS(self):  # noqa: N802
+        self.server.media_server._logger(f"Received OPTIONS: {self.path}")
         if self.path.startswith("/drm/") or self.path.startswith("/amazon/license"):
             self.send_response(200)
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "*")
+            self.send_header("Access-Control-Allow-Private-Network", "true")
             self.end_headers()
             return
         self.send_error(405)
 
     def do_POST(self):
+        self.server.media_server._logger(f"Received POST: {self.path}")
 
         if self.path.startswith("/amazon/license"):
             import urllib.parse
@@ -140,7 +143,7 @@ class _Handler(BaseHTTPRequestHandler):
             content_length = int(self.headers.get('Content-Length', 0))
             challenge_bytes = self.rfile.read(content_length)
             
-            print(f"Proxying Amazon Widevine License for {title_id}")
+            self._logger(f"Proxying Amazon Widevine License for {title_id}")
             try:
                 license_bytes = amazon_drm.fetch_widevine_license(
                     amazon_data["actor_token"],
@@ -153,7 +156,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(license_bytes)
             except Exception as e:
-                print(f"Amazon License Proxy Error: {e}")
+                self._logger(f"Amazon License Proxy Error: {e}")
                 self.send_response(500)
                 self.end_headers()
             return
