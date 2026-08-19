@@ -1,10 +1,22 @@
-import requests
+import urllib.request
+import urllib.parse
 import json
 import time
 
 HOST_API = "https://api.amazon.com"
 DEVICE_TYPE_ID = "A3REWRVYBYPKUM"  # TV Device ID from rosso
 DEVICE_ID = "1234567890"  # We can generate a random string
+
+def _do_post(url, payload):
+    data = json.dumps(payload).encode('utf-8')
+    req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(req) as response:
+            return json.loads(response.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        return {"error": e.read().decode('utf-8'), "status": e.code}
+    except Exception as e:
+        return {"error": str(e)}
 
 def create_code_pair():
     payload = {
@@ -14,16 +26,7 @@ def create_code_pair():
             "device_serial": DEVICE_ID
         }
     }
-    
-    resp = requests.post(
-        f"{HOST_API}/auth/create/codepair",
-        json=payload
-    )
-    
-    if resp.status_code != 200:
-        return {"error": f"Failed to create code pair: {resp.text}"}
-        
-    return resp.json()
+    return _do_post(f"{HOST_API}/auth/create/codepair", payload)
 
 def poll_register(public_code, private_code):
     payload = {
@@ -44,19 +47,9 @@ def poll_register(public_code, private_code):
         },
         "requested_token_type": ["bearer"]
     }
-    
-    resp = requests.post(
-        f"{HOST_API}/auth/register",
-        json=payload
-    )
-    
-    if resp.status_code != 200:
-        return {"error": resp.text, "status": resp.status_code}
-        
-    return resp.json()
+    return _do_post(f"{HOST_API}/auth/register", payload)
 
 if __name__ == '__main__':
-    # Let's test the codepair generation
     print("Generating code pair...")
     pair = create_code_pair()
     print(json.dumps(pair, indent=2))
