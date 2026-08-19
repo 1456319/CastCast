@@ -417,7 +417,7 @@ class MediaServer:
                 clean_headers[k] = v
 
         self.intercept_rules[domain] = clean_headers
-        self.log(f"Registered proxy ruleset for domain: {domain}")
+        self._logger(f"Registered proxy ruleset for domain: {domain}")
 
     def get_intercept_headers(self, domain: str) -> dict:
         return self.intercept_rules.get(domain, {})
@@ -438,12 +438,12 @@ class MediaServer:
         try:
             with open(self.telemetry_log, "a") as f:
                 f.write(json.dumps(telemetry_data) + "\n")
-            self.log(f"Shadow Telemetry: Logged anonymous failure signature for {domain}")
+            self._logger(f"Shadow Telemetry: Logged anonymous failure signature for {domain}")
 
             if self._on_telemetry:
                 self._on_telemetry(telemetry_data)
         except Exception as e:
-            self.log(f"Failed to write telemetry: {e}")
+            self._logger(f"Failed to write telemetry: {e}")
 
     def start(self) -> None:
         if self._httpd:
@@ -456,7 +456,39 @@ class MediaServer:
                                         kwargs={"poll_interval": 0.5},
                                         name="castcast-http", daemon=True)
         self._thread.start()
-        self.log(f"media server listening on {self.base_url}")
+        self._logger(f"media server listening on {self.base_url}")
+        
+        # Start SSH tunnel for HTTPS DRM proxy
+        import subprocess
+        import threading
+        import time
+        import shutil
+        
+        self.public_url = None
+        self._ssh_process = None
+        
+        def start_tunnel():
+            try:
+                self._ssh_process = subprocess.Popen(
+                    ["ssh", "-o", "StrictHostKeyChecking=no", "-p", "443", f"-R0:localhost:{self.port}", "a.pinggy.io"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True
+                )
+                for line in self._ssh_process.stdout:
+                    if "http" in line and "pinggy" in line:
+                        urls = [word for word in line.split() if word.startswith("https://")]
+                        if urls:
+                            self.public_url = urls[0]
+                            self._logger(f"Established public HTTPS tunnel for DRM: {self.public_url}")
+                            break
+            except Exception as e:
+                self._logger(f"Failed to start SSH tunnel: {e}")
+                
+        if shutil.which("ssh"):
+            threading.Thread(target=start_tunnel, daemon=True).start()
+        else:
+            self._logger("ssh is not installed, cannot start public HTTPS tunnel for DRM")
 
     def stop(self) -> None:
         if self._httpd:
@@ -473,7 +505,7 @@ class MediaServer:
         """Re-detect our LAN IP. Returns True if it changed (i.e. we roamed)."""
         current = detect_lan_ip()
         if current != self.lan_ip:
-            self.log(f"LAN IP changed {self.lan_ip} -> {current}")
+            self._logger(f"LAN IP changed {self.lan_ip} -> {current}")
             self.lan_ip = current
             return True
         return False
