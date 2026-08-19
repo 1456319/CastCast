@@ -246,7 +246,7 @@ class _Handler(BaseHTTPRequestHandler):
                     self.wfile.write("\n".join(rewritten).encode("utf-8"))
                 else:
                     # Stream the raw chunks directly to the TV
-                    import shutil
+            
                     shutil.copyfileobj(response, self.wfile)
 
         except Exception as e:
@@ -460,9 +460,9 @@ class MediaServer:
         
         # Start SSH tunnel for HTTPS DRM proxy
         import subprocess
-        import threading
+
         import time
-        import shutil
+
         
         self.public_url = None
         self._ssh_process = None
