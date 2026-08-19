@@ -1,47 +1,62 @@
-import os
-import subprocess
-import sqlite3
-import tempfile
+import requests
 import json
+import time
 
-def get_amazon_tokens():
-    db_path = "/data/data/com.amazon.avod.thirdpartyclient/databases/map_data_storage.db"
+HOST_API = "https://api.amazon.com"
+DEVICE_TYPE_ID = "A3REWRVYBYPKUM"  # TV Device ID from rosso
+DEVICE_ID = "1234567890"  # We can generate a random string
+
+def create_code_pair():
+    payload = {
+        "code_data": {
+            "domain": "Device",
+            "device_type": DEVICE_TYPE_ID,
+            "device_serial": DEVICE_ID
+        }
+    }
     
-    # We will copy the DB to a temporary file using su, so we can read it without root in Python
-    tmp_dir = tempfile.gettempdir()
-    local_db = os.path.join(tmp_dir, "amazon_map.db")
+    resp = requests.post(
+        f"{HOST_API}/auth/create/codepair",
+        json=payload
+    )
     
-    # Use su to copy the file and change permissions so we can read it
-    cmd = f"su -c 'cp {db_path} {local_db} && chmod 666 {local_db}'"
-    subprocess.run(cmd, shell=True, capture_output=True)
+    if resp.status_code != 200:
+        return {"error": f"Failed to create code pair: {resp.text}"}
+        
+    return resp.json()
+
+def poll_register(public_code, private_code):
+    payload = {
+        "auth_data": {
+            "code_pair": {
+                "public_code": public_code,
+                "private_code": private_code
+            }
+        },
+        "registration_data": {
+            "app_name": "AIV",
+            "app_version": "9",
+            "device_model": "device_model",
+            "device_serial": DEVICE_ID,
+            "device_type": DEVICE_TYPE_ID,
+            "os_version": "Android",
+            "device_name": str(int(time.time()))
+        },
+        "requested_token_type": ["bearer"]
+    }
     
-    if not os.path.exists(local_db):
-        return {"error": "Failed to copy Amazon database. Ensure device is rooted and su is granted."}
+    resp = requests.post(
+        f"{HOST_API}/auth/register",
+        json=payload
+    )
+    
+    if resp.status_code != 200:
+        return {"error": resp.text, "status": resp.status_code}
         
-    try:
-        conn = sqlite3.connect(local_db)
-        cursor = conn.cursor()
-        
-        # Let's dynamically dump all tables and their contents to find where the auth tokens are
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-        tables = cursor.fetchall()
-        
-        dump = {}
-        for (table_name,) in tables:
-            try:
-                cursor.execute(f"SELECT * FROM {table_name} LIMIT 10")
-                columns = [description[0] for description in cursor.description]
-                rows = cursor.fetchall()
-                dump[table_name] = {"columns": columns, "rows": rows}
-            except Exception as e:
-                dump[table_name] = str(e)
-                
-        return dump
-    except Exception as e:
-        return {"error": str(e)}
-    finally:
-        if os.path.exists(local_db):
-            os.remove(local_db)
+    return resp.json()
 
 if __name__ == '__main__':
-    print(json.dumps(get_amazon_tokens(), indent=2))
+    # Let's test the codepair generation
+    print("Generating code pair...")
+    pair = create_code_pair()
+    print(json.dumps(pair, indent=2))

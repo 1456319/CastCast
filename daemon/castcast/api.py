@@ -87,7 +87,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"items": self.service.get_trash()})
             elif route == "/amazon/auth":
                 from . import amazon
-                return self._json(amazon.get_amazon_tokens())
+                return self._json(amazon.create_code_pair())
+            elif route == "/amazon/poll":
+                from . import amazon
+                pub = one("public_code")
+                priv = one("private_code")
+                return self._json(amazon.poll_register(pub, priv))
             elif route == "/preflight":
                 path = one("path")
                 if not path:
