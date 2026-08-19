@@ -535,6 +535,28 @@ class CastService:
             license_url = self.media_server.add_drm_token(offline_drm_token)
 
         import re
+        
+        if "amazon.com" in path or "gti=" in path:
+            import urllib.parse
+            from . import amazon_drm
+            parsed = urllib.parse.urlparse(path)
+            qs = urllib.parse.parse_qs(parsed.query)
+            title_id = qs.get("gti", [""])[0]
+            if not title_id:
+                title_id = "amzn1.dv.gti.301ac00a-933f-41bd-a3a8-e29be37a6e09" # fallback
+                
+            self.log(f"Detected Amazon Title ID: {title_id}")
+            amazon_data = amazon_drm.fetch_amazon_4k_manifest(title_id)
+            
+            path = amazon_data["mpd_url"]
+            self.log(f"Amazon 4K Manifest: {path}")
+            
+            self.media_server.server.drm_tokens[f"amazon_{title_id}"] = {
+                "actor_token": amazon_data["actor_token"],
+                "playback_envelope": amazon_data["playback_envelope"]
+            }
+            license_url = f"http://{self.media_server.host}:{self.media_server.port}/amazon/license?title_id={title_id}"
+            
         url_match = re.search(r'(https?://[^\s]+)', path)
         if url_match:
             path = url_match.group(1)
