@@ -551,11 +551,11 @@ class CastService:
             path = amazon_data["mpd_url"]
             self.log(f"Amazon 4K Manifest: {path}")
             
-            self.media_server.server.drm_tokens[f"amazon_{title_id}"] = {
+            self.media_server.drm_tokens[f"amazon_{title_id}"] = {
                 "actor_token": amazon_data["actor_token"],
                 "playback_envelope": amazon_data["playback_envelope"]
             }
-            license_url = f"http://{self.media_server.host}:{self.media_server.port}/amazon/license?title_id={title_id}"
+            license_url = f"http://{self.media_server.lan_ip}:{self.media_server.port}/amazon/license?title_id={title_id}"
             
         url_match = re.search(r'(https?://[^\s]+)', path)
         if url_match:
