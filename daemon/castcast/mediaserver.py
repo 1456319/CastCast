@@ -478,9 +478,12 @@ class MediaServer:
                 for line in self._ssh_process.stdout:
                     if "http" in line and "pinggy" in line:
                         urls = [word for word in line.split() if word.startswith("https://")]
-                        if urls:
-                            self.public_url = urls[0]
-                            self._logger(f"Established public HTTPS tunnel for DRM: {self.public_url}")
+                        for u in urls:
+                            if "dashboard.pinggy.io" not in u:
+                                self.public_url = u
+                                self._logger(f"Established public HTTPS tunnel for DRM: {self.public_url}")
+                                break
+                        if self.public_url:
                             break
             except Exception as e:
                 self._logger(f"Failed to start SSH tunnel: {e}")
