@@ -83,7 +83,13 @@ if ! command -v node &> /dev/null; then
 fi
 log_action "[OK] Dependencies verified."
 
-# 4. Launch the Daemon
+# 4. Kill any old daemon instances and orphan SSH tunnels
+log_action "Cleaning up old daemon instances..."
+pkill -f "python3 -m castcast" || true
+pkill -f "pinggy.io" || true
+sleep 1
+
+# 5. Launch the Daemon
 log_action "Booting castcast daemon..."
 cd "$(dirname "$0")" || abort "Failed to navigate to daemon directory"
 
