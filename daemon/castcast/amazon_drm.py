@@ -24,6 +24,11 @@ def _do_post(url, payload, headers):
         data = json.dumps(payload).encode('utf-8')
         headers['Content-Type'] = 'application/json'
         req = urllib.request.Request(url, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(req) as response:
+            res = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raise Exception(f"Amazon DRM Error {e.code}: {e.read().decode(\"utf-8\")}")
         with urllib.request.urlopen(req) as response:
             return json.loads(response.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
@@ -143,6 +148,7 @@ def fetch_amazon_4k_manifest(title_id):
     }
 
 def fetch_widevine_license(actor_token, playback_envelope, challenge_bytes):
+    import base64
     payload = {
         "playbackEnvelope": playback_envelope,
         "licenseChallenge": base64.b64encode(challenge_bytes).decode('utf-8')
@@ -157,13 +163,15 @@ def fetch_widevine_license(actor_token, playback_envelope, challenge_bytes):
     }
     
     req = urllib.request.Request(url, data=data, headers=headers)
-    with urllib.request.urlopen(req) as response:
-        res = json.loads(response.read().decode('utf-8'))
+    try:
+        with urllib.request.urlopen(req) as response:
+            res = json.loads(response.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        raise Exception(f"Amazon DRM Error {e.code}: {e.read().decode('utf-8')}")
         
-        # Amazon returns nested errors or the license
-        if "license" in res:
-            return base64.b64decode(res["license"])
-        elif "drmLicense" in res and "license" in res["drmLicense"]:
-            return base64.b64decode(res["drmLicense"]["license"])
-        else:
-            raise Exception(f"License not found in response: {res}")
+    if "license" in res:
+        return base64.b64decode(res["license"])
+    elif "drmLicense" in res and "license" in res["drmLicense"]:
+        return base64.b64decode(res["drmLicense"]["license"])
+    else:
+        raise Exception(f"License not found in response: {res}")
