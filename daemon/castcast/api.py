@@ -128,7 +128,8 @@ class _Handler(BaseHTTPRequestHandler):
                                     allow_unsafe=bool(body.get("allow_unsafe")),
                                     auto_prepare=body.get("auto_prepare", True),
                                     audio_index=body.get("audio_index"),
-                                    subtitle_index=body.get("subtitle_index")))
+                                    subtitle_index=body.get("subtitle_index"),
+                                    license_url=body.get("license_url")))
             elif route == "/subtitles/opensubtitles":
                 path = body.get("path")
                 if not path:
