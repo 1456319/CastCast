@@ -2,10 +2,13 @@ import urllib.request
 import urllib.parse
 import json
 import time
+import os
 
 HOST_API = "https://api.amazon.com"
-DEVICE_TYPE_ID = "A3REWRVYBYPKUM"  # TV Device ID from rosso
-DEVICE_ID = "1234567890"  # We can generate a random string
+DEVICE_TYPE_ID = "A3REWRVYBYPKUM"  
+DEVICE_ID = "1234567890"  
+
+AUTH_FILE = os.path.join(os.path.dirname(__file__), "amazon_auth.json")
 
 def _do_post(url, payload):
     data = json.dumps(payload).encode('utf-8')
@@ -47,9 +50,16 @@ def poll_register(public_code, private_code):
         },
         "requested_token_type": ["bearer"]
     }
-    return _do_post(f"{HOST_API}/auth/register", payload)
+    res = _do_post(f"{HOST_API}/auth/register", payload)
+    
+    if "response" in res and "success" in res["response"]:
+        with open(AUTH_FILE, "w") as f:
+            json.dump(res["response"]["success"], f, indent=2)
+            
+    return res
 
-if __name__ == '__main__':
-    print("Generating code pair...")
-    pair = create_code_pair()
-    print(json.dumps(pair, indent=2))
+def get_saved_auth():
+    if os.path.exists(AUTH_FILE):
+        with open(AUTH_FILE, "r") as f:
+            return json.load(f)
+    return None
