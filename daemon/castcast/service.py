@@ -524,10 +524,15 @@ class CastService:
     def cast(self, path: str, *, allow_unsafe: bool = False,
              auto_prepare: bool = True, subtitle_path: str = "",
              subtitle_language: str = "", audio_index: Optional[int] = None,
-             subtitle_index: Optional[int] = None, license_url: str = None) -> dict:
+             subtitle_index: Optional[int] = None, license_url: str = None,
+             offline_drm_token: str = None) -> dict:
         """The whole pipeline: pre-flight, convert if needed, serve, LOAD."""
         if not self.supervisor:
             return {"error": "not connected to a device"}
+
+        if offline_drm_token:
+            self.log("Offline DRM token provided. Registering with local proxy.")
+            license_url = self.media_server.add_drm_token(offline_drm_token)
 
         import re
         url_match = re.search(r'(https?://[^\s]+)', path)
@@ -538,6 +543,7 @@ class CastService:
 
             if self.rules.is_drm(path):
                 self.log(f"Warning: {path} has previously triggered DRM flags. Playback may fail organically.", "warn")
+
             if license_url:
                 self.log(f"DRM license URL provided. Bypassing download and casting directly: {path}")
                 content_type = "application/dash+xml" if ".mpd" in path else "application/vnd.apple.mpegurl" if ".m3u8" in path else "video/mp4"

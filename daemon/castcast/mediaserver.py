@@ -112,6 +112,39 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- verbs ------------------------------------------------------------
 
+    def do_OPTIONS(self):  # noqa: N802
+        if self.path.startswith("/drm/"):
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "*")
+            self.end_headers()
+            return
+        self.send_error(405)
+
+    def do_POST(self):  # noqa: N802
+        if self.path.startswith("/drm/"):
+            self._serve_drm()
+        else:
+            self.send_error(405)
+
+    def _serve_drm(self):
+        server: "MediaServer" = self.server.media_server
+        token_id = self.path.split("/")[-1]
+        
+        if token_id not in server.drm_tokens:
+            self.send_error(404, "DRM token not found")
+            return
+            
+        binary_token = server.drm_tokens[token_id]
+        
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(binary_token)))
+        self.end_headers()
+        self.wfile.write(binary_token)
+
     def do_HEAD(self):  # noqa: N802
         if self.path.startswith("/proxy/"):
             self._serve_proxy(body=False)
@@ -301,6 +334,7 @@ class MediaServer:
         self._on_telemetry = on_telemetry
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
+        self.drm_tokens: dict[str, bytes] = {}
         self.lan_ip = detect_lan_ip()
         self.live_streams: dict[str, dict] = {}
         self.intercept_rules: dict[str, dict] = {}
@@ -414,6 +448,15 @@ class MediaServer:
                 quoted = urllib.parse.quote(rel.replace(os.sep, "/"))
                 return f"http://{self.lan_ip}:{self.port}/{self.root_token}/{quoted}"
         raise ValueError(f"{path} is not inside a served root: {self.roots}")
+
+    def add_drm_token(self, b64_token: str) -> str:
+        """Decode and store a Widevine base64 token, returning its local URL."""
+        import base64
+        import hashlib
+        binary_token = base64.b64decode(b64_token)
+        token_id = hashlib.md5(binary_token).hexdigest()
+        self.drm_tokens[token_id] = binary_token
+        return f"http://{self.lan_ip}:{self.port}/drm/{token_id}"
 
     def add_root(self, path: str) -> None:
         real = os.path.realpath(path)

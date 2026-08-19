@@ -129,7 +129,8 @@ class _Handler(BaseHTTPRequestHandler):
                                     auto_prepare=body.get("auto_prepare", True),
                                     audio_index=body.get("audio_index"),
                                     subtitle_index=body.get("subtitle_index"),
-                                    license_url=body.get("license_url")))
+                                    license_url=body.get("license_url"),
+                                    offline_drm_token=body.get("offline_drm_token")))
             elif route == "/subtitles/opensubtitles":
                 path = body.get("path")
                 if not path:
