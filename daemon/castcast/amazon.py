@@ -8,7 +8,7 @@ HOST_API = "https://api.amazon.com"
 DEVICE_TYPE_ID = "A3REWRVYBYPKUM"  
 DEVICE_ID = "1234567890"  
 
-AUTH_FILE = os.path.join(os.path.dirname(__file__), "amazon_auth.json")
+AUTH_FILE = os.path.expanduser("~/.config/castcast/amazon_auth.json")
 
 def _do_post(url, payload):
     data = json.dumps(payload).encode('utf-8')
