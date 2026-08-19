@@ -470,19 +470,20 @@ class MediaServer:
         def start_tunnel():
             try:
                 self._ssh_process = subprocess.Popen(
-                    ["ssh", "-o", "StrictHostKeyChecking=no", "-p", "443", f"-R0:localhost:{self.port}", "a.pinggy.io"],
+                    ["ssh", "-o", "StrictHostKeyChecking=no", "-R", f"80:localhost:{self.port}", "nokey@localhost.run"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True
                 )
                 for line in self._ssh_process.stdout:
-                    if "http" in line and "pinggy" in line:
+                    if "http" in line and "lhr.life" in line:
                         urls = [word for word in line.split() if word.startswith("https://")]
                         for u in urls:
-                            if "dashboard.pinggy.io" not in u:
-                                self.public_url = u
-                                self._logger(f"Established public HTTPS tunnel for DRM: {self.public_url}")
-                                break
+                            self.public_url = u
+                            break
+                        if self.public_url:
+                            self._logger(f"Established public HTTPS tunnel for DRM: {self.public_url}")
+                            break
                         if self.public_url:
                             break
             except Exception as e:
