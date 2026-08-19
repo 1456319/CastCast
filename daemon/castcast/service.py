@@ -562,6 +562,9 @@ class CastService:
                 license_url = f"http://{self.media_server.lan_ip}:{self.media_server.port}/amazon/license?title_id={title_id}"
                 self.log("Warning: Using local HTTP proxy for DRM. This may fail due to Chromecast Mixed Content restrictions.", "warn")
             
+        if not path:
+            return {"error": "Media path is empty or could not be resolved"}
+            
         url_match = re.search(r'(https?://[^\s]+)', path)
         if url_match:
             path = url_match.group(1)

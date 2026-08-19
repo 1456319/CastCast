@@ -95,9 +95,7 @@ def get_vod_playback_resources(actor_token, playback_envelope, title_id):
                 "streamingTechnologies": {
                     "DASH": {
                         "bitrateAdaptations": ["CVBR"],
-                        "codecs": ["H264"],
-                        "drmType": "Widevine",
-                        "dynamicRangeFormats": ["SDR"]
+                        "drmType": "Widevine"
                     }
                 },
                 "supportedStreamingTechnologies": ["DASH"]
@@ -118,7 +116,7 @@ def get_vod_playback_resources(actor_token, playback_envelope, title_id):
         mpd_url = res["vodPlaylistedPlaybackUrls"]["result"]["playbackUrls"]["intraTitlePlaylist"][-1]["urls"][0]["url"]
         return mpd_url
     except KeyError:
-        return None
+        raise Exception(f"Amazon API did not return a manifest URL. Response: {res.get('errors', res)}")
 
 def fetch_amazon_4k_manifest(title_id):
     from .amazon import refresh_access_token
