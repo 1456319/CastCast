@@ -555,7 +555,12 @@ class CastService:
                 "actor_token": amazon_data["actor_token"],
                 "playback_envelope": amazon_data["playback_envelope"]
             }
-            license_url = f"http://{self.media_server.lan_ip}:{self.media_server.port}/amazon/license?title_id={title_id}"
+            if hasattr(self.media_server, "public_url") and self.media_server.public_url:
+                license_url = f"{self.media_server.public_url}/amazon/license?title_id={title_id}"
+                self.log(f"Using public HTTPS proxy for DRM: {license_url}")
+            else:
+                license_url = f"http://{self.media_server.lan_ip}:{self.media_server.port}/amazon/license?title_id={title_id}"
+                self.log("Warning: Using local HTTP proxy for DRM. This may fail due to Chromecast Mixed Content restrictions.", "warn")
             
         url_match = re.search(r'(https?://[^\s]+)', path)
         if url_match:

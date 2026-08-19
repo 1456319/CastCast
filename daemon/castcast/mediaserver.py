@@ -23,6 +23,7 @@ import secrets
 import socket
 import subprocess
 import threading
+import shutil
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
