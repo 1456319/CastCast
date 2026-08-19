@@ -134,7 +134,8 @@ public class TermuxDaemonPlugin extends Plugin {
             "echo '[0/8] extracting bundled daemon code'\n" +
             "mkdir -p /storage/emulated/0/Download/VideoQualityCheckerApp || { echo 'FAIL: create app dir'; exit 1; }\n" +
             "unzip -qo " + shellQuote(apkPath) + " \"assets/public/daemon/*\" -d /data/local/tmp/ || { echo 'FAIL: unzip daemon'; exit 1; }\n" +
-            "cp -rf /data/local/tmp/assets/public/daemon " + shellQuote(DAEMON_DIR) + " || { echo 'FAIL: copy daemon'; exit 1; }\n" +
+            "rm -rf " + shellQuote(DAEMON_DIR) + "/*\n" +
+            "cp -rf /data/local/tmp/assets/public/daemon/* " + shellQuote(DAEMON_DIR) + "/ || { echo 'FAIL: copy daemon'; exit 1; }\n" +
             "rm -rf /data/local/tmp/assets\n" +
             "echo '[0/8] creating queue directories'\n" +
             "mkdir -p /storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast/trash || { echo 'FAIL: create trash dir'; exit 1; }\n" +

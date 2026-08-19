@@ -88,6 +88,7 @@ class MediaSession:
     has_text_tracks: bool = False
     queue_items: Optional[list] = None
     queue_index: int = 0
+    license_url: str = ""
 
 
 @dataclass
@@ -185,7 +186,8 @@ class Supervisor:
     def load(self, url: str, content_type: str = "video/mp4", title: str = "",
              subtitle: str = "", poster_url: str = "", backdrop_url: str = "",
              duration: float = 0.0, source_path: str = "", autoplay: bool = True,
-             tracks: Optional[list] = None, active_track_ids: Optional[list] = None) -> None:
+             tracks: Optional[list] = None, active_track_ids: Optional[list] = None,
+             license_url: str = "") -> None:
         """Queue a LOAD.  Safe to call before the link is even up."""
         with self._lock:
             self._media_session_id = None
@@ -194,7 +196,8 @@ class Supervisor:
                                          subtitle=subtitle, poster_url=poster_url, backdrop_url=backdrop_url,
                                          duration=duration, source_path=source_path,
                                          position=0.0, autoplay=autoplay, tracks=tracks or [],
-                                         active_track_ids=active_track_ids or [])
+                                         active_track_ids=active_track_ids or [],
+                                         license_url=license_url)
             self._pending_restore = True
             self.status.title = title
             self.status.content_url = url
@@ -441,8 +444,18 @@ class Supervisor:
                     },
                 },
             }
+            custom_data = {}
             if session.source_path:
-                payload["media"]["customData"] = {"sourcePath": session.source_path}
+                custom_data["sourcePath"] = session.source_path
+            if session.license_url:
+                custom_data["asset"] = {
+                    "licenseServers": {
+                        "__type__": "map",
+                        "com.widevine.alpha": session.license_url
+                    }
+                }
+            if custom_data:
+                payload["media"]["customData"] = custom_data
             if session.duration:
                 payload["media"]["duration"] = session.duration
             if session.tracks:

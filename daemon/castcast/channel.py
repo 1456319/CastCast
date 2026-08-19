@@ -27,7 +27,7 @@ CAST_PORT = 8009
 #: Google Home ecosystem: it is a stock app ID that needs no developer console
 #: registration, no custom receiver hosted on Google's CDN, and no Home app.
 #: pychromecast, VLC, catt and go-chromecast all hardcode it.
-DEFAULT_MEDIA_RECEIVER_APP_ID = "CC1AD845"
+DEFAULT_MEDIA_RECEIVER_APP_ID = "07AEE832"
 
 DEFAULT_TEXT_TRACK_STYLE = {"fontScale": 1.0, "foregroundColor": "#FFFFFFFF", "backgroundColor": "#00000099"}
 

@@ -7,8 +7,8 @@
 # Intent (com.termux.app.RunCommandService). It ensures the environment
 # is safely established and logs every action to a user-readable audit log.
 #
-# Trust & Transparency: 
-# If a critical failure occurs, the script will ABORT rather than taking 
+# Trust & Transparency:
+# If a critical failure occurs, the script will ABORT rather than taking
 # arbitrary destructive actions.
 # =======================================================================
 
@@ -67,6 +67,11 @@ if ! command -v python3 &> /dev/null; then
     pkg install -y python || abort "Failed to install Python"
 fi
 
+if ! command -v ssh &> /dev/null; then
+    log_action "OpenSSH not found. Installing openssh for DRM tunneling..."
+    pkg install -y openssh || abort "Failed to install OpenSSH"
+fi
+
 if ! command -v ffmpeg &> /dev/null; then
     log_action "FFmpeg not found. Installing ffmpeg..."
     pkg install -y ffmpeg || abort "Failed to install FFmpeg"
@@ -78,7 +83,13 @@ if ! command -v node &> /dev/null; then
 fi
 log_action "[OK] Dependencies verified."
 
-# 4. Launch the Daemon
+# 4. Kill any old daemon instances and orphan SSH tunnels
+log_action "Cleaning up old daemon instances..."
+pkill -f "python3 -m castcast" || true
+pkill -f "pinggy.io" || true
+sleep 1
+
+# 5. Launch the Daemon
 log_action "Booting castcast daemon..."
 cd "$(dirname "$0")" || abort "Failed to navigate to daemon directory"
 

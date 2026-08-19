@@ -85,6 +85,15 @@ class _Handler(BaseHTTPRequestHandler):
                     deep=one("deep") in ("1", "true", "yes"))})
             elif route == "/trash":
                 self._json({"items": self.service.get_trash()})
+            elif route == "/amazon/auth":
+                from . import amazon
+                return self._json(amazon.create_code_pair())
+            
+            elif route == "/amazon/poll":
+                from . import amazon
+                pub = one("public_code")
+                priv = one("private_code")
+                return self._json(amazon.poll_register(pub, priv))
             elif route == "/preflight":
                 path = one("path")
                 if not path:
@@ -120,6 +129,14 @@ class _Handler(BaseHTTPRequestHandler):
                 if not paths or not isinstance(paths, list):
                     return self._json({"error": "paths must be a non-empty list of strings"}, 400)
                 self._json(svc.queue(paths))
+            
+            elif route == "/amazon/inject":
+                import os, json
+                auth_file = os.path.expanduser("~/.config/castcast/amazon_auth.json")
+                os.makedirs(os.path.dirname(auth_file), exist_ok=True)
+                with open(auth_file, "w") as f:
+                    json.dump(body, f)
+                return self._json({"success": True, "message": "Injected Amazon tokens"})
             elif route == "/cast":
                 path = body.get("path")
                 if not path:
@@ -128,7 +145,9 @@ class _Handler(BaseHTTPRequestHandler):
                                     allow_unsafe=bool(body.get("allow_unsafe")),
                                     auto_prepare=body.get("auto_prepare", True),
                                     audio_index=body.get("audio_index"),
-                                    subtitle_index=body.get("subtitle_index")))
+                                    subtitle_index=body.get("subtitle_index"),
+                                    license_url=body.get("license_url"),
+                                    offline_drm_token=body.get("offline_drm_token")))
             elif route == "/subtitles/opensubtitles":
                 path = body.get("path")
                 if not path:

@@ -336,7 +336,7 @@ class CastService:
         is_ultra = False
         if self.supervisor:
             is_ultra = getattr(self.supervisor.device, "is_ultra", False)
-            
+
         verdict = capability.evaluate(
             info,
             prefer_fmp4=bool(self.config.get("prefer_fmp4")),
@@ -398,7 +398,7 @@ class CastService:
         plan_dict = report.get("remaster_plan")
         if not plan_dict:
             return {**report, "error": "file does not qualify for 4K remastering (already 4K or not video)"}
-        
+
         # Check if output already exists
         plan_kwargs = dict(plan_dict)
         plan_kwargs.pop("shell_command", None)
@@ -407,13 +407,13 @@ class CastService:
         if os.path.exists(plan.output_path) and not force:
             self.log(f"reusing existing remastered file: {plan.output_path}")
             return report
-            
+
         if not hasattr(self, "_remaster_queue"):
             import queue
             self._remaster_queue = queue.Queue()
             def queue_worker():
                 while True:
-                    path, job_plan, duration = self._remaster_queue.get()
+                    _path, job_plan, duration = self._remaster_queue.get()
                     self.log(f"Starting queued remaster: {job_plan.description}")
                     # wait until not busy
                     import time
@@ -426,7 +426,7 @@ class CastService:
 
         duration = report.get("media", {}).get("duration_s", 0.0)
         self._remaster_queue.put((path, plan, duration))
-        
+
         qsize = self._remaster_queue.qsize()
         self.log(f"Queued for overnight remastering: {os.path.basename(path)} (Queue position: {qsize})")
         return {**report, "queued": True, "queue_position": qsize}
@@ -523,22 +523,69 @@ class CastService:
 
     def cast(self, path: str, *, allow_unsafe: bool = False,
              auto_prepare: bool = True, subtitle_path: str = "",
-             subtitle_language: str = "", audio_index: int = None,
-             subtitle_index: int = None) -> dict:
+             subtitle_language: str = "", audio_index: Optional[int] = None,
+             subtitle_index: Optional[int] = None, license_url: str = None,
+             offline_drm_token: str = None) -> dict:
         """The whole pipeline: pre-flight, convert if needed, serve, LOAD."""
         if not self.supervisor:
             return {"error": "not connected to a device"}
 
+        if offline_drm_token:
+            self.log("Offline DRM token provided. Registering with local proxy.")
+            license_url = self.media_server.add_drm_token(offline_drm_token)
+
         import re
+        
+        if "amazon.com" in path or "gti=" in path:
+            import urllib.parse
+            from . import amazon_drm
+            parsed = urllib.parse.urlparse(path)
+            qs = urllib.parse.parse_qs(parsed.query)
+            title_id = qs.get("gti", [""])[0]
+            if not title_id:
+                return {"error": "Could not extract Amazon title ID (gti) from URL"}
+                
+            self.log(f"Detected Amazon Title ID: {title_id}")
+            amazon_data = amazon_drm.fetch_amazon_4k_manifest(title_id)
+            
+            path = amazon_data["mpd_url"]
+            self.log(f"Amazon 4K Manifest: {path}")
+            
+            self.media_server.drm_tokens[f"amazon_{title_id}"] = {
+                "actor_token": amazon_data["actor_token"],
+                "playback_envelope": amazon_data["playback_envelope"]
+            }
+            if hasattr(self.media_server, "public_url") and self.media_server.public_url:
+                license_url = f"{self.media_server.public_url}/amazon/license?title_id={title_id}"
+                self.log(f"Using public HTTPS proxy for DRM: {license_url}")
+            else:
+                license_url = f"http://{self.media_server.lan_ip}:{self.media_server.port}/amazon/license?title_id={title_id}"
+                self.log("Warning: Using local HTTP proxy for DRM. This may fail due to Chromecast Mixed Content restrictions.", "warn")
+            
+        if not path:
+            return {"error": "Media path is empty or could not be resolved"}
+            
         url_match = re.search(r'(https?://[^\s]+)', path)
         if url_match:
             path = url_match.group(1)
 
-        if path.startswith("http://") or path.startswith("https://"):
-            
+        if path.startswith(("http://", "https://")):
+
             if self.rules.is_drm(path):
                 self.log(f"Warning: {path} has previously triggered DRM flags. Playback may fail organically.", "warn")
-                
+
+            if license_url:
+                self.log(f"DRM license URL provided. Bypassing download and casting directly: {path}")
+                content_type = "application/dash+xml" if ".mpd" in path else "application/vnd.apple.mpegurl" if ".m3u8" in path else "video/mp4"
+                self.supervisor.load(
+                    path,
+                    content_type=content_type,
+                    title="Widevine DRM Stream",
+                    source_path=path,
+                    license_url=license_url
+                )
+                return {"casting": True, "url": path, "drm": True}
+
             headers = self.rules.get_headers(path)
             if headers:
                 self.log(f"Applying persistent ruleset headers for {path}")
@@ -555,7 +602,7 @@ class CastService:
                     return {"error": "Another conversion or download is currently running."}
 
                 self.log(f"Downloading web stream to Queue: {path}")
-                
+
                 youtube_dir = os.path.join(self.media_roots[0], "youtube")
                 os.makedirs(youtube_dir, exist_ok=True)
 
@@ -563,9 +610,9 @@ class CastService:
                     import subprocess, time, re, shutil
                     from .remux import RemuxJob, RemuxPlan
                     from .probe import FFMPEG
-                    
+
                     ffmpeg_path = shutil.which(FFMPEG) or FFMPEG
-                    
+
                     cmd = [
                         "yt-dlp", "--newline", "--no-continue",
                         "--ffmpeg-location", ffmpeg_path,
@@ -577,7 +624,7 @@ class CastService:
                         "--merge-output-format", "mkv",
                         path
                     ]
-                    
+
                     plan = RemuxPlan(
                         input_path=path,
                         output_path=os.path.join(youtube_dir, "downloading..."),
@@ -585,16 +632,16 @@ class CastService:
                         estimated="A few minutes depending on network"
                     )
                     job = RemuxJob(plan=plan, state="running", started_at=time.time())
-                    
+
                     with self._remuxer._lock:
                         self._remuxer.job = job
                     self._on_remux_update(job)
-    
+
                     try:
                         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
                         with self._remuxer._lock:
                             self._remuxer._proc = proc
-                            
+
                         last_error = ""
                         for line in proc.stdout:
                             if line.startswith("ERROR:") or line.startswith("WARNING:"):
@@ -623,13 +670,13 @@ class CastService:
                         else:
                             self.log(f"Download failed: {job.error}", "warn")
                             time.sleep(4)
-                        
+
                         with self._remuxer._lock:
                             if self._remuxer.job is job:
                                 self._remuxer.job = None
                                 self._remuxer._proc = None
                         self._on_remux_update(job)
-    
+
                 import threading
                 threading.Thread(target=download_worker, daemon=True).start()
                 return {"converting": True, "description": "Downloading to Queue..."}
@@ -684,12 +731,12 @@ class CastService:
 
         title_base = os.path.basename(path)
         tmdb_key = self.config.get("tmdb_api_key", "")
-        
+
         # Fast non-blocking TMDB scrape
         from .metadata import TMDBClient
         tmdb = TMDBClient(tmdb_key)
         enriched = tmdb.enrich(title_base)
-        
+
         title = enriched["title"]
         subtitle = enriched["subtitle"]
         poster_url = enriched["poster_url"]
@@ -697,7 +744,7 @@ class CastService:
         tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
         if audio_index is not None:
             active_track_ids.append(audio_index)
-        
+
         if subtitle_index is not None:
             active_track_ids.append(subtitle_index)
 
@@ -714,7 +761,9 @@ class CastService:
             source_path=path,
             tracks=tracks,
             active_track_ids=active_track_ids,
+            license_url=license_url,
         )
+
 
         pv = (info.get("video") or [{}])
         resolution = f"{pv[0].get('width')}x{pv[0].get('height')}" if pv and pv[0] else "?"
@@ -827,7 +876,7 @@ class CastService:
                 f"remuxing to make {preferred} audio the default track: {' '.join(cmd)}",
                 "debug",
             )
-            proc = subprocess.run(cmd, capture_output=True, timeout=900)
+            proc = subprocess.run(cmd, capture_output=True, timeout=900, check=False)
             if proc.returncode != 0:
                 detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
                 reason = detail[-1] if detail else proc.returncode
@@ -927,7 +976,7 @@ class CastService:
             f"DEBUG-ONLY: extracting embedded {preferred} subtitles for sideload: {' '.join(cmd)}",
             "debug",
         )
-        proc = subprocess.run(cmd, capture_output=True, timeout=300)
+        proc = subprocess.run(cmd, capture_output=True, timeout=300, check=False)
         if proc.returncode != 0:
             detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
             reason = detail[-1] if detail else proc.returncode
@@ -968,7 +1017,7 @@ class CastService:
             return out
         cmd = [FFMPEG, "-hide_banner", "-y", "-i", selected, "-f", "webvtt", out]
         self.log(f"DEBUG-ONLY: converting sidecar subtitles to WebVTT: {' '.join(cmd)}", "debug")
-        proc = subprocess.run(cmd, capture_output=True, timeout=120)
+        proc = subprocess.run(cmd, capture_output=True, timeout=120, check=False)
         if proc.returncode != 0:
             detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
             reason = detail[-1] if detail else proc.returncode
@@ -1051,7 +1100,7 @@ class CastService:
         dest = self._unique_trash_path(os.path.join(trash_dir, rel))
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         shutil.move(safe_path, dest)
-        
+
         # Check if in queue and remove
         session = getattr(self.supervisor, "_session", None) if self.supervisor else None
         if session and session.queue_items:
@@ -1066,7 +1115,7 @@ class CastService:
                         item_ids_to_remove.append(item_id)
             if item_ids_to_remove:
                 self.supervisor.queue_remove(item_ids_to_remove)
-                
+
         return {"trashed": dest}
 
     def delete(self, path: str) -> dict:
@@ -1139,7 +1188,7 @@ class CastService:
         if not url: return {"error": "missing url"}
         req_type = payload.get("type")
         headers = payload.get("headers", {})
-        
+
         if req_type == "drm":
             self.log(f"Discovery: DRM flag detected on {url}. Playback may fail.", "warn")
             self.rules.register_drm(url)
@@ -1148,12 +1197,12 @@ class CastService:
             self.rules.register_manifest(url, headers)
             # Phase 3: Register the proxy ruleset
             self.media_server.register_intercept(url, headers)
-            
+
             # Auto-cast the proxied stream!
             import base64
             encoded = base64.b64encode(url.encode("utf-8")).decode("utf-8")
             proxy_url = f"http://{self.media_server.lan_ip}:{self.media_server.port}/proxy/?url={encoded}"
-            
+
             if getattr(self, "supervisor", None):
                 self.log(f"Discovery: Routing intercepted stream through local proxy to TV...", "info")
                 try:
@@ -1161,7 +1210,7 @@ class CastService:
                 except Exception as e:
                     self.log(f"Discovery Cast failed: {e}", "warn")
                     self.media_server.trigger_telemetry(url, str(e))
-        
+
         return {"status": "intercept_logged", "url": url}
 
 

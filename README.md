@@ -1,6 +1,6 @@
 # Castcast (formerly Video Quality Checker App)
 
-Castcast is a robust, autonomous Android media casting application that completely bypasses Google Home and proprietary middlemen. Built with a Capacitor/React frontend and a powerful Python backend daemon running in Termux, it speaks the native Cast V2 protocol directly to your Chromecast. 
+Castcast is a robust, autonomous Android media casting application that completely bypasses Google Home and proprietary middlemen. Built with a Capacitor/React frontend and a powerful Python backend daemon running in Termux, it speaks the native Cast V2 protocol directly to your Chromecast.
 
 It is designed for power users who want guaranteed compatibility, gapless playback, and total control over their local media streaming experience.
 
@@ -18,7 +18,7 @@ Bypass the Google Home sandbox. Castcast opens a raw TLS socket to your Chromeca
 No more mid-stream buffering or format failures. Castcast runs a pre-flight probe using `ffprobe` on every video. If the video codec or container is not supported by your Chromecast, the daemon instantly spins up a local `ffmpeg` process to transcode the video (and safely pass through HDR metadata) before streaming it.
 
 ### Unified Native Queue Architecture
-In Castcast, your local media folder *is* your queue. The app seamlessly interfaces with the Chromecast's internal queue system (`QUEUE_LOAD`, `QUEUE_INSERT`). 
+In Castcast, your local media folder *is* your queue. The app seamlessly interfaces with the Chromecast's internal queue system (`QUEUE_LOAD`, `QUEUE_INSERT`).
 - Gapless auto-advancing managed natively by the Chromecast.
 - Moving a file to the "Trash" (marking it as watched) automatically fires a `QUEUE_REMOVE` command to yank it from the active stream dynamically.
 
@@ -46,5 +46,5 @@ No manual terminal typing required. The frontend APK uses an Android Intent to s
 ## Getting Started
 1. Install the APK and Termux on your Android device.
 2. Launch the APK.
-3. Tap **Launch Daemon (Termux)**. 
+3. Tap **Launch Daemon (Termux)**.
 4. The app will autonomously request permissions, set up the environment, install FFmpeg/Python, and connect.
