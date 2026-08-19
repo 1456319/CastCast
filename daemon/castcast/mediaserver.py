@@ -131,7 +131,7 @@ class _Handler(BaseHTTPRequestHandler):
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             title_id = qs.get("title_id", [""])[0]
             
-            amazon_data = self.server.drm_tokens.get(f"amazon_{title_id}")
+            amazon_data = self.server.media_server.drm_tokens.get(f"amazon_{title_id}")
             if not amazon_data:
                 self.send_response(404)
                 self.end_headers()
