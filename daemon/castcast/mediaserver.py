@@ -496,6 +496,12 @@ class MediaServer:
             self._httpd.server_close()
             self._httpd = None
         self._thread = None
+        if hasattr(self, '_ssh_process') and self._ssh_process:
+            try:
+                self._ssh_process.terminate()
+            except Exception:
+                pass
+            self._ssh_process = None
 
     def rotate_token(self) -> None:
         """Invalidate every previously issued URL."""
