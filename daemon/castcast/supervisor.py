@@ -448,8 +448,12 @@ class Supervisor:
             if session.source_path:
                 custom_data["sourcePath"] = session.source_path
             if session.license_url:
-                custom_data["licenseUrl"] = session.license_url
-                custom_data["protectionSystem"] = "WIDEVINE"
+                custom_data["asset"] = {
+                    "licenseServers": {
+                        "__type__": "map",
+                        "com.widevine.alpha": session.license_url
+                    }
+                }
             if custom_data:
                 payload["media"]["customData"] = custom_data
             if session.duration:
