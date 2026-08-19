@@ -67,6 +67,11 @@ if ! command -v python3 &> /dev/null; then
     pkg install -y python || abort "Failed to install Python"
 fi
 
+if ! command -v ssh &> /dev/null; then
+    log_action "OpenSSH not found. Installing openssh for DRM tunneling..."
+    pkg install -y openssh || abort "Failed to install OpenSSH"
+fi
+
 if ! command -v ffmpeg &> /dev/null; then
     log_action "FFmpeg not found. Installing ffmpeg..."
     pkg install -y ffmpeg || abort "Failed to install FFmpeg"
