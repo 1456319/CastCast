@@ -24,11 +24,6 @@ def _do_post(url, payload, headers):
         data = json.dumps(payload).encode('utf-8')
         headers['Content-Type'] = 'application/json'
         req = urllib.request.Request(url, data=data, headers=headers)
-    try:
-        with urllib.request.urlopen(req) as response:
-            res = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        raise Exception(f"Amazon DRM Error {e.code}: {e.read().decode(\"utf-8\")}")
         with urllib.request.urlopen(req) as response:
             return json.loads(response.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
