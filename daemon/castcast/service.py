@@ -524,7 +524,7 @@ class CastService:
     def cast(self, path: str, *, allow_unsafe: bool = False,
              auto_prepare: bool = True, subtitle_path: str = "",
              subtitle_language: str = "", audio_index: Optional[int] = None,
-             subtitle_index: Optional[int] = None) -> dict:
+             subtitle_index: Optional[int] = None, license_url: str = None) -> dict:
         """The whole pipeline: pre-flight, convert if needed, serve, LOAD."""
         if not self.supervisor:
             return {"error": "not connected to a device"}
@@ -538,6 +538,17 @@ class CastService:
 
             if self.rules.is_drm(path):
                 self.log(f"Warning: {path} has previously triggered DRM flags. Playback may fail organically.", "warn")
+            if license_url:
+                self.log(f"DRM license URL provided. Bypassing download and casting directly: {path}")
+                content_type = "application/dash+xml" if ".mpd" in path else "application/vnd.apple.mpegurl" if ".m3u8" in path else "video/mp4"
+                self.supervisor.load(
+                    path,
+                    content_type=content_type,
+                    title="Widevine DRM Stream",
+                    source_path=path,
+                    license_url=license_url
+                )
+                return {"casting": True, "url": path, "drm": True}
 
             headers = self.rules.get_headers(path)
             if headers:
@@ -714,7 +725,9 @@ class CastService:
             source_path=path,
             tracks=tracks,
             active_track_ids=active_track_ids,
+            license_url=license_url,
         )
+
 
         pv = (info.get("video") or [{}])
         resolution = f"{pv[0].get('width')}x{pv[0].get('height')}" if pv and pv[0] else "?"
