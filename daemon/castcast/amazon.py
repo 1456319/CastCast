@@ -53,6 +53,7 @@ def poll_register(public_code, private_code):
     res = _do_post(f"{HOST_API}/auth/register", payload)
     
     if "response" in res and "success" in res["response"]:
+        os.makedirs(os.path.dirname(AUTH_FILE), exist_ok=True)
         with open(AUTH_FILE, "w") as f:
             json.dump(res["response"]["success"], f, indent=2)
             
