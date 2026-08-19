@@ -121,14 +121,31 @@ def get_vod_playback_resources(actor_token, playback_envelope, title_id):
         return None
 
 def fetch_amazon_4k_manifest(title_id):
+    from .amazon import refresh_access_token
     auth = get_saved_auth()
-    if not auth:
+    if not auth or "tokens" not in auth or "bearer" not in auth["tokens"]:
         raise Exception("Not authenticated with Amazon")
         
-    access_token = auth["tokens"]["bearer"]["access_token"]
-    refresh_token = auth["tokens"]["bearer"]["refresh_token"]
+    access_token = auth["tokens"]["bearer"].get("access_token")
+    refresh_token = auth["tokens"]["bearer"].get("refresh_token")
     
-    profile_id = get_primary_profile(access_token)
+    if not access_token or not refresh_token:
+        raise Exception("Amazon token data is corrupted")
+        
+    try:
+        profile_id = get_primary_profile(access_token)
+    except Exception as e:
+        if "401" in str(e) or "400" in str(e):
+            print("Access token expired, refreshing...")
+            new_access_token = refresh_access_token(refresh_token)
+            if new_access_token:
+                access_token = new_access_token
+                profile_id = get_primary_profile(access_token)
+            else:
+                raise Exception("Failed to refresh access token")
+        else:
+            raise
+            
     actor_token = get_actor_token(refresh_token, profile_id)
     envelope = get_item_details(actor_token, title_id)
     if not envelope:
