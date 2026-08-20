@@ -47,4 +47,4 @@ No manual terminal typing required. The frontend APK uses an Android Intent to s
 1. Install the APK and Termux on your Android device.
 2. Launch the APK.
 3. Tap **Launch Daemon (Termux)**.
-4. The app will autonomously request permissions, set up the environment, install FFmpeg/Python, and connect.
+4. The app will autonomously request permissions, set up the environment, install FFmpeg/Python, and connect
