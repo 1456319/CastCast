@@ -82,8 +82,26 @@ def get_item_details(actor_token, title_id):
             return action["metadata"]["playbackExperienceMetadata"]["playbackEnvelope"]
     return None
 
-def get_vod_playback_resources(actor_token, playback_envelope, title_id):
-    payload = {
+def _amazon_capability_map(values):
+    """Return Amazon PRS capability maps keyed by supported value.
+
+    Amazon's playback service rejects the request when codec and dynamic-range
+    capabilities are sent as bare arrays. The Android-TV payload describes each
+    capability as an object whose keys are the supported formats. Empty objects
+    are sufficient when we do not need per-format attributes.
+    """
+    return {value: {} for value in values}
+
+
+def _build_vod_playback_resources_payload(playback_envelope, title_id):
+    dash_capabilities = {
+        "bitrateAdaptations": _amazon_capability_map(["CVBR"]),
+        "codecs": _amazon_capability_map(["H265", "H264"]),
+        "drmType": "Widevine",
+        "dynamicRangeFormats": _amazon_capability_map(["HDR10", "SDR"]),
+    }
+
+    return {
         "vodPlaylistedPlaybackUrlsRequest": {
             "playbackSettingsRequest": {
                 "firmware": "",
@@ -93,14 +111,9 @@ def get_vod_playback_resources(actor_token, playback_envelope, title_id):
                 "hdcpLevel": "2.3",
                 "maxVideoResolution": "2160p",
                 "streamingTechnologies": {
-                    "DASH": {
-                        "bitrateAdaptations": ["CVBR"],
-                        "codecs": ["H265", "H264"],
-                        "drmType": "Widevine",
-                        "dynamicRangeFormats": ["HDR10", "SDR"]
-                    }
+                    "DASH": dash_capabilities
                 },
-                "supportedStreamingTechnologies": ["DASH"]
+                "supportedStreamingTechnologies": _amazon_capability_map(["DASH"]),
             }
         },
         "globalParameters": {
@@ -108,7 +121,10 @@ def get_vod_playback_resources(actor_token, playback_envelope, title_id):
             "deviceCapabilityFamily": "LivingRoomPlayer"
         }
     }
-    
+
+
+def get_vod_playback_resources(actor_token, playback_envelope, title_id):
+    payload = _build_vod_playback_resources_payload(playback_envelope, title_id)
     query = urllib.parse.urlencode({"deviceTypeID": DEVICE_TYPE_ID, "deviceID": DEVICE_ID})
     url = f"{HOST_ATVPS}/playback/prs/GetVodPlaybackResources?{query}"
     
