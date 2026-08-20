@@ -317,6 +317,19 @@ class _Handler(BaseHTTPRequestHandler):
                     base_url = target_url[:target_url.rfind('/')+1]
                     body_content = re.sub(r'(<MPD[^>]*>)', r'\1\n  <BaseURL>' + base_url + r'</BaseURL>', body_content, count=1)
                     
+                    # Strip out non-English audio and text/subtitle tracks
+                    def filter_english(match):
+                        tag = match.group(0)
+                        lang_match = re.search(r'lang="([^"]+)"', tag)
+                        if lang_match:
+                            lang = lang_match.group(1).lower()
+                            if not lang.startswith("en"):
+                                return ""
+                        return tag
+                    body_content = re.sub(r'<AdaptationSet[^>]*>.*?</AdaptationSet>', 
+                        lambda m: filter_english(m) if 'contentType="audio"' in m.group(0) or 'contentType="text"' in m.group(0) or 'contentType="subtitle"' in m.group(0) else m.group(0), 
+                        body_content, flags=re.DOTALL)
+                    
                     # Strip PlayReady ContentProtection entirely
                     body_content = re.sub(r'<ContentProtection[^>]*schemeIdUri="urn:uuid:9A04F079-9840-4286-AB92-E65BE0885F95"[^>]*>.*?</ContentProtection>', '', body_content, flags=re.DOTALL)
                     
