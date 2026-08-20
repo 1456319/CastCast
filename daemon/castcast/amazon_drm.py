@@ -90,14 +90,14 @@ def get_vod_playback_resources(actor_token, playback_envelope, title_id):
                 "titleId": title_id,
             },
             "device": {
-                "hdcpLevel": "2.3",
-                "maxVideoResolution": "2160p",
+                "hdcpLevel": "1.4",
+                "maxVideoResolution": "1080p",
                 "streamingTechnologies": {
                     "DASH": {
                         "bitrateAdaptations": ["CVBR"],
-                        "codecs": ["H265", "H264"],
+                        "codecs": ["H264"],
                         "drmType": "Widevine",
-                        "dynamicRangeFormats": ["HDR10", "SDR"]
+                        "dynamicRangeFormats": ["SDR"]
                     }
                 },
                 "supportedStreamingTechnologies": ["DASH"]
