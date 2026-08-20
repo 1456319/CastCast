@@ -95,9 +95,9 @@ def get_vod_playback_resources(actor_token, playback_envelope, title_id):
                 "streamingTechnologies": {
                     "DASH": {
                         "bitrateAdaptations": ["CVBR"],
-                        "codecs": ["H265", "H264"],
+                        "codecs": ["H265"],
                         "drmType": "Widevine",
-                        "dynamicRangeFormats": ["HDR10", "SDR"]
+                        "dynamicRangeFormats": ["HDR10"]
                     }
                 },
                 "supportedStreamingTechnologies": ["DASH"]

@@ -521,6 +521,9 @@ class Supervisor:
         if namespace == NS_MEDIA:
             return self._handle_media(_json(message.payload_utf8))
 
+        elif namespace == "urn:x-cast:com.google.cast.shaka":
+            self._log(f"SHAKA MESSAGE: {message.payload_utf8}")
+
         return True
 
     def _advance_to_connected(self) -> None:
