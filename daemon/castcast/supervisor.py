@@ -88,6 +88,8 @@ class MediaSession:
     has_text_tracks: bool = False
     queue_items: Optional[list] = None
     queue_index: int = 0
+    # Widevine license server URL for DRM-protected streams. Passed to the
+    # Chromecast receiver via customData.asset.licenseServers.
     license_url: str = ""
 
 
@@ -448,6 +450,29 @@ class Supervisor:
             if session.source_path:
                 custom_data["sourcePath"] = session.source_path
             if session.license_url:
+                # ------------------------------------------------------------------
+                # DRM / Widevine Configuration for Shaka Player Demo Receiver
+                # ------------------------------------------------------------------
+                # This customData.asset.licenseServers structure is the Shaka Player
+                # Demo Receiver's API for specifying a Widevine license server URL.
+                #
+                # - "__type__": "map" is required by Shaka Player's custom data parser
+                #   to interpret the object as a JavaScript Map.
+                # - "com.widevine.alpha" is the Widevine DRM scheme identifier. This
+                #   tells Shaka Player which CDM (Content Decryption Module) to use
+                #   when requesting a license.
+                # - session.license_url points to either our local HTTPS tunnel proxy
+                #   (for Amazon DRM) or a direct license server URL. The Chromecast
+                #   will POST the Widevine challenge to this URL and expect raw
+                #   license bytes back. Deviations in byte-level payload, headers, or
+                #   Content-Type will break license acquisition and playback.
+                #
+                # WARNING: The Shaka Player Demo receiver app ID is "07AEE832". If
+                # this app ID is changed to a different receiver (e.g. the Default
+                # Media Receiver "CC1AD845"), the customData.asset.licenseServers
+                # format will NOT work because the Default Media Receiver doesn't
+                # support custom Widevine license servers.
+                # ------------------------------------------------------------------
                 custom_data["asset"] = {
                     "licenseServers": {
                         "__type__": "map",

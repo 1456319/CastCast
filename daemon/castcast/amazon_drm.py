@@ -1,3 +1,20 @@
+"""
+Amazon Prime Video Widevine DRM Integration for 4K UHD Chromecast Streaming
+
+This module handles the full authentication and playback pipeline required to
+stream Amazon Prime Video content at 4K UHD on a Chromecast device.
+The pipeline involves several stages:
+1. Authentication to get basic access and refresh tokens.
+2. Fetching the primary profile ID.
+3. Obtaining a device-specific actor token using the profile and refresh token.
+4. Retrieving a playback envelope for the specific title.
+5. Requesting playback resources to obtain the manifest (MPD) URL.
+6. Acting as a license proxy to handle Widevine DRM challenges.
+
+WARNING: This module's implementation is highly brittle and relies on exact API
+payload structures, specifically to coerce Amazon into serving TV-quality 4K
+streams to a Chromecast. Modifications should be made with extreme care.
+"""
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -83,6 +100,27 @@ def get_item_details(actor_token, title_id):
     return None
 
 def get_vod_playback_resources(actor_token, playback_envelope, title_id):
+    """
+    Fetch the DASH manifest (MPD) URL for 4K UHD playback.
+    
+    CRITICAL: The payload structure must match Amazon's strict API requirements exactly.
+    
+    Specific requirements for 4K streaming:
+    - hdcpLevel: Must be "2.3" for 4K.
+    - maxVideoResolution: Must be "2160p".
+    - codecs: Requesting ["H265"] ensures the highest quality stream.
+    - dynamicRangeFormats: Requesting ["HDR10"] enables HDR.
+    - drmType: Must be "Widevine". Do NOT change to PlayReady; Chromecast only has Widevine.
+    - deviceCapabilityFamily: Set to "LivingRoomPlayer" to trick Amazon into serving
+      TV-quality streams rather than standard web streams.
+      
+    WARNING: Do not add H.264, VP9, or other codecs to the codecs list. Doing so will
+    cause Amazon to serve a mixed-quality manifest that the Chromecast cannot properly
+    decode at 4K resolution.
+    
+    The intraTitlePlaylist[-1] index is used to select the last (highest quality)
+    playlist entry from the API response.
+    """
     payload = {
         "vodPlaylistedPlaybackUrlsRequest": {
             "playbackSettingsRequest": {
@@ -121,6 +159,23 @@ def get_vod_playback_resources(actor_token, playback_envelope, title_id):
         raise Exception(f"Amazon API did not return a manifest URL. Response: {res.get('errors', res)}")
 
 def fetch_amazon_4k_manifest(title_id):
+    """
+    Main entry point for casting an Amazon URL, called from service.py.
+    
+    This function handles token retrieval/refresh, gets the actor token and
+    playback envelope, and ultimately fetches the MPD manifest URL.
+    
+    Token refresh is handled automatically if the primary access_token is expired.
+    
+    Returns a dict containing:
+    - mpd_url: The DASH manifest URL.
+    - actor_token: Required for the DRM license challenge.
+    - playback_envelope: Required for the DRM license challenge.
+    
+    NOTE: The returned actor_token and playback_envelope are stored in drm_tokens
+    on the mediaserver for later use by the license proxy. All three return values
+    are required for successful playback.
+    """
     from .amazon import refresh_access_token
     auth = get_saved_auth()
     if not auth or "tokens" not in auth or "bearer" not in auth["tokens"]:
@@ -160,6 +215,26 @@ def fetch_amazon_4k_manifest(title_id):
     }
 
 def fetch_widevine_license(actor_token, playback_envelope, challenge_bytes):
+    """
+    Acts as a Widevine license proxy for the Chromecast's CDM.
+    
+    This function is called by the mediaserver.py proxy when the Chromecast sends
+    a DRM license challenge during playback initialization.
+    
+    - challenge_bytes: Raw protobuf bytes from the Chromecast CDM, which are
+      base64-encoded before being sent to Amazon's DRM servers.
+      
+    CRITICAL: Amazon's API returns the license under different JSON keys depending
+    on the API version or the specific content. This function checks `"license"`,
+    `"drmLicense.license"`, and `"widevineLicense.license"`. All three MUST be
+    checked. Removing any of these checks will cause a 500 error on the license
+    proxy, leading to an endless license request loop on the Chromecast and
+    playback failure.
+    
+    Returns:
+        RAW BYTES (base64-decoded) of the DRM license. The mediaserver sends
+        these bytes directly to the Chromecast CDM as `application/octet-stream`.
+    """
     import base64
     payload = {
         "playbackEnvelope": playback_envelope,

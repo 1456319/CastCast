@@ -128,6 +128,31 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         self.server.media_server._logger(f"Received POST: {self.path}")
 
+        # ====================================================================
+        # [AMAZON LICENSE PROXY ENDPOINT]
+        # This endpoint (/amazon/license?title_id=...) acts as a Widevine 
+        # license proxy between the Chromecast and Amazon's DRM servers.
+        #
+        # Flow: Chromecast CDM -> HTTPS tunnel -> this proxy -> Amazon API
+        #       -> raw license bytes -> back to CDM
+        #
+        # 1. The Chromecast sends the Widevine challenge as the raw POST body.
+        # 2. We forward it to Amazon's GetWidevineLicense endpoint using the
+        #    stored actor_token and playback_envelope.
+        # 3. We return the raw license bytes with Content-Type: application/octet-stream.
+        #
+        # CRITICAL: The Content-Length header MUST be set on the response. 
+        # Without it, Shaka Player (the Chromecast receiver) cannot determine
+        # when the license download is complete on a keep-alive connection.
+        # It will time out after ~10 seconds, retry, get another valid license,
+        # time out again, and loop forever. The Chromecast will appear stuck
+        # in `buffering` state with position 0.0. This bug took many hours to
+        # diagnose because the license data itself was correct — it was the HTTP
+        # framing that was broken.
+        #
+        # NOTE: CORS headers (Access-Control-Allow-Origin: *) are required 
+        # because the Shaka Player receiver runs in a browser context.
+        # ====================================================================
         if self.path.startswith("/amazon/license"):
             import urllib.parse
             from . import amazon_drm
@@ -246,6 +271,43 @@ class _Handler(BaseHTTPRequestHandler):
                     if body:
                         self.wfile.write(final_body)
 
+                # ====================================================================
+                # [DASH MANIFEST PROXY BLOCK]
+                # When the Chromecast fetches the Amazon DASH manifest through our
+                # proxy, we MUST modify it in-flight. Three transformations happen:
+                #
+                # 1. BaseURL injection: Amazon's segment URLs are relative, but since 
+                #    the Chromecast fetched the manifest from OUR proxy (not Amazon), 
+                #    relative URLs would resolve against our server. We inject a 
+                #    <BaseURL> pointing to the original Amazon CDN directory so 
+                #    segments are fetched directly from Amazon.
+                #
+                # 2. PlayReady stripping: Amazon includes PlayReady ContentProtection 
+                #    blocks (UUID 9A04F079...). The Chromecast Ultra only has a 
+                #    Widevine CDM. If PlayReady blocks remain, the CDM gets confused. 
+                #    We strip them entirely.
+                #
+                # 3. Widevine PSSH box wrapping: This is the most critical transformation.
+                #    Amazon's <cenc:pssh> tags contain BARE Widevine protobuf data 
+                #    (the init data). Standard PSSH boxes must be wrapped in an MP4 
+                #    box header. The `fix_widevine_pssh` function wraps each bare 
+                #    protobuf in a compliant MP4 pssh box:
+                #      - 4 bytes: total box size (big-endian uint32)
+                #      - 4 bytes: literal ASCII `pssh`
+                #      - 4 bytes: version + flags (0x00000000 for version 0)
+                #      - 16 bytes: Widevine System ID (EDEF8BA9-79D6-4ACE-A3C8-27DCD51D21ED)
+                #      - 4 bytes: data size (big-endian uint32)
+                #      - N bytes: the original protobuf data
+                #
+                # WARNING: If ANY of these 32 header bytes are wrong, the Widevine 
+                # CDM will silently reject the init data and playback will never start. 
+                # The Chromecast will sit in `buffering` state forever.
+                #
+                # CRITICAL: After modifying the manifest body, we MUST recalculate 
+                # Content-Length. If Content-Length is wrong or missing, the 
+                # Chromecast's HTTP client will either hang (waiting for more bytes) 
+                # or truncate (cutting off the manifest). Both cause LOAD_FAILED.
+                # ====================================================================
                 elif "dash+xml" in content_type.lower() or target_url.endswith(".mpd"):
                     import re, base64
                     body_content = response.read().decode("utf-8", "replace")
@@ -511,6 +573,19 @@ class MediaServer:
         self._thread.start()
         self._logger(f"media server listening on {self.base_url}")
         
+        # ====================================================================
+        # [SSH TUNNEL SETUP]
+        # The Chromecast requires HTTPS for license server URLs (mixed content 
+        # policy). Our local HTTP server can't serve HTTPS without certificates.
+        #
+        # We establish an SSH reverse tunnel to localhost.run which provides a 
+        # free HTTPS endpoint. The public URL (e.g. `https://xxxxx.lhr.life`) 
+        # is stored as `self.public_url` and used as the DRM license server 
+        # URL passed to the Chromecast.
+        #
+        # If SSH is not available, we fall back to plain HTTP (which may fail 
+        # on newer Chromecast firmware due to mixed content blocking).
+        # ====================================================================
         # Start SSH tunnel for HTTPS DRM proxy
         import subprocess
 

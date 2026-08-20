@@ -536,6 +536,44 @@ class CastService:
 
         import re
         
+        # ========================================================================================
+        # AMAZON PRIME VIDEO 4K UHD CASTING PIPELINE (WIDEVINE DRM)
+        # ========================================================================================
+        # 1. Overview: This block handles casting Amazon Prime Video content in 4K UHD with
+        #    Widevine DRM to a Chromecast Ultra. The entire pipeline is:
+        #    Detect Amazon URL -> extract title ID -> fetch 4K manifest from Amazon API ->
+        #    proxy manifest through local server (which fixes malformed PSSH boxes) -> establish
+        #    HTTPS tunnel for license proxy -> tell Chromecast to load the proxied manifest with
+        #    the license server URL.
+        #
+        # 2. The manifest proxy: The Amazon MPD URL is base64-encoded and routed through our local
+        #    `/proxy/` endpoint. This is critical because our proxy performs three in-flight
+        #    transformations on the DASH manifest: BaseURL injection, PlayReady stripping, and
+        #    Widevine PSSH box wrapping. Without this proxy, the Chromecast's Widevine CDM cannot
+        #    parse Amazon's non-standard PSSH tags.
+        #
+        # 3. DRM token storage: The `actor_token` and `playback_envelope` are stored in
+        #    `self.media_server.drm_tokens` keyed by `amazon_{title_id}`. These are later
+        #    retrieved by the `/amazon/license` POST handler in mediaserver.py when the
+        #    Chromecast's CDM sends a license challenge.
+        #
+        # 4. License URL routing: If a public HTTPS tunnel is available
+        #    (`self.media_server.public_url`), we use it as the license server URL. This is
+        #    REQUIRED because the Chromecast enforces HTTPS for DRM license servers (mixed content
+        #    policy). The Shaka Player Demo receiver (`07AEE832`) will silently refuse to send
+        #    the license challenge over plain HTTP.
+        #
+        # WARNING: Do not attempt to 'simplify' this by downloading the video with yt-dlp first.
+        #          Amazon's 4K content is DRM-encrypted and cannot be decrypted locally — the
+        #          Widevine keys are only available to the Chromecast's hardware CDM. The entire
+        #          point of this proxy architecture is to let the Chromecast decrypt the stream
+        #          natively while we handle the non-standard manifest format and license proxying.
+        #
+        # WARNING: Do not add additional video formats (H.264, VP9) to the Amazon API request in
+        #          amazon_drm.py. This will cause Amazon to return a mixed-codec manifest that may
+        #          include lower-quality streams. The Chromecast Ultra natively supports H.265/HEVC
+        #          at 4K — requesting only H.265 ensures we get the highest quality stream.
+        # ========================================================================================
         if "amazon.com" in path or "gti=" in path:
             import urllib.parse
             from . import amazon_drm
@@ -578,10 +616,12 @@ class CastService:
 
             if license_url:
                 self.log(f"DRM license URL provided. Bypassing download and casting directly: {path}")
+                # content_type detection is important because the Shaka Player receiver uses content_type to decide which parser to use. Getting this wrong will cause a parse error on the Chromecast.
                 content_type = "application/dash+xml" if ".mpd" in path else "application/vnd.apple.mpegurl" if ".m3u8" in path else "video/mp4"
                 self.supervisor.load(
                     path,
                     content_type=content_type,
+                    # "Widevine DRM Stream" appears in the Chromecast's media status. It could be improved by fetching the actual title from the Amazon API in the future.
                     title="Widevine DRM Stream",
                     source_path=path,
                     license_url=license_url
