@@ -185,5 +185,7 @@ def fetch_widevine_license(actor_token, playback_envelope, challenge_bytes):
         return base64.b64decode(res["license"])
     elif "drmLicense" in res and "license" in res["drmLicense"]:
         return base64.b64decode(res["drmLicense"]["license"])
+    elif "widevineLicense" in res and "license" in res["widevineLicense"]:
+        return base64.b64decode(res["widevineLicense"]["license"])
     else:
         raise Exception(f"License not found in response: {res}")

@@ -548,8 +548,10 @@ class CastService:
             self.log(f"Detected Amazon Title ID: {title_id}")
             amazon_data = amazon_drm.fetch_amazon_4k_manifest(title_id)
             
-            path = amazon_data["mpd_url"]
-            self.log(f"Amazon 4K Manifest: {path}")
+            import base64
+            encoded_url = base64.b64encode(amazon_data["mpd_url"].encode("utf-8")).decode("utf-8")
+            path = f"http://{self.media_server.lan_ip}:{self.media_server.port}/proxy/?url={encoded_url}"
+            self.log(f"Amazon 4K Manifest (Proxied): {path}")
             
             self.media_server.drm_tokens[f"amazon_{title_id}"] = {
                 "actor_token": amazon_data["actor_token"],

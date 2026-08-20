@@ -152,6 +152,7 @@ class _Handler(BaseHTTPRequestHandler):
                     challenge_bytes
                 )
                 self.send_response(200)
+                self.send_header("Content-Length", str(len(license_bytes)))
                 self.send_header("Content-Type", "application/octet-stream")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
@@ -223,14 +224,6 @@ class _Handler(BaseHTTPRequestHandler):
             with urllib.request.urlopen(req, timeout=10) as response:
                 content_type = response.headers.get("Content-Type", "application/octet-stream")
 
-                self.send_response(200)
-                self.send_header("Content-Type", content_type)
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.end_headers()
-
-                if not body:
-                    return
-
                 # If this is an HLS manifest, rewrite it!
                 if "mpegurl" in content_type.lower() or target_url.endswith(".m3u8"):
                     body_content = response.read().decode("utf-8", "replace")
@@ -243,11 +236,71 @@ class _Handler(BaseHTTPRequestHandler):
                             rewritten.append(f"http://{server.lan_ip}:{server.port}/proxy/?url={encoded}")
                         else:
                             rewritten.append(line)
-                    self.wfile.write("\n".join(rewritten).encode("utf-8"))
+                    
+                    final_body = "\n".join(rewritten).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.send_header("Content-Length", str(len(final_body)))
+                    self.end_headers()
+                    if body:
+                        self.wfile.write(final_body)
+
+                elif "dash+xml" in content_type.lower() or target_url.endswith(".mpd"):
+                    import re, base64
+                    body_content = response.read().decode("utf-8", "replace")
+                    
+                    # Amazon's MPD URLs are relative, but if we proxied the MPD, we changed the base URL!
+                    # We MUST insert a <BaseURL> pointing to the original Amazon MPD directory!
+                    base_url = target_url[:target_url.rfind('/')+1]
+                    body_content = re.sub(r'(<MPD[^>]*>)', r'\1\n  <BaseURL>' + base_url + r'</BaseURL>', body_content, count=1)
+                    
+                    # Strip PlayReady ContentProtection entirely
+                    body_content = re.sub(r'<ContentProtection[^>]*schemeIdUri="urn:uuid:9A04F079-9840-4286-AB92-E65BE0885F95"[^>]*>.*?</ContentProtection>', '', body_content, flags=re.DOTALL)
+                    
+                    # Wrap the remaining bare Widevine protobufs in valid MP4 pssh boxes
+                    def fix_widevine_pssh(match):
+                        inner_b64 = match.group(1)
+                        try:
+                            decoded = base64.b64decode(inner_b64)
+                            if len(decoded) > 8 and decoded[4:8] == b'pssh':
+                                return match.group(0) # Already valid
+                            system_id = bytes.fromhex("EDEF8BA979D64ACEA3C827DCD51D21ED")
+                            box = bytearray()
+                            box.extend((32 + len(decoded)).to_bytes(4, 'big'))
+                            box.extend(b'pssh')
+                            box.extend(b'\x00\x00\x00\x00')
+                            box.extend(system_id)
+                            box.extend(len(decoded).to_bytes(4, 'big'))
+                            box.extend(decoded)
+                            valid_b64 = base64.b64encode(box).decode('utf-8')
+                            return f'<cenc:pssh>{valid_b64}</cenc:pssh>'
+                        except:
+                            return match.group(0)
+                    
+                    body_content = re.sub(r'<cenc:pssh>\s*(.*?)\s*</cenc:pssh>', fix_widevine_pssh, body_content, flags=re.DOTALL)
+                    
+                    final_body = body_content.encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.send_header("Content-Length", str(len(final_body)))
+                    self.end_headers()
+                    if body:
+                        self.wfile.write(final_body)
+
                 else:
                     # Stream the raw chunks directly to the TV
-            
-                    shutil.copyfileobj(response, self.wfile)
+                    self.send_response(200)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    if "Content-Length" in response.headers:
+                        self.send_header("Content-Length", response.headers["Content-Length"])
+                    self.end_headers()
+                    
+                    if body:
+                        import shutil
+                        shutil.copyfileobj(response, self.wfile)
 
         except Exception as e:
             server.log(f"Proxy error for {target_url}: {e}")
