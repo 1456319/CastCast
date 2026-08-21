@@ -483,7 +483,13 @@ class Supervisor:
             # Configure Shaka Player to automatically select English audio and subtitles
             custom_data["config"] = {
                 "preferredTextLanguage": "en-US",
-                "preferredAudioLanguage": "en-US"
+                "preferredAudioLanguage": "en-US",
+                "streaming": {
+                    "alwaysStreamText": True
+                },
+                "textDisplay": {
+                    "closedCaptionsLanguage": "en-US"
+                }
             }
                 
             if custom_data:
