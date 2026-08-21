@@ -326,12 +326,8 @@ class _Handler(BaseHTTPRequestHandler):
                             if not lang.startswith("en"):
                                 return ""
                                 
-                        # Inject forced role into text tracks so Shaka displays them automatically
-                        if any(attr in tag for attr in ['contentType="text"', 'contentType="subtitle"', 'mimeType="text']):
-                            # Strip any existing Role tags to avoid XML conflicts
-                            tag = re.sub(r'<Role[^>]*>.*?</Role>|<Role[^>]*/>', '', tag, flags=re.DOTALL)
-                            # Replace the first closing bracket of the AdaptationSet with the Role tag
-                            tag = re.sub(r'(<AdaptationSet[^>]*)>', r'\1>\n      <Role schemeIdUri="urn:mpeg:dash:role:2011" value="forced_subtitle"/>', tag, count=1)
+                        # We will no longer mangle the Role tag. Amazon uses 'caption'.
+                        # Mangling it to 'forced_subtitle' may be breaking Shaka's internal sync engine on seek.
                         return tag
                     body_content = re.sub(r'<AdaptationSet[^>]*>.*?</AdaptationSet>', 
                         lambda m: filter_english(m) if any(attr in m.group(0) for attr in ['contentType="audio"', 'contentType="text"', 'contentType="subtitle"', 'mimeType="audio"', 'mimeType="text"']) else m.group(0), 
