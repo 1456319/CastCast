@@ -325,6 +325,12 @@ class _Handler(BaseHTTPRequestHandler):
                             lang = lang_match.group(1).lower()
                             if not lang.startswith("en"):
                                 return ""
+                                
+                        # Inject forced role into text tracks so Shaka displays them automatically
+                        if 'contentType="text"' in tag or 'contentType="subtitle"' in tag:
+                            if 'value="main"' not in tag:
+                                # Replace the first closing bracket of the AdaptationSet with the Role tag
+                                tag = re.sub(r'(<AdaptationSet[^>]*)>', r'\1>\n      <Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"/>', tag, count=1)
                         return tag
                     body_content = re.sub(r'<AdaptationSet[^>]*>.*?</AdaptationSet>', 
                         lambda m: filter_english(m) if 'contentType="audio"' in m.group(0) or 'contentType="text"' in m.group(0) or 'contentType="subtitle"' in m.group(0) else m.group(0), 
