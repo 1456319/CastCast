@@ -571,17 +571,9 @@ export default function App() {
             </div>
             <div className="flex gap-2">
               <button
-                onClick={() => {
-                  if (cast.state === "paused") {
-                    const newTime = Math.max(0, cast.position - 10);
-                    run("toggle", async () => {
-                      await daemon.seek(newTime);
-                      await daemon.play();
-                    });
-                  } else {
-                    run("toggle", daemon.pause);
-                  }
-                }}
+                onClick={() =>
+                  run("toggle", cast.state === "paused" ? daemon.play : daemon.pause)
+                }
                 className="flex flex-1 items-center justify-center gap-1.5 rounded border border-emerald-500/40 bg-emerald-500/10 py-2 hover:bg-emerald-500/20"
               >
                 {cast.state === "paused" ? (
@@ -975,17 +967,7 @@ export default function App() {
                 </button>
 
                 <button
-                  onClick={() => {
-                    if (cast.state === "paused") {
-                      const newTime = Math.max(0, cast.position - 10);
-                      run("toggle", async () => {
-                        await daemon.seek(newTime);
-                        await daemon.play();
-                      });
-                    } else {
-                      run("toggle", daemon.pause);
-                    }
-                  }}
+                  onClick={() => run("toggle", cast.state === "paused" ? daemon.play : daemon.pause)}
                   className="flex h-20 w-20 items-center justify-center rounded-full bg-emerald-500 text-[#050807] hover:bg-emerald-400 active:scale-95"
                 >
                   {cast.state === "paused" ? (
