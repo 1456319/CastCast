@@ -479,6 +479,12 @@ class Supervisor:
                         "com.widevine.alpha": session.license_url
                     }
                 }
+            
+            # Configure Shaka Player to automatically select English text/subtitles
+            custom_data["config"] = {
+                "preferredTextLanguage": "en-US"
+            }
+                
             if custom_data:
                 payload["media"]["customData"] = custom_data
             if session.duration:

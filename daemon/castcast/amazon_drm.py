@@ -190,7 +190,7 @@ def fetch_amazon_4k_manifest(title_id):
     try:
         profile_id = get_primary_profile(access_token)
     except Exception as e:
-        if "401" in str(e) or "400" in str(e):
+        if "401" in str(e) or "400" in str(e) or "403" in str(e):
             print("Access token expired, refreshing...")
             new_access_token = refresh_access_token(refresh_token)
             if new_access_token:
