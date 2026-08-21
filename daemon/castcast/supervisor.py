@@ -480,9 +480,10 @@ class Supervisor:
                     }
                 }
             
-            # Configure Shaka Player to automatically select English text/subtitles
+            # Configure Shaka Player to automatically select English audio and subtitles
             custom_data["config"] = {
-                "preferredTextLanguage": "en-US"
+                "preferredTextLanguage": "en-US",
+                "preferredAudioLanguage": "en-US"
             }
                 
             if custom_data:
