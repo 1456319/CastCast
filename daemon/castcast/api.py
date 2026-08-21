@@ -169,22 +169,22 @@ class _Handler(BaseHTTPRequestHandler):
                 title = body.get("title", "")
                 if not url:
                     return self._json({"error": "url is required"}, 400)
-                svc.amazon_queue.append({"url": url, "title": title})
-                svc.save_amazon_queue()
+                self.service.amazon_queue.append({"url": url, "title": title})
+                self.service.save_amazon_queue()
                 return self._json({"success": True})
             elif route == "/amazon/queue/reorder":
                 items = body.get("items")
                 if not isinstance(items, list):
                     return self._json({"error": "items must be a list"}, 400)
-                svc.amazon_queue = items
-                svc.save_amazon_queue()
+                self.service.amazon_queue = items
+                self.service.save_amazon_queue()
                 return self._json({"success": True})
             elif route == "/amazon/queue/remove":
                 index = body.get("index")
-                if not isinstance(index, int) or index < 0 or index >= len(svc.amazon_queue):
+                if not isinstance(index, int) or index < 0 or index >= len(self.service.amazon_queue):
                     return self._json({"error": "invalid index"}, 400)
-                svc.amazon_queue.pop(index)
-                svc.save_amazon_queue()
+                self.service.amazon_queue.pop(index)
+                self.service.save_amazon_queue()
                 return self._json({"success": True})
             elif route == "/cast":
                 path = body.get("path")

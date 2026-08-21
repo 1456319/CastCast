@@ -172,7 +172,8 @@ export const daemon = {
   getDiagnosticsLogs: async () => {
     const res = await fetch(`${DAEMON_BASE}/diagnostics/logs`);
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    return res.text();
+    const data = await res.json();
+    return `LAST ERROR:\n${data.last_error || "None"}\n\nLOGS:\n${data.logs || ""}`;
   },
 };
 
@@ -183,6 +184,7 @@ export interface SubscribeArgs {
   onRemux?: () => void;
   onMedia?: (media: CastState) => void;
   onTelemetryAnomaly?: (data: any) => void;
+  onAmazonQueue?: (data: any) => void;
   onOpen?: () => void;
   onError?: () => void;
 }
@@ -218,6 +220,7 @@ export function subscribe(handlers: SubscribeArgs): () => void {
   bind("command_failed", () => handlers.onState?.());
   bind("remux", () => handlers.onRemux?.());
   bind("telemetry_anomaly", handlers.onTelemetryAnomaly);
+  bind("amazon_queue", handlers.onAmazonQueue);
 
   return () => source?.close();
 }

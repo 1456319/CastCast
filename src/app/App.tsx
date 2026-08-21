@@ -112,6 +112,7 @@ export default function App() {
       onMedia: (media) =>
         setStatus((prev) => (prev ? { ...prev, cast: { ...prev.cast, ...media } } : prev)),
       onTelemetryAnomaly: (data) => setAnomaly(data),
+      onAmazonQueue: (data) => setAmazonQueue((data as any).items || []),
     });
     const timer = window.setInterval(refreshStatus, 5000);
     return () => {
@@ -266,13 +267,20 @@ export default function App() {
         const [moved] = newItems.splice(data.index, 1);
         newItems.splice(dropIndex, 0, moved);
         setLibrary(newItems);
-        daemon.reorderLibrary(newItems).catch(console.error);
+        // daemon.reorderLibrary(newItems).catch(console.error);
       } else {
         const newItems = [...amazonQueue];
         const [moved] = newItems.splice(data.index, 1);
         newItems.splice(dropIndex, 0, moved);
         setAmazonQueue(newItems);
-        daemon.reorderAmazonQueue(newItems).catch(console.error);
+        try {
+          await daemon.reorderAmazonQueue(newItems);
+        } catch (err) {
+          console.error(err);
+        } finally {
+          const amzRes = await daemon.getAmazonQueue();
+          setAmazonQueue(amzRes.items || []);
+        }
       }
     } catch (err) {
       console.error(err);
