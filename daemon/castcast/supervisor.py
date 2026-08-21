@@ -483,7 +483,7 @@ class Supervisor:
             # Configure Shaka Player to automatically select English audio and subtitles
             custom_data["config"] = {
                 "preferredTextLanguage": "en-US",
-                "preferredTextRole": "forced-subtitle",
+                "preferredTextRole": "forced_subtitle",
                 "preferredAudioLanguage": "en-US",
                 "streaming": {
                     "alwaysStreamText": True
@@ -492,6 +492,17 @@ class Supervisor:
                 
             if custom_data:
                 payload["media"]["customData"] = custom_data
+
+            # Apply a high-contrast subtitle styling (White text, Black drop-shadow outline)
+            payload["media"]["textTrackStyle"] = {
+                "backgroundColor": "#00000000",
+                "foregroundColor": "#FFFFFFFF",
+                "edgeType": "OUTLINE",
+                "edgeColor": "#000000FF",
+                "windowType": "NONE",
+                "fontScale": 1.1,
+                "fontFamily": "sans-serif"
+            }
             if session.duration:
                 payload["media"]["duration"] = session.duration
             if session.tracks:

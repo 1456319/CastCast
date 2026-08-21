@@ -331,7 +331,7 @@ class _Handler(BaseHTTPRequestHandler):
                             # Strip any existing Role tags to avoid XML conflicts
                             tag = re.sub(r'<Role[^>]*>.*?</Role>|<Role[^>]*/>', '', tag, flags=re.DOTALL)
                             # Replace the first closing bracket of the AdaptationSet with the Role tag
-                            tag = re.sub(r'(<AdaptationSet[^>]*)>', r'\1>\n      <Role schemeIdUri="urn:mpeg:dash:role:2011" value="forced-subtitle"/>', tag, count=1)
+                            tag = re.sub(r'(<AdaptationSet[^>]*)>', r'\1>\n      <Role schemeIdUri="urn:mpeg:dash:role:2011" value="forced_subtitle"/>', tag, count=1)
                         return tag
                     body_content = re.sub(r'<AdaptationSet[^>]*>.*?</AdaptationSet>', 
                         lambda m: filter_english(m) if any(attr in m.group(0) for attr in ['contentType="audio"', 'contentType="text"', 'contentType="subtitle"', 'mimeType="audio"', 'mimeType="text"']) else m.group(0), 
