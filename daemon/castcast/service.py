@@ -138,6 +138,16 @@ class CastService:
                     self.amazon_queue = json.load(f)
             except Exception as e:
                 self.log(f"Failed to load amazon_queue: {e}", "warn")
+                
+        self.resume_state_path = os.path.expanduser("~/.config/castcast/resume_state.json")
+        self.resume_state = {}
+        if os.path.exists(self.resume_state_path):
+            try:
+                import json
+                with open(self.resume_state_path, "r") as f:
+                    self.resume_state = json.load(f)
+            except Exception as e:
+                self.log(f"Failed to load resume_state: {e}", "warn")
 
     def save_amazon_queue(self):
         import json
@@ -204,8 +214,22 @@ class CastService:
         """
         while not self._stop.wait(5.0):
             try:
-                if self.media_server.refresh_lan_ip() and self.supervisor:
+                if self.supervisor:
                     session = self.supervisor._session  # noqa: SLF001
+                    
+                    # save resume state
+                    if session and session.source_path and self.supervisor.status:
+                        pos = self.supervisor.status.position
+                        if pos and pos > 10.0:
+                            self.resume_state[session.source_path] = pos
+                            try:
+                                import json
+                                with open(self.resume_state_path, "w") as f:
+                                    json.dump(self.resume_state, f)
+                            except Exception as e:
+                                self.log(f"Failed to save resume_state: {e}", "warn")
+
+                if self.media_server.refresh_lan_ip() and self.supervisor:
                     if session and session.source_path:
                         self.log("LAN address changed mid-cast; re-issuing LOAD "
                                  "with the new media URL", "warn")
@@ -645,13 +669,14 @@ class CastService:
                 self.log(f"DRM license URL provided. Bypassing download and casting directly: {path}")
                 # content_type detection is important because the Shaka Player receiver uses content_type to decide which parser to use. Getting this wrong will cause a parse error on the Chromecast.
                 content_type = "application/dash+xml" if ".mpd" in path else "application/vnd.apple.mpegurl" if ".m3u8" in path else "video/mp4"
+                resume_pos = max(0.0, self.resume_state.get(path, 0.0) - 10.0)
                 self.supervisor.load(
                     path,
                     content_type=content_type,
-                    # "Widevine DRM Stream" appears in the Chromecast's media status. It could be improved by fetching the actual title from the Amazon API in the future.
                     title="Widevine DRM Stream",
                     source_path=path,
-                    license_url=license_url
+                    license_url=license_url,
+                    position=resume_pos
                 )
                 return {"casting": True, "url": path, "drm": True}
 
@@ -818,6 +843,7 @@ class CastService:
             active_track_ids.append(subtitle_index)
 
         content_type = self._get_content_type(target, info)
+        resume_pos = max(0.0, self.resume_state.get(path, 0.0) - 10.0)
 
         self.supervisor.load(
             url,
@@ -831,6 +857,7 @@ class CastService:
             tracks=tracks,
             active_track_ids=active_track_ids,
             license_url=license_url,
+            position=resume_pos
         )
 
 

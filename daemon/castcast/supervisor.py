@@ -189,7 +189,7 @@ class Supervisor:
              subtitle: str = "", poster_url: str = "", backdrop_url: str = "",
              duration: float = 0.0, source_path: str = "", autoplay: bool = True,
              tracks: Optional[list] = None, active_track_ids: Optional[list] = None,
-             license_url: str = "") -> None:
+             license_url: str = "", position: float = 0.0) -> None:
         """Queue a LOAD.  Safe to call before the link is even up."""
         with self._lock:
             self._media_session_id = None
@@ -197,7 +197,7 @@ class Supervisor:
             self._session = MediaSession(url=url, content_type=content_type, title=title,
                                          subtitle=subtitle, poster_url=poster_url, backdrop_url=backdrop_url,
                                          duration=duration, source_path=source_path,
-                                         position=0.0, autoplay=autoplay, tracks=tracks or [],
+                                         position=position, autoplay=autoplay, tracks=tracks or [],
                                          active_track_ids=active_track_ids or [],
                                          license_url=license_url)
             self._pending_restore = True
