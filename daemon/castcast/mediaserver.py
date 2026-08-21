@@ -243,6 +243,8 @@ class _Handler(BaseHTTPRequestHandler):
 
         domain = urllib.parse.urlsplit(target_url).netloc
         headers = server.get_intercept_headers(domain)
+        if "Range" in self.headers:
+            headers["Range"] = self.headers["Range"]
 
         try:
             req = urllib.request.Request(target_url, headers=headers)
@@ -369,11 +371,17 @@ class _Handler(BaseHTTPRequestHandler):
 
                 else:
                     # Stream the raw chunks directly to the TV
-                    self.send_response(200)
+                    self.send_response(response.status)
                     self.send_header("Content-Type", content_type)
                     self.send_header("Access-Control-Allow-Origin", "*")
                     if "Content-Length" in response.headers:
                         self.send_header("Content-Length", response.headers["Content-Length"])
+                    if "Content-Range" in response.headers:
+                        self.send_header("Content-Range", response.headers["Content-Range"])
+                    if "Accept-Ranges" in response.headers:
+                        self.send_header("Accept-Ranges", response.headers["Accept-Ranges"])
+                    if "Content-Encoding" in response.headers:
+                        self.send_header("Content-Encoding", response.headers["Content-Encoding"])
                     self.end_headers()
                     
                     if body:
