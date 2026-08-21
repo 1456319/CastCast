@@ -327,14 +327,14 @@ class _Handler(BaseHTTPRequestHandler):
                                 return ""
                                 
                         # Inject forced role into text tracks so Shaka displays them automatically
-                        if 'contentType="text"' in tag or 'contentType="subtitle"' in tag:
+                        if any(attr in tag for attr in ['contentType="text"', 'contentType="subtitle"', 'mimeType="text']):
                             # Strip any existing Role tags to avoid XML conflicts
-                            tag = re.sub(r'<Role[^>]*>', '', tag)
+                            tag = re.sub(r'<Role[^>]*>.*?</Role>|<Role[^>]*/>', '', tag, flags=re.DOTALL)
                             # Replace the first closing bracket of the AdaptationSet with the Role tag
-                            tag = re.sub(r'(<AdaptationSet[^>]*)>', r'\1>\n      <Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"/>', tag, count=1)
+                            tag = re.sub(r'(<AdaptationSet[^>]*)>', r'\1>\n      <Role schemeIdUri="urn:mpeg:dash:role:2011" value="forced-subtitle"/>', tag, count=1)
                         return tag
                     body_content = re.sub(r'<AdaptationSet[^>]*>.*?</AdaptationSet>', 
-                        lambda m: filter_english(m) if 'contentType="audio"' in m.group(0) or 'contentType="text"' in m.group(0) or 'contentType="subtitle"' in m.group(0) else m.group(0), 
+                        lambda m: filter_english(m) if any(attr in m.group(0) for attr in ['contentType="audio"', 'contentType="text"', 'contentType="subtitle"', 'mimeType="audio"', 'mimeType="text"']) else m.group(0), 
                         body_content, flags=re.DOTALL)
                     
                     # Strip PlayReady ContentProtection entirely

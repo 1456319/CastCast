@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Permit only the local Termux control API; do not permit app-wide HTTP. -->
+<!-- Permit app-wide HTTP cleartext to support navigating generic sites in Discovery Mode. -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="true" />
     <domain-config cleartextTrafficPermitted="true">
