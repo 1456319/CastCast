@@ -490,11 +490,11 @@ class Supervisor:
             if custom_data:
                 payload["media"]["customData"] = custom_data
 
-            # Apply a high-contrast subtitle styling (White text, Black drop-shadow outline)
+            # Apply a high-contrast subtitle styling
             payload["media"]["textTrackStyle"] = {
                 "backgroundColor": "#00000000",
                 "foregroundColor": "#FFFFFFFF",
-                "edgeType": "OUTLINE",
+                "edgeType": "DROP_SHADOW",
                 "edgeColor": "#000000FF",
                 "windowType": "NONE",
                 "fontScale": 1.1,
