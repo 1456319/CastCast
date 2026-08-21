@@ -484,10 +484,7 @@ class Supervisor:
             custom_data["config"] = {
                 "preferredTextLanguage": "en-US",
                 "preferredTextRole": "forced_subtitle",
-                "preferredAudioLanguage": "en-US",
-                "streaming": {
-                    "alwaysStreamText": True
-                }
+                "preferredAudioLanguage": "en-US"
             }
                 
             if custom_data:
