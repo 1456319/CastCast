@@ -479,18 +479,27 @@ class Supervisor:
                         "com.widevine.alpha": session.license_url
                     }
                 }
-            
-            # Configure Shaka Player to automatically select English audio and subtitles
-            custom_data["config"] = {
+
+            # extraConfig is merged into the Shaka Player config by
+            # ShakaDemoAssetInfo.getConfiguration().  This is the ONLY
+            # way to pass player configuration through the Demo Receiver.
+            # A top-level customData.config key is silently ignored.
+            if "asset" not in custom_data:
+                custom_data["asset"] = {}
+            custom_data["asset"]["extraConfig"] = {
                 "preferredTextLanguage": "en-US",
                 "preferredTextRole": "caption",
-                "preferredAudioLanguage": "en-US"
+                "preferredAudioLanguage": "en-US",
+                "streaming": {
+                    "alwaysStreamText": True
+                }
             }
-                
+            
             if custom_data:
                 payload["media"]["customData"] = custom_data
 
-            # Apply a high-contrast subtitle styling
+            # Apply a high-contrast subtitle styling via the standard Cast
+            # textTrackStyle (this is read by the Cast SDK, not Shaka directly)
             payload["media"]["textTrackStyle"] = {
                 "backgroundColor": "#00000000",
                 "foregroundColor": "#FFFFFFFF",
