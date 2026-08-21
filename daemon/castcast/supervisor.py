@@ -491,7 +491,8 @@ class Supervisor:
                 "preferredTextRole": "caption",
                 "preferredAudioLanguage": "en-US",
                 "streaming": {
-                    "alwaysStreamText": True
+                    "alwaysStreamText": True,
+                    "bufferBehind": 15
                 }
             }
             
