@@ -63,6 +63,8 @@ export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [library, setLibrary] = useState<LibraryItem[]>([]);
   const [trashItems, setTrashItems] = useState<LibraryItem[]>([]);
+  const [amazonQueue, setAmazonQueue] = useState<any[]>([]);
+  const [maxVerbosityLogs, setMaxVerbosityLogs] = useState<string | null>(null);
   const [selected, setSelected] = useState<LibraryItem | null>(null);
   const [report, setReport] = useState<Preflight | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
@@ -79,6 +81,11 @@ export default function App() {
   const logRef = useRef<HTMLDivElement>(null);
 
   const [anomaly, setAnomaly] = useState<any | null>(null);
+
+  const statusRef = useRef<Status | null>(null);
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -154,18 +161,33 @@ export default function App() {
     try {
       const result = await getSharedUrl();
       if (result.url) {
-        setNotice(`Extracting YouTube streams, please wait...`);
-        try {
-          await daemon.cast(result.url as string, true);
-          setNotice(`Success! Sending stream to TV...`);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          const match = msg.match(/No such file or directory: '([^']+)'/);
-          if (match) {
-            setMissingDep(match[1]);
-            setNotice(`'${match[1]}' is not installed. Install it?`);
-          } else {
-            setNotice(msg);
+        const urlStr = result.url as string;
+        const isAmazon = urlStr.includes("amazon.com") || urlStr.includes("gti=");
+        const isPlaying = statusRef.current?.cast?.state && statusRef.current.cast.state !== "idle" && statusRef.current.cast.state !== "IDLE" && statusRef.current.cast.state !== "unknown" && statusRef.current.cast.state !== "dead" && statusRef.current.cast.state !== "disconnected";
+        
+        if (isAmazon && isPlaying) {
+          setNotice(`Adding Amazon video to queue...`);
+          try {
+            await daemon.addAmazonQueue(urlStr);
+            setNotice(`Added to Amazon Queue.`);
+            await loadLibrary();
+          } catch (err) {
+            setNotice(`Failed to add to queue: ${err}`);
+          }
+        } else {
+          setNotice(`Extracting streams, please wait...`);
+          try {
+            await daemon.cast(urlStr, true);
+            setNotice(`Success! Sending stream to TV...`);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const match = msg.match(/No such file or directory: '([^']+)'/);
+            if (match) {
+              setMissingDep(match[1]);
+              setNotice(`'${match[1]}' is not installed. Install it?`);
+            } else {
+              setNotice(msg);
+            }
           }
         }
       }
@@ -213,7 +235,49 @@ export default function App() {
       const trashRes = await daemon.getTrash();
       if ((trashRes as any).error) throw new Error((trashRes as any).error);
       setTrashItems(trashRes.items || []);
+
+      try {
+        const amzRes = await daemon.getAmazonQueue();
+        setAmazonQueue(amzRes.items || []);
+      } catch (e) {
+        setAmazonQueue([]);
+      }
     });
+
+  const handleDragStart = (e: React.DragEvent, index: number, type: 'library' | 'amazon') => {
+    e.dataTransfer.setData("text/plain", JSON.stringify({ index, type }));
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+  };
+
+  const handleDrop = async (e: React.DragEvent, dropIndex: number, type: 'library' | 'amazon') => {
+    e.preventDefault();
+    const dataStr = e.dataTransfer.getData("text/plain");
+    if (!dataStr) return;
+    try {
+      const data = JSON.parse(dataStr);
+      if (data.type !== type) return;
+      if (data.index === dropIndex) return;
+
+      if (type === 'library') {
+        const newItems = [...library];
+        const [moved] = newItems.splice(data.index, 1);
+        newItems.splice(dropIndex, 0, moved);
+        setLibrary(newItems);
+        daemon.reorderLibrary(newItems).catch(console.error);
+      } else {
+        const newItems = [...amazonQueue];
+        const [moved] = newItems.splice(data.index, 1);
+        newItems.splice(dropIndex, 0, moved);
+        setAmazonQueue(newItems);
+        daemon.reorderAmazonQueue(newItems).catch(console.error);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const trashFile = (path: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -591,7 +655,7 @@ export default function App() {
         {/* library */}
         <section className="rounded border border-emerald-500/20 bg-black/40 p-3">
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-emerald-500/50 uppercase tracking-wider">Queue</span>
+            <span className="text-emerald-500/50 uppercase tracking-wider">Queue - Local, YouTube</span>
             <div className="flex items-center gap-2">
               <button
                 onClick={castQueue}
@@ -617,9 +681,13 @@ export default function App() {
             </div>
           ) : (
             <div className="max-h-56 space-y-1 overflow-y-auto">
-              {library.map((item) => (
+              {library.map((item, idx) => (
                 <div
                   key={item.path}
+                  draggable={true}
+                  onDragStart={(e) => handleDragStart(e, idx, 'library')}
+                  onDragOver={handleDragOver}
+                  onDrop={(e) => handleDrop(e, idx, 'library')}
                   onClick={() => select(item)}
                   className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left cursor-pointer hover:bg-emerald-500/10 ${
                     selected?.path === item.path ? "bg-emerald-500/15" : ""
@@ -636,6 +704,39 @@ export default function App() {
                   >
                     <Trash2 className="h-3.5 w-3.5" /> Trash (Watched)
                   </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* Amazon Queue */}
+        <section className="rounded border border-emerald-500/20 bg-black/40 p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-emerald-500/50 uppercase tracking-wider">Queue - Amazon</span>
+          </div>
+
+          {amazonQueue.length === 0 ? (
+            <div className="py-4 text-center text-emerald-500/40">
+              amazon queue is empty
+            </div>
+          ) : (
+            <div className="max-h-56 space-y-1 overflow-y-auto">
+              {amazonQueue.map((item, idx) => (
+                <div
+                  key={item.url || idx}
+                  draggable={true}
+                  onDragStart={(e) => handleDragStart(e, idx, 'amazon')}
+                  onDragOver={handleDragOver}
+                  onDrop={(e) => handleDrop(e, idx, 'amazon')}
+                  className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left cursor-pointer hover:bg-emerald-500/10`}
+                  onClick={() => {
+                     // Optionally cast the amazon url
+                     daemon.cast(item.url, true).catch(e => setNotice(String(e)));
+                  }}
+                >
+                  <FileVideo className="h-3.5 w-3.5 shrink-0 text-emerald-500/50" />
+                  <span className="min-w-0 flex-1 truncate text-emerald-200">{item.title || item.url}</span>
                 </div>
               ))}
             </div>
@@ -748,6 +849,19 @@ export default function App() {
           <div className="mb-2 flex items-center justify-between">
             <span className="text-emerald-500/50 uppercase tracking-wider">daemon log</span>
             <div className="flex gap-2">
+              <button
+                onClick={async () => {
+                  try {
+                    const text = await daemon.getDiagnosticsLogs();
+                    setMaxVerbosityLogs(text);
+                  } catch (e) {
+                    setNotice("Failed to fetch diagnostics logs");
+                  }
+                }}
+                className="rounded border border-blue-500/30 px-2 py-1 text-xs text-blue-400/70 hover:bg-blue-500/10"
+              >
+                Maximum Verbosity
+              </button>
               <button
                 onClick={() => setShowDebugLogs((value) => !value)}
                 className="rounded border border-emerald-500/25 px-2 py-1 text-xs text-emerald-400/70 hover:bg-emerald-500/10"
@@ -925,6 +1039,25 @@ export default function App() {
               >
                 Ignore
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {maxVerbosityLogs !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-4xl max-h-[90vh] flex flex-col rounded-xl border border-blue-500/50 bg-[#0a100d] p-6 shadow-[0_0_30px_rgba(59,130,246,0.15)]">
+            <div className="mb-4 flex items-center justify-between text-blue-400">
+              <h2 className="text-xl font-bold tracking-wide">Maximum Verbosity Diagnostics</h2>
+              <button
+                onClick={() => setMaxVerbosityLogs(null)}
+                className="text-blue-500/60 hover:text-blue-400"
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto rounded bg-black/60 p-4 font-mono text-sm text-blue-300/80">
+              <pre className="whitespace-pre-wrap">{maxVerbosityLogs}</pre>
             </div>
           </div>
         </div>

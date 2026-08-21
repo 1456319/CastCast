@@ -165,6 +165,15 @@ export const daemon = {
       "/subtitles/opensubtitles",
       { path, language },
     ),
+  getAmazonQueue: () => request<{ items: any[] }>("/amazon/queue"),
+  reorderAmazonQueue: (items: any[]) => post<any>("/amazon/queue/reorder", { items }),
+  addAmazonQueue: (url: string) => post<any>("/amazon/queue/add", { url }),
+  reorderLibrary: (items: any[]) => post<any>("/library/reorder", { items }),
+  getDiagnosticsLogs: async () => {
+    const res = await fetch(`${DAEMON_BASE}/diagnostics/logs`);
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.text();
+  },
 };
 
 export interface SubscribeArgs {

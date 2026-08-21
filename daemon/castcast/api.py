@@ -94,6 +94,33 @@ class _Handler(BaseHTTPRequestHandler):
                 pub = one("public_code")
                 priv = one("private_code")
                 return self._json(amazon.poll_register(pub, priv))
+            elif route == "/amazon/queue":
+                self._json({"items": self.service.amazon_queue})
+            elif route == "/diagnostics/logs":
+                import os
+                audit_log = ""
+                if os.path.exists("/var/log/audit/audit.log"):
+                    try:
+                        with open("/var/log/audit/audit.log", "r") as f:
+                            audit_log = f.read()
+                    except Exception:
+                        pass
+                elif os.path.exists("/tmp/castcast.log"):
+                    try:
+                        with open("/tmp/castcast.log", "r") as f:
+                            audit_log = f.read()
+                    except Exception:
+                        pass
+                
+                last_error = ""
+                if self.service.supervisor:
+                    last_error = self.service.supervisor.status.last_error
+
+                self._json({
+                    "log_buffer": self.service.log_buffer.recent(),
+                    "last_error": last_error,
+                    "audit_log": audit_log
+                })
             elif route == "/preflight":
                 path = one("path")
                 if not path:
@@ -137,6 +164,28 @@ class _Handler(BaseHTTPRequestHandler):
                 with open(auth_file, "w") as f:
                     json.dump(body, f)
                 return self._json({"success": True, "message": "Injected Amazon tokens"})
+            elif route == "/amazon/queue/add":
+                url = body.get("url")
+                title = body.get("title", "")
+                if not url:
+                    return self._json({"error": "url is required"}, 400)
+                svc.amazon_queue.append({"url": url, "title": title})
+                svc.save_amazon_queue()
+                return self._json({"success": True})
+            elif route == "/amazon/queue/reorder":
+                items = body.get("items")
+                if not isinstance(items, list):
+                    return self._json({"error": "items must be a list"}, 400)
+                svc.amazon_queue = items
+                svc.save_amazon_queue()
+                return self._json({"success": True})
+            elif route == "/amazon/queue/remove":
+                index = body.get("index")
+                if not isinstance(index, int) or index < 0 or index >= len(svc.amazon_queue):
+                    return self._json({"error": "invalid index"}, 400)
+                svc.amazon_queue.pop(index)
+                svc.save_amazon_queue()
+                return self._json({"success": True})
             elif route == "/cast":
                 path = body.get("path")
                 if not path:

@@ -1,0 +1,19 @@
+--- daemon/castcast/supervisor.py
++++ daemon/castcast/supervisor.py
+@@ -37,6 +37,7 @@
+ 
+ from .channel import (CastChannel, ChannelClosed, DEFAULT_MEDIA_RECEIVER_APP_ID, DEFAULT_TEXT_TRACK_STYLE,
+                       NS_CONNECTION, NS_HEARTBEAT, NS_MEDIA, NS_RECEIVER,
++                      NS_SHAKA,
+                       PLATFORM_RECEIVER)
+ 
+ #: VLC uses 6s / 1 retry.  We keep the same interval but allow two misses,
+@@ -216,6 +217,8 @@
+             self._handle_receiver_message(message)
+         elif namespace == NS_MEDIA:
+             self._handle_media_message(message)
++        elif namespace == "urn:x-cast:com.google.cast.shaka":
++            self._log(f"SHAKA MESSAGE: {message}")
+ 
+     def _handle_receiver_message(self, message: dict) -> None:
+         kind = message.get("type")

@@ -128,6 +128,26 @@ class CastService:
         self._events: List[Callable[[str, dict], None]] = []
         self._watchdog: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        
+        self.amazon_queue_path = os.path.expanduser("~/.config/castcast/amazon_queue.json")
+        self.amazon_queue = []
+        if os.path.exists(self.amazon_queue_path):
+            try:
+                import json
+                with open(self.amazon_queue_path, "r") as f:
+                    self.amazon_queue = json.load(f)
+            except Exception as e:
+                self.log(f"Failed to load amazon_queue: {e}", "warn")
+
+    def save_amazon_queue(self):
+        import json
+        os.makedirs(os.path.dirname(self.amazon_queue_path), exist_ok=True)
+        try:
+            with open(self.amazon_queue_path, "w") as f:
+                json.dump(self.amazon_queue, f)
+            self._emit("amazon_queue", {"items": self.amazon_queue})
+        except Exception as e:
+            self.log(f"Failed to save amazon_queue: {e}", "warn")
 
     def _config_value(self, key: str, env_name: str) -> str:
         return str(self.config.get(key) or os.environ.get(env_name, ""))
@@ -510,6 +530,13 @@ class CastService:
     # -- casting -----------------------------------------------------------
 
     def auto_advance(self, source_path: str) -> None:
+        if hasattr(self, "amazon_queue") and self.amazon_queue:
+            next_item = self.amazon_queue.pop(0)
+            self.save_amazon_queue()
+            self.log(f"amazon_queue auto-advancing to {next_item.get('title', next_item.get('url'))}")
+            threading.Thread(target=self.cast, args=(next_item["url"],), daemon=True).start()
+            return
+
         entries = self.library(deep=False)
         for i, entry in enumerate(entries):
             if entry["path"] == source_path:
