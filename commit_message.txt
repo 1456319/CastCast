@@ -1,5 +1,0 @@
-🧪 [testing improvement] Add test for supervisor play command
-
-🎯 What: Added missing test for `Supervisor.play` command to verify it calls `_media_command` correctly.
-📊 Coverage: Tested the happy path of `play` method where it calls `_media_command` with payload `{"type": "PLAY"}`.
-✨ Result: Increased test coverage and ensured regression safety for the `play` functionality.
