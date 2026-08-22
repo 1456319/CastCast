@@ -1,3 +1,4 @@
+# EDITING OF THIS FILE MAY CAUSE CATASTROPHIC APP DESYCHRONIZATION. Reference the directory at at ~/docs/synchronization_map.md to determine what other files must be adjusted in order to ensure absolute synchronization is maintained. This is to ensure that the APK, termux daemon, and chromecast portions of the app are always in synchronous, deterministic states.
 """Local JSON control API + SSE event stream.
 
 Binds to 127.0.0.1 by default so nothing off-device can drive your TV.  The UI
