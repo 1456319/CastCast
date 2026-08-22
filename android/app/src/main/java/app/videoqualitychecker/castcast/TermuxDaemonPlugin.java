@@ -34,7 +34,7 @@ public class TermuxDaemonPlugin extends Plugin {
     private static final int ROOT_TIMEOUT_SECONDS = 15;
 
     private static final String BASH = "/data/data/com.termux/files/usr/bin/bash";
-    private static final String DAEMON_DIR = "/storage/emulated/0/Download/VideoQualityCheckerApp/daemon";
+    private static final String DAEMON_DIR = "/data/data/com.termux/files/home/CastCast/daemon";
     private static final String BOOTSTRAP = DAEMON_DIR + "/termux_bootstrap.sh";
 
     private PowerManager.WakeLock wakeLock;
@@ -44,7 +44,7 @@ public class TermuxDaemonPlugin extends Plugin {
     public void launch(PluginCall call) {
         PackageManager packageManager = getContext().getPackageManager();
         if (packageManager.getLaunchIntentForPackage(TERMUX_PACKAGE) == null) {
-            call.reject("Termux is not installed. Install Termux, copy the project to Download/VideoQualityCheckerApp, then retry.");
+            call.reject("Termux is not installed. Install Termux, copy the project to Download/CastCast, then retry.");
             return;
         }
 
@@ -94,7 +94,7 @@ public class TermuxDaemonPlugin extends Plugin {
             JSObject result = new JSObject();
             result.put("started", true);
             result.put("rootConfigured", true);
-            result.put("auditLog", "/storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast/.castcast/audit.log");
+            result.put("auditLog", "/storage/emulated/0/Download/CastCast/Chromecast/.castcast/audit.log");
             result.put("note", "Root configured Termux allow-external-apps and granted RUN_COMMAND. If the daemon stays offline, check that the repo exists at " + DAEMON_DIR + " and inspect the audit log.");
             call.resolve(result);
         } catch (SecurityException e) {
@@ -132,14 +132,14 @@ public class TermuxDaemonPlugin extends Plugin {
             "TERMUX_PROP=$TERMUX_HOME/.termux/termux.properties\n" +
             "\n" +
             "echo '[0/8] extracting bundled daemon code'\n" +
-            "mkdir -p /storage/emulated/0/Download/VideoQualityCheckerApp || { echo 'FAIL: create app dir'; exit 1; }\n" +
+            "mkdir -p /storage/emulated/0/Download/CastCast || { echo 'FAIL: create app dir'; exit 1; }\n" +
             "unzip -qo " + shellQuote(apkPath) + " \"assets/public/daemon/*\" -d /data/local/tmp/ || { echo 'FAIL: unzip daemon'; exit 1; }\n" +
             "rm -rf " + shellQuote(DAEMON_DIR) + "/*\n" +
             "cp -rf /data/local/tmp/assets/public/daemon/* " + shellQuote(DAEMON_DIR) + "/ || { echo 'FAIL: copy daemon'; exit 1; }\n" +
             "rm -rf /data/local/tmp/assets\n" +
             "echo '[0/8] creating queue directories'\n" +
-            "mkdir -p /storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast/trash || { echo 'FAIL: create trash dir'; exit 1; }\n" +
-            "mkdir -p /storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast/.castcast || { echo 'FAIL: create castcast dir'; exit 1; }\n" +
+            "mkdir -p /storage/emulated/0/Download/CastCast/Chromecast/trash || { echo 'FAIL: create trash dir'; exit 1; }\n" +
+            "mkdir -p /storage/emulated/0/Download/CastCast/Chromecast/.castcast || { echo 'FAIL: create castcast dir'; exit 1; }\n" +
             "\n" +
             "echo '[1/8] checking Termux home'\n" +
             "if [ ! -d \"$TERMUX_HOME\" ]; then echo 'FAIL: Termux home directory not found at '$TERMUX_HOME'. Is Termux installed and opened at least once?'; exit 1; fi\n" +
