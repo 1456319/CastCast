@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'app.videoqualitychecker.castcast',
-  appName: 'VideoQualityCheckerApp',
+  appName: 'CastCast',
   webDir: 'dist',
   server: {
     androidScheme: 'http',

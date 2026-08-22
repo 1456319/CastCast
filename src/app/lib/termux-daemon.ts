@@ -31,7 +31,7 @@ export async function getSharedUrl() {
 }
 
 export const TERMUX_MANUAL_COMMAND = [
-  "cd /data/data/com.termux/files/home/VideoQualityCheckerApp/daemon",
+  "cd /data/data/com.termux/files/home/CastCast/daemon",
   "chmod +x ./termux_bootstrap.sh",
   "./termux_bootstrap.sh",
 ].join(" && ");
