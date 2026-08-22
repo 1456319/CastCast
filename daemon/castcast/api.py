@@ -8,6 +8,7 @@ Binds to 127.0.0.1 by default so nothing off-device can drive your TV.  The UI
 from __future__ import annotations
 
 import json
+import re
 import queue
 import threading
 import urllib.parse
@@ -166,11 +167,16 @@ class _Handler(BaseHTTPRequestHandler):
                     json.dump(body, f)
                 return self._json({"success": True, "message": "Injected Amazon tokens"})
             elif route == "/amazon/queue/add":
-                url = body.get("url")
+                url_raw = body.get("url")
                 title = body.get("title", "")
-                if not url:
+                if not url_raw:
                     return self._json({"error": "url is required"}, 400)
-                self.service.amazon_queue.append({"url": url, "title": title})
+
+                extracted_url, extracted_title = _extract_amazon_share_info(url_raw)
+                final_url = extracted_url if extracted_url else url_raw
+                final_title = title if title else extracted_title
+
+                self.service.amazon_queue.append({"url": final_url, "title": final_title})
                 self.service.save_amazon_queue()
                 return self._json({"success": True})
             elif route == "/amazon/queue/reorder":
@@ -330,6 +336,46 @@ _ROUTES = {
     "POST /mute": "{muted}",
     "POST /shutdown": "kill the daemon",
 }
+
+
+def _extract_amazon_share_info(raw_text):
+    """
+    Extracts the actual URL and a formatted title from Amazon share text.
+    Handles formats like: "Watch Hazbin Hotel - Season 1, Episode 1 - Overture on Prime Video! https://..."
+    """
+    extracted_url = raw_text
+    extracted_title = ""
+
+    url_match = re.search(r'(https?://[^\s]+)', raw_text)
+    if url_match:
+        extracted_url = url_match.group(1)
+        text_before = raw_text[:url_match.start()].strip()
+
+        if text_before:
+            text_before = text_before.replace("Watch ", "", 1)
+            text_before = text_before.replace(" on Prime Video", "")
+            text_before = text_before.replace(" on Amazon Prime", "")
+            text_before = text_before.strip("! \n\r\t-")
+            extracted_title = text_before
+
+            if "Season" in extracted_title and "Episode" in extracted_title:
+                match = re.match(r'(.*?)(?:\s*-\s*)?Season\s+(\d+),\s*Episode\s+(\d+)(?:\s*-\s*(.*))?', extracted_title)
+                if match:
+                    show = match.group(1).strip()
+                    season = match.group(2).strip()
+                    episode = match.group(3).strip()
+                    ep_name = match.group(4)
+                    extracted_title = f"{show} S{season.zfill(2)}E{episode.zfill(2)}"
+                    if ep_name:
+                        extracted_title += f" - {ep_name.strip()}"
+            elif "Season" in extracted_title:
+                match = re.match(r'(.*?)(?:\s*-\s*)?Season\s+(\d+)', extracted_title)
+                if match:
+                    show = match.group(1).strip()
+                    season = match.group(2).strip()
+                    extracted_title = f"{show} S{season.zfill(2)}"
+
+    return extracted_url, extracted_title
 
 
 class ApiServer:
