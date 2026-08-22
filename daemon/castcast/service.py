@@ -22,7 +22,7 @@ from .opensubtitles import download_best, language3
 from .probe import FFMPEG, MediaInfo, ProbeError, have_ffmpeg, have_ffprobe, probe
 from .supervisor import State, Supervisor
 
-DEFAULT_MEDIA_ROOT = "/storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast"
+DEFAULT_MEDIA_ROOT = "/storage/emulated/0/Download/CastCast/Chromecast"
 
 SUBTITLE_EXTENSIONS = {".vtt", ".srt", ".ass", ".ssa"}
 

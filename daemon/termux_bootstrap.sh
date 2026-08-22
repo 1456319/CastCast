@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
 # =======================================================================
-# VideoQualityCheckerApp - Termux Bootstrap & Audit Script
+# CastCast - Termux Bootstrap & Audit Script
 # =======================================================================
 # This script is called automatically by the Capacitor APK via an Android
 # Intent (com.termux.app.RunCommandService). It ensures the environment
@@ -14,7 +14,7 @@
 
 # Canonical user-visible queue; /sdcard/Download/Chromecast is its Android
 # alias. Keep this case synchronized with CastService.DEFAULT_MEDIA_ROOT.
-CHROMECAST_DIR="/storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast"
+CHROMECAST_DIR="/storage/emulated/0/Download/CastCast/Chromecast"
 TRASH_DIR="$CHROMECAST_DIR/trash"
 # DEBUG-ONLY: runtime diagnostics are kept out of the visible queue.
 AUDIT_DIR="$CHROMECAST_DIR/.castcast"

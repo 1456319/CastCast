@@ -517,7 +517,7 @@ class MediaServer:
         self.live_streams: dict[str, dict] = {}
         self.intercept_rules: dict[str, dict] = {}
 
-        telemetry_dir = "/storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast/.castcast/telemetry"
+        telemetry_dir = "/storage/emulated/0/Download/CastCast/Chromecast/.castcast/telemetry"
         try:
             os.makedirs(telemetry_dir, exist_ok=True)
         except OSError as e:

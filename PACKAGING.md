@@ -16,7 +16,7 @@ This repo enforces the packaging requirement in CI:
 In Termux, enter the daemon directory first:
 
 ```sh
-cd VideoQualityCheckerApp/daemon
+cd CastCast/daemon
 python -m castcast --media-root /storage/emulated/0/Download/Chromecast serve
 ```
 
@@ -48,11 +48,11 @@ termux-reload-settings
 The automatic launch expects the repository to be copied to:
 
 ```sh
-/storage/emulated/0/Download/VideoQualityCheckerApp/daemon
+/storage/emulated/0/Download/CastCast/daemon
 ```
 
 If automatic launch is blocked, the APK shows the manual fallback command:
 
 ```sh
-cd /storage/emulated/0/Download/VideoQualityCheckerApp/daemon && chmod +x ./termux_bootstrap.sh && ./termux_bootstrap.sh
+cd /storage/emulated/0/Download/CastCast/daemon && chmod +x ./termux_bootstrap.sh && ./termux_bootstrap.sh
 ```

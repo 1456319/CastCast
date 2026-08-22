@@ -26,7 +26,7 @@ from .probe import FFMPEG, FFPROBE, have_ffmpeg, have_ffprobe
 
 # The default media location, repeated here so remedy strings are copy-pasteable
 # even when the daemon was started with no explicit --media-root.
-DEFAULT_MEDIA_ROOT = "/storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast"
+DEFAULT_MEDIA_ROOT = "/storage/emulated/0/Download/CastCast/Chromecast"
 
 SERVE_COMMAND = (
     "python -m castcast --media-root {root} serve"

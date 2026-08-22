@@ -108,7 +108,7 @@ specifically to avoid needing `protoc` or `grpcio` on-device.
 Then enter the daemon directory first. If you run from the repository root, Python can report that `castcast` is missing, which makes it look like a module problem even though `castcast` is the package inside `daemon/`:
 
 ```sh
-cd VideoQualityCheckerApp/daemon
+cd CastCast/daemon
 ```
 
 Then confirm the setup actually took:
