@@ -138,6 +138,7 @@ public class TermuxDaemonPlugin extends Plugin {
             "rm -rf " + shellQuote(DAEMON_DIR) + "/*\n" +
             "cp -rf /data/local/tmp/assets/public/daemon/* " + shellQuote(DAEMON_DIR) + "/ || { echo 'FAIL: copy daemon'; exit 1; }\n" +
             "rm -rf /data/local/tmp/assets\n" +
+            "rm -rf \"$TERMUX_HOME/VideoQualityCheckerApp\"\n" +
             "echo '[0/8] creating queue directories'\n" +
             "mkdir -p /storage/emulated/0/Download/CastCast/Chromecast/trash || { echo 'FAIL: create trash dir'; exit 1; }\n" +
             "mkdir -p /storage/emulated/0/Download/CastCast/Chromecast/.castcast || { echo 'FAIL: create castcast dir'; exit 1; }\n" +
@@ -161,6 +162,7 @@ public class TermuxDaemonPlugin extends Plugin {
             "\n" +
             "echo '[6/8] fixing ownership and permissions'\n" +
             "chown -R $TERMUX_UID:$TERMUX_GID \"$TERMUX_HOME/.termux\" || { echo 'FAIL: chown .termux'; exit 1; }\n" +
+            "chown -R $TERMUX_UID:$TERMUX_GID \"$TERMUX_HOME/CastCast\" || { echo 'FAIL: chown CastCast'; exit 1; }\n" +
             "chmod 700 \"$TERMUX_HOME/.termux\" || { echo 'FAIL: chmod 700 .termux'; exit 1; }\n" +
             "chmod 600 \"$TERMUX_PROP\" || { echo 'FAIL: chmod 600 termux.properties'; exit 1; }\n" +
             "command -v restorecon >/dev/null 2>&1 && restorecon -R \"$TERMUX_HOME/.termux\" || true\n" +
