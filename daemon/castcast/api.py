@@ -292,11 +292,18 @@ class _Handler(BaseHTTPRequestHandler):
             elif route == "/mute":
                 self._json(svc.set_muted(bool(body.get("muted"))))
             elif route == "/shutdown":
-                if getattr(svc, "media_server", None) and getattr(svc.media_server, "_ssh_process", None):
-                    try:
-                        svc.media_server._ssh_process.terminate()
-                    except:
-                        pass
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"status": "ok"}')
+                
+                # Graceful cleanup of all processes and threads
+                try:
+                    if hasattr(svc, "_remuxer") and svc._remuxer:
+                        svc._remuxer.cancel()
+                    svc.stop()
+                except Exception as e:
+                    print(f"Error during shutdown cleanup: {e}")
+                    
                 import os
                 os._exit(0)
             elif route == "/discovery/intercept":
