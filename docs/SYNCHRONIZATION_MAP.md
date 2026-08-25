@@ -66,3 +66,11 @@ When routing new media types (e.g., Amazon, custom DRM, subtitles):
 *   **`daemon/castcast/mediaserver.py`:**
     *   **CRITICAL (Range Headers):** The proxy MUST handle HTTP `Range` requests from Shaka Player (Chromecast). Hardcoding a `200 OK` for a range request will destroy the player's timeline math. You must proxy `206 Partial Content`, `Content-Range`, and `Accept-Ranges` headers identically to the upstream source.
     *   **CRITICAL (DRM):** If adding a new streaming service, ensure its manifest (MPD) goes through the proxy so PSSH boxes can be injected, and ensure the DRM tokens are mapped properly in the license endpoint.
+
+## 6. UI Online/Offline State and Connection Lifecycle
+
+When modifying connection logic, polling, or SSE event handling:
+
+*   **`src/app/App.tsx`:**
+    *   **CRITICAL (Offline Splash Screen):** The "Launch Daemon (Termux)" splash screen is governed strictly by the `online` state variable. It MUST only be displayed when the daemon is verifiably unreachable.
+    *   **CRITICAL (Teardown Synchronicity):** When explicitly killing the server or handling a disconnect, you MUST synchronously tear down the SSE connection (`unsubscribeRef.current()`) and clear the polling interval (`window.clearInterval(pollTimerRef.current)`). Failing to do so will cause race conditions where pending intervals or delayed SSE events bounce the UI back to an "online" state while the server is dying or dead, inappropriately hiding the splash screen.
