@@ -66,3 +66,8 @@ When routing new media types (e.g., Amazon, custom DRM, subtitles):
 *   **`daemon/castcast/mediaserver.py`:**
     *   **CRITICAL (Range Headers):** The proxy MUST handle HTTP `Range` requests from Shaka Player (Chromecast). Hardcoding a `200 OK` for a range request will destroy the player's timeline math. You must proxy `206 Partial Content`, `Content-Range`, and `Accept-Ranges` headers identically to the upstream source.
     *   **CRITICAL (DRM):** If adding a new streaming service, ensure its manifest (MPD) goes through the proxy so PSSH boxes can be injected, and ensure the DRM tokens are mapped properly in the license endpoint.
+
+## 6. Frontend State & Tests
+When modifying UI components in `src/app/App.tsx` or related state (especially SSE logic or cleanup operations):
+*   **Vitest Validation:** Ensure you run `npm run test` to execute the vitest test suite.
+*   Update `src/app/__tests__/App.test.tsx` if you add new SSE event hooks or new queues.

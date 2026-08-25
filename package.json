@@ -71,11 +71,15 @@
     "@capacitor/android": "8.5.0",
     "@capacitor/cli": "8.5.0",
     "@tailwindcss/vite": "4.1.12",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.2",
     "@vitejs/plugin-react": "4.7.0",
+    "jsdom": "^29.1.1",
     "tailwindcss": "4.1.12",
     "typescript": "5.9.2",
     "vite": "6.3.5",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "peerDependencies": {
     "react": "18.3.1",
