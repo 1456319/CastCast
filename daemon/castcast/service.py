@@ -461,9 +461,7 @@ class CastService:
                     _path, job_plan, duration = self._remaster_queue.get()
                     self.log(f"Starting queued remaster: {job_plan.description}")
                     # wait until not busy
-                    import time
-                    while self._remuxer.busy:
-                        time.sleep(5)
+                    self._remuxer.idle_event.wait()
                     self._remuxer.run(job_plan, duration_s=duration)
                     self._remaster_queue.task_done()
             t = threading.Thread(target=queue_worker, daemon=True, name="castcast-remaster-queue")
