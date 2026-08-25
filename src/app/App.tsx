@@ -82,7 +82,6 @@ export default function App() {
   const logRef = useRef<HTMLDivElement>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const pollTimerRef = useRef<number | null>(null);
-  const onlineTimeoutRef = useRef<number | null>(null);
 
   const [anomaly, setAnomaly] = useState<any | null>(null);
 
@@ -94,17 +93,14 @@ export default function App() {
   const refreshStatus = useCallback(async () => {
     try {
       setStatus(await daemon.status());
-      if (onlineTimeoutRef.current !== null) {
-        window.clearTimeout(onlineTimeoutRef.current);
-        onlineTimeoutRef.current = null;
-      }
       setOnline(true);
-    } catch {
-      if (onlineTimeoutRef.current === null) {
-        onlineTimeoutRef.current = window.setTimeout(() => {
-          setOnline(false);
-          onlineTimeoutRef.current = null;
-        }, 3000);
+      setNotice((prev) => (prev === 'Daemon process found, but unresponsive. You may need to Force Stop Termux.' ? null : prev));
+    } catch (err: any) {
+      setOnline(false);
+      if (err instanceof Error && (err.message.includes('500') || err.name === 'SyntaxError' || err.message.includes('Unexpected token') || err.message.includes('Unexpected end of JSON input') || err.message.includes('Failed to parse'))) {
+        setNotice('Daemon process found, but unresponsive. You may need to Force Stop Termux.');
+      } else if (err instanceof Error && err.message.includes('Failed to fetch')) {
+        setNotice((prev) => (prev === 'Daemon process found, but unresponsive. You may need to Force Stop Termux.' ? null : prev));
       }
     }
   }, []);
@@ -113,27 +109,10 @@ export default function App() {
   useEffect(() => {
     refreshStatus();
     const unsubscribe = subscribe({
-      onOpen: () => {
-        if (onlineTimeoutRef.current !== null) {
-          window.clearTimeout(onlineTimeoutRef.current);
-          onlineTimeoutRef.current = null;
-        }
-        setOnline(true);
-      },
-      onError: () => {
-        if (onlineTimeoutRef.current === null) {
-          onlineTimeoutRef.current = window.setTimeout(() => {
-            setOnline(false);
-            onlineTimeoutRef.current = null;
-          }, 3000);
-        }
-      },
+      onOpen: () => setOnline(true),
+      onError: () => setOnline(false),
       onStatus: (s) => {
         setStatus(s);
-        if (onlineTimeoutRef.current !== null) {
-          window.clearTimeout(onlineTimeoutRef.current);
-          onlineTimeoutRef.current = null;
-        }
         setOnline(true);
       },
       onLog: (line) => setLogs((prev) => [...prev.slice(-300), line]),
@@ -152,10 +131,6 @@ export default function App() {
       unsubscribeRef.current = null;
       window.clearInterval(timer);
       pollTimerRef.current = null;
-      if (onlineTimeoutRef.current !== null) {
-        window.clearTimeout(onlineTimeoutRef.current);
-        onlineTimeoutRef.current = null;
-      }
     };
   }, [refreshStatus]);
 
@@ -419,7 +394,7 @@ export default function App() {
         <div className="mx-auto max-w-md space-y-4 pt-16">
           <div className="flex items-center gap-2 text-emerald-400">
             <CircleAlert className="h-5 w-5" />
-            <span>daemon unreachable</span>
+            <span>{notice && notice.includes("unresponsive") ? "daemon zombie detected" : "daemon unreachable"}</span>
           </div>
           <p className="text-emerald-500/70">
             This UI is a face for the <span className="font-mono">castcast</span> daemon. A browser
@@ -437,7 +412,7 @@ export default function App() {
           <div className="font-mono text-emerald-500/50">expecting: {DAEMON_BASE}</div>
           {(launchMessage || notice) && (
             <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-300">
-              {notice ?? launchMessage}
+              {notice || launchMessage}
             </div>
           )}
           <div className="rounded border border-emerald-500/20 bg-black/40 p-3 text-xs text-emerald-500/70">
@@ -947,10 +922,6 @@ export default function App() {
                   if (pollTimerRef.current !== null) {
                     window.clearInterval(pollTimerRef.current);
                     pollTimerRef.current = null;
-                  }
-                  if (onlineTimeoutRef.current !== null) {
-                    window.clearTimeout(onlineTimeoutRef.current);
-                    onlineTimeoutRef.current = null;
                   }
                   daemon.shutdown().catch(() => {});
                   setOnline(false);

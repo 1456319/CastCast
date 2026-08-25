@@ -228,7 +228,7 @@ export function subscribe(handlers: SubscribeArgs): () => void {
 }
 
 export function formatDuration(seconds: number): string {
-  if (isNaN(seconds) || !isFinite(seconds) || seconds < 0) return "0:00";
+  if (isNaN(seconds) || !isFinite(seconds)) return "0:00";
   const total = Math.floor(seconds);
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
