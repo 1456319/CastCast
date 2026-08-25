@@ -80,6 +80,8 @@ export default function App() {
   const [selectedSubtitleId, setSelectedSubtitleId] = useState<number | null>(null);
 
   const logRef = useRef<HTMLDivElement>(null);
+  const unsubscribeRef = useRef<(() => void) | null>(null);
+  const pollTimerRef = useRef<number | null>(null);
 
   const [anomaly, setAnomaly] = useState<any | null>(null);
 
@@ -115,10 +117,14 @@ export default function App() {
       onTelemetryAnomaly: (data) => setAnomaly(data),
       onAmazonQueue: (data) => setAmazonQueue((data as any).items || []),
     });
+    unsubscribeRef.current = unsubscribe;
     const timer = window.setInterval(refreshStatus, 5000);
+    pollTimerRef.current = timer;
     return () => {
       unsubscribe();
+      unsubscribeRef.current = null;
       window.clearInterval(timer);
+      pollTimerRef.current = null;
     };
   }, [refreshStatus]);
 
@@ -902,8 +908,18 @@ export default function App() {
               </button>
               <button
                 onClick={() => {
+                  // Tear down SSE and poll FIRST so they can't bounce us back online
+                  if (unsubscribeRef.current) {
+                    unsubscribeRef.current();
+                    unsubscribeRef.current = null;
+                  }
+                  if (pollTimerRef.current !== null) {
+                    window.clearInterval(pollTimerRef.current);
+                    pollTimerRef.current = null;
+                  }
                   daemon.shutdown().catch(() => {});
                   setOnline(false);
+                  setStatus(null);
                 }}
                 className="flex items-center gap-1.5 rounded border border-rose-500/30 px-2 py-1 text-xs text-rose-400 hover:bg-rose-500/10"
               >
