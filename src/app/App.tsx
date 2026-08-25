@@ -82,6 +82,7 @@ export default function App() {
   const logRef = useRef<HTMLDivElement>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const pollTimerRef = useRef<number | null>(null);
+  const onlineTimeoutRef = useRef<number | null>(null);
 
   const [anomaly, setAnomaly] = useState<any | null>(null);
 
@@ -93,10 +94,19 @@ export default function App() {
   const refreshStatus = useCallback(async () => {
     try {
       setStatus(await daemon.status());
+      if (onlineTimeoutRef.current !== null) {
+        window.clearTimeout(onlineTimeoutRef.current);
+        onlineTimeoutRef.current = null;
+      }
       setOnline(true);
       setNotice((prev) => (prev === 'Daemon process found, but unresponsive. You may need to Force Stop Termux.' ? null : prev));
     } catch (err: any) {
-      setOnline(false);
+      if (onlineTimeoutRef.current === null) {
+        onlineTimeoutRef.current = window.setTimeout(() => {
+          setOnline(false);
+          onlineTimeoutRef.current = null;
+        }, 3000);
+      }
       if (err instanceof Error && (err.message.includes('500') || err.name === 'SyntaxError' || err.message.includes('Unexpected token') || err.message.includes('Unexpected end of JSON input') || err.message.includes('Failed to parse'))) {
         setNotice('Daemon process found, but unresponsive. You may need to Force Stop Termux.');
       } else if (err instanceof Error && err.message.includes('Failed to fetch')) {
@@ -109,10 +119,27 @@ export default function App() {
   useEffect(() => {
     refreshStatus();
     const unsubscribe = subscribe({
-      onOpen: () => setOnline(true),
-      onError: () => setOnline(false),
+      onOpen: () => {
+        if (onlineTimeoutRef.current !== null) {
+          window.clearTimeout(onlineTimeoutRef.current);
+          onlineTimeoutRef.current = null;
+        }
+        setOnline(true);
+      },
+      onError: () => {
+        if (onlineTimeoutRef.current === null) {
+          onlineTimeoutRef.current = window.setTimeout(() => {
+            setOnline(false);
+            onlineTimeoutRef.current = null;
+          }, 3000);
+        }
+      },
       onStatus: (s) => {
         setStatus(s);
+        if (onlineTimeoutRef.current !== null) {
+          window.clearTimeout(onlineTimeoutRef.current);
+          onlineTimeoutRef.current = null;
+        }
         setOnline(true);
       },
       onLog: (line) => setLogs((prev) => [...prev.slice(-300), line]),
@@ -131,6 +158,10 @@ export default function App() {
       unsubscribeRef.current = null;
       window.clearInterval(timer);
       pollTimerRef.current = null;
+      if (onlineTimeoutRef.current !== null) {
+        window.clearTimeout(onlineTimeoutRef.current);
+        onlineTimeoutRef.current = null;
+      }
     };
   }, [refreshStatus]);
 
@@ -922,6 +953,10 @@ export default function App() {
                   if (pollTimerRef.current !== null) {
                     window.clearInterval(pollTimerRef.current);
                     pollTimerRef.current = null;
+                  }
+                  if (onlineTimeoutRef.current !== null) {
+                    window.clearTimeout(onlineTimeoutRef.current);
+                    onlineTimeoutRef.current = null;
                   }
                   daemon.shutdown().catch(() => {});
                   setOnline(false);
