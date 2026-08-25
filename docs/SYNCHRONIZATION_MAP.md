@@ -1,3 +1,5 @@
+<!-- WARNING: Editing this file or ignoring its contents during feature development may cause catastrophic app desynchronization between the Android App, Termux daemon, and Chromecast components. -->
+
 # CastCast Synchronization Map & Checklist
 
 This document is a mandatory reference checklist for AI agents and developers. When modifying core features in CastCast, you MUST update all corresponding modules in the pipeline to ensure absolute runtime synchronicity between the Android App, the Python Daemon, and the Chromecast.
@@ -23,6 +25,11 @@ If you add a new queue or modify queue logic, ensure **ALL** of the following fi
     *   Register the SSE listener inside the `subscribe({ ... })` block in `useEffect` so the UI reactively updates across all devices.
     *   Implement drag-and-drop (`handleDragStart`, `handleDragOver`, `handleDrop`). Ensure `handleDrop` safely falls back and re-fetches the actual queue from the daemon if the POST request fails.
     *   Render the UI. Ensure play buttons inside the queue map to `daemon.cast()`.
+
+## 1.5. Testing Synchronization via Vitest
+
+*   **`src/app/tests/setup.ts`**: Ensure mocks are accurately stubbing new global or Capacitor additions.
+*   **`src/app/tests/App.test.tsx`**: When a new queue or state item is added, ensure its polling, SSE integration, and explicit unsubscription behavior is represented in a unit test. Ensure that on server death (simulated via `daemon.shutdown()` or mock disconnections), SSE unsubscription and `setInterval` clearance occur to prevent UI memory leaks or hanging connections.
 
 ## 2. Adding New Dependencies
 
