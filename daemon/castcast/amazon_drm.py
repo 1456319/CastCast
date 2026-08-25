@@ -19,8 +19,6 @@ import urllib.request
 import urllib.parse
 import urllib.error
 import json
-import time
-import os
 import base64
 from .amazon import get_saved_auth, DEVICE_ID, DEVICE_TYPE_ID
 
