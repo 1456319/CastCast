@@ -12,6 +12,7 @@ import re
 import queue
 import threading
 import urllib.parse
+
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .service import CastService
@@ -185,7 +186,7 @@ class _Handler(BaseHTTPRequestHandler):
                 
                 # Make intent URLs readable if title is missing
                 if not final_title and final_url.startswith("intent://"):
-                    import urllib.parse
+                    
                     parsed = urllib.parse.urlparse(final_url)
                     qs = urllib.parse.parse_qs(parsed.query)
                     gti = qs.get("gti", [""])[0]
@@ -194,7 +195,7 @@ class _Handler(BaseHTTPRequestHandler):
                     else:
                         final_title = "Amazon Video (intent)"
                 elif not final_title:
-                    import urllib.parse
+                    
                     parsed = urllib.parse.urlparse(final_url)
                     m = re.search(r'/detail/([a-zA-Z0-9]+)', parsed.path)
                     if m:
