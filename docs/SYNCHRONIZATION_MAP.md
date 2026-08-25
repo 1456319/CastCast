@@ -66,3 +66,17 @@ When routing new media types (e.g., Amazon, custom DRM, subtitles):
 *   **`daemon/castcast/mediaserver.py`:**
     *   **CRITICAL (Range Headers):** The proxy MUST handle HTTP `Range` requests from Shaka Player (Chromecast). Hardcoding a `200 OK` for a range request will destroy the player's timeline math. You must proxy `206 Partial Content`, `Content-Range`, and `Accept-Ranges` headers identically to the upstream source.
     *   **CRITICAL (DRM):** If adding a new streaming service, ensure its manifest (MPD) goes through the proxy so PSSH boxes can be injected, and ensure the DRM tokens are mapped properly in the license endpoint.
+
+## 6. Process Lifecycle & Cleanup (The Zombie Protocol)
+
+When the server receives a shutdown request, it must cleanly terminate all processes to prevent holding ports open.
+*   **`daemon/castcast/api.py` (`/shutdown`)**: Must invoke cleanup procedures before `os._exit(0)`.
+*   **`daemon/castcast/service.py`**: Must provide mechanisms to terminate all active subprocesses (`_remuxer.cancel()`, `media_server.stop()`).
+*   **Failure Consequence**: Thrown exceptions during shutdown (like `UnboundLocalError`) will abort the exit, creating zombie servers that hold onto the 8765 port, preventing new instances from binding.
+
+## 7. React Frontend Connection State & Splash Screen
+
+The UI splash screen ("Launch Daemon" button) is controlled by the frontend's polling and SSE event stream connection state.
+*   **`src/app/App.tsx` (Connection Polling)**: The polling interval must be strictly cleared upon manual shutdown (`clearInterval(pollIntervalRef.current)`).
+*   **`src/app/App.tsx` (SSE Listener)**: The event stream must be strictly unsubscribed (`unsubscribeRef.current()`) upon manual shutdown.
+*   **Failure Consequence**: If SSE subscriptions or polling loops are left active after a `kill server` event, the UI might momentarily hit the daemon as it's dying (or a newly launched daemon), immediately jumping the user back to the "Online" state when they actually requested a shutdown, or getting stuck "Waiting for 127.0.0.1:8765" if a zombie server is blocking the port but ignoring requests.
