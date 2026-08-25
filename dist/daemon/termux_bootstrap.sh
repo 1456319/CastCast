@@ -1,20 +1,21 @@
 #!/data/data/com.termux/files/usr/bin/bash
+# EDITING OF THIS FILE MAY CAUSE CATASTROPHIC APP DESYCHRONIZATION. Reference the directory at at ~/docs/synchronization_map.md to determine what other files must be adjusted in order to ensure absolute synchronization is maintained. This is to ensure that the APK, termux daemon, and chromecast portions of the app are always in synchronous, deterministic states.
 
 # =======================================================================
-# VideoQualityCheckerApp - Termux Bootstrap & Audit Script
+# CastCast - Termux Bootstrap & Audit Script
 # =======================================================================
 # This script is called automatically by the Capacitor APK via an Android
 # Intent (com.termux.app.RunCommandService). It ensures the environment
 # is safely established and logs every action to a user-readable audit log.
 #
-# Trust & Transparency: 
-# If a critical failure occurs, the script will ABORT rather than taking 
+# Trust & Transparency:
+# If a critical failure occurs, the script will ABORT rather than taking
 # arbitrary destructive actions.
 # =======================================================================
 
 # Canonical user-visible queue; /sdcard/Download/Chromecast is its Android
 # alias. Keep this case synchronized with CastService.DEFAULT_MEDIA_ROOT.
-CHROMECAST_DIR="/storage/emulated/0/Download/VideoQualityCheckerApp/Chromecast"
+CHROMECAST_DIR="/storage/emulated/0/Download/CastCast/Chromecast"
 TRASH_DIR="$CHROMECAST_DIR/trash"
 # DEBUG-ONLY: runtime diagnostics are kept out of the visible queue.
 AUDIT_DIR="$CHROMECAST_DIR/.castcast"
@@ -67,15 +68,35 @@ if ! command -v python3 &> /dev/null; then
     pkg install -y python || abort "Failed to install Python"
 fi
 
+if ! command -v ssh &> /dev/null; then
+    log_action "OpenSSH not found. Installing openssh for DRM tunneling..."
+    pkg install -y openssh || abort "Failed to install OpenSSH"
+fi
+
 if ! command -v ffmpeg &> /dev/null; then
     log_action "FFmpeg not found. Installing ffmpeg..."
     pkg install -y ffmpeg || abort "Failed to install FFmpeg"
 fi
+
+if ! command -v node &> /dev/null; then
+    log_action "NodeJS not found. Installing nodejs..."
+    pkg install -y nodejs || abort "Failed to install NodeJS"
+fi
 log_action "[OK] Dependencies verified."
 
-# 4. Launch the Daemon
+# 4. Kill any old daemon instances and orphan SSH tunnels
+log_action "Cleaning up old daemon instances..."
+pkill -f "python3 -m castcast" || true
+pkill -f "pinggy.io" || true
+sleep 1
+
+# 5. Launch the Daemon
 log_action "Booting castcast daemon..."
 cd "$(dirname "$0")" || abort "Failed to navigate to daemon directory"
+cd .. || abort "Failed to navigate to project root"
+log_action "Pulling latest code from GitHub..."
+git pull origin main >> "$AUDIT_LOG" 2>&1
+cd daemon || abort "Failed to navigate back to daemon directory"
 
 # Run the daemon in the background and pipe output to the audit log
 python3 -m castcast --media-root "$CHROMECAST_DIR" serve >> "$AUDIT_LOG" 2>&1 &

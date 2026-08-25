@@ -27,7 +27,7 @@ CAST_PORT = 8009
 #: Google Home ecosystem: it is a stock app ID that needs no developer console
 #: registration, no custom receiver hosted on Google's CDN, and no Home app.
 #: pychromecast, VLC, catt and go-chromecast all hardcode it.
-DEFAULT_MEDIA_RECEIVER_APP_ID = "CC1AD845"
+DEFAULT_MEDIA_RECEIVER_APP_ID = "07AEE832"
 
 DEFAULT_TEXT_TRACK_STYLE = {"fontScale": 1.0, "foregroundColor": "#FFFFFFFF", "backgroundColor": "#00000099"}
 
@@ -113,9 +113,13 @@ class CastChannel:
         chunks = []
         remaining = count
         while remaining:
+            # If we've started reading a chunk but it's not finished, don't time out
+            # prematurely. This prevents losing bytes if the connection is slow.
+            if remaining < count:
+                sock.settimeout(15.0)
             try:
                 chunk = sock.recv(remaining)
-            except ssl.SSLWantReadError:
+            except (ssl.SSLWantReadError, socket.timeout):
                 raise socket.timeout()
             if not chunk:
                 raise ChannelClosed("peer closed the connection")
@@ -132,7 +136,15 @@ class CastChannel:
         header = self._read_exactly(4)
         (size,) = struct.unpack(">I", header)
         if size > PACKET_MAX_LEN:
-            raise ChannelClosed(f"payload size is too long ({size}); dropping connection")
+            try:
+                extra = sock.recv(1024)
+            except:
+                extra = b''
+            raise ChannelClosed(f"payload size is too long ({size}); dropping connection. Header was: {header}, following bytes: {extra}")
+        
+        # We got the header, so the body must be coming. Set a long timeout 
+        # so we don't abort mid-packet and desync the TCP stream on slow Wi-Fi.
+        sock.settimeout(15.0)
         return CastMessage.decode(self._read_exactly(size))
 
     def send(self, message: CastMessage) -> None:

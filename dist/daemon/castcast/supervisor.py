@@ -1,3 +1,4 @@
+# EDITING OF THIS FILE MAY CAUSE CATASTROPHIC APP DESYCHRONIZATION. Reference the directory at at ~/docs/synchronization_map.md to determine what other files must be adjusted in order to ensure absolute synchronization is maintained. This is to ensure that the APK, termux daemon, and chromecast portions of the app are always in synchronous, deterministic states.
 """The connection supervisor -- a VLC-style CASTv2 state machine that fights
 to keep the link up.
 
@@ -75,6 +76,9 @@ class MediaSession:
     url: str = ""
     content_type: str = "video/mp4"
     title: str = ""
+    subtitle: str = ""
+    poster_url: str = ""
+    backdrop_url: str = ""
     duration: float = 0.0
     source_path: str = ""
     position: float = 0.0
@@ -85,6 +89,9 @@ class MediaSession:
     has_text_tracks: bool = False
     queue_items: Optional[list] = None
     queue_index: int = 0
+    # Widevine license server URL for DRM-protected streams. Passed to the
+    # Chromecast receiver via customData.asset.licenseServers.
+    license_url: str = ""
 
 
 @dataclass
@@ -180,16 +187,20 @@ class Supervisor:
             return True
 
     def load(self, url: str, content_type: str = "video/mp4", title: str = "",
+             subtitle: str = "", poster_url: str = "", backdrop_url: str = "",
              duration: float = 0.0, source_path: str = "", autoplay: bool = True,
-             tracks: Optional[list] = None, active_track_ids: Optional[list] = None) -> None:
+             tracks: Optional[list] = None, active_track_ids: Optional[list] = None,
+             license_url: str = "", position: float = 0.0) -> None:
         """Queue a LOAD.  Safe to call before the link is even up."""
         with self._lock:
             self._media_session_id = None
             self.status.media_session_id = None
             self._session = MediaSession(url=url, content_type=content_type, title=title,
+                                         subtitle=subtitle, poster_url=poster_url, backdrop_url=backdrop_url,
                                          duration=duration, source_path=source_path,
-                                         position=0.0, autoplay=autoplay, tracks=tracks or [],
-                                         active_track_ids=active_track_ids or [])
+                                         position=position, autoplay=autoplay, tracks=tracks or [],
+                                         active_track_ids=active_track_ids or [],
+                                         license_url=license_url)
             self._pending_restore = True
             self.status.title = title
             self.status.content_url = url
@@ -252,7 +263,10 @@ class Supervisor:
         return self._media_command({"type": "PAUSE"})
 
     def seek(self, position: float) -> Optional[int]:
-        return self._media_command({"type": "SEEK", "currentTime": max(position, 0.0)})
+        cmd = {"type": "SEEK", "currentTime": max(position, 0.0)}
+        if self.status and self.status.active_track_ids:
+            cmd["activeTrackIds"] = self.status.active_track_ids
+        return self._media_command(cmd)
 
     def queue_remove(self, item_ids: list[int]) -> Optional[int]:
         return self._media_command({"type": "QUEUE_REMOVE", "itemIds": item_ids})
@@ -431,11 +445,75 @@ class Supervisor:
                     "metadata": {
                         "metadataType": 1,
                         "title": session.title or "castcast",
+                        "subtitle": session.subtitle or "",
+                        "images": [{"url": session.poster_url}] if session.poster_url else []
                     },
                 },
             }
+            custom_data = {}
             if session.source_path:
-                payload["media"]["customData"] = {"sourcePath": session.source_path}
+                custom_data["sourcePath"] = session.source_path
+            if session.license_url:
+                # ------------------------------------------------------------------
+                # DRM / Widevine Configuration for Shaka Player Demo Receiver
+                # ------------------------------------------------------------------
+                # This customData.asset.licenseServers structure is the Shaka Player
+                # Demo Receiver's API for specifying a Widevine license server URL.
+                #
+                # - "__type__": "map" is required by Shaka Player's custom data parser
+                #   to interpret the object as a JavaScript Map.
+                # - "com.widevine.alpha" is the Widevine DRM scheme identifier. This
+                #   tells Shaka Player which CDM (Content Decryption Module) to use
+                #   when requesting a license.
+                # - session.license_url points to either our local HTTPS tunnel proxy
+                #   (for Amazon DRM) or a direct license server URL. The Chromecast
+                #   will POST the Widevine challenge to this URL and expect raw
+                #   license bytes back. Deviations in byte-level payload, headers, or
+                #   Content-Type will break license acquisition and playback.
+                #
+                # WARNING: The Shaka Player Demo receiver app ID is "07AEE832". If
+                # this app ID is changed to a different receiver (e.g. the Default
+                # Media Receiver "CC1AD845"), the customData.asset.licenseServers
+                # format will NOT work because the Default Media Receiver doesn't
+                # support custom Widevine license servers.
+                # ------------------------------------------------------------------
+                custom_data["asset"] = {
+                    "licenseServers": {
+                        "__type__": "map",
+                        "com.widevine.alpha": session.license_url
+                    }
+                }
+
+            # extraConfig is merged into the Shaka Player config by
+            # ShakaDemoAssetInfo.getConfiguration().  This is the ONLY
+            # way to pass player configuration through the Demo Receiver.
+            # A top-level customData.config key is silently ignored.
+            if "asset" not in custom_data:
+                custom_data["asset"] = {}
+            custom_data["asset"]["extraConfig"] = {
+                "preferredTextLanguage": "en-US",
+                "preferredTextRole": "caption",
+                "preferredAudioLanguage": "en-US",
+                "streaming": {
+                    "alwaysStreamText": True,
+                    "bufferBehind": 15
+                }
+            }
+            
+            if custom_data:
+                payload["media"]["customData"] = custom_data
+
+            # Apply a high-contrast subtitle styling via the standard Cast
+            # textTrackStyle (this is read by the Cast SDK, not Shaka directly)
+            payload["media"]["textTrackStyle"] = {
+                "backgroundColor": "#00000000",
+                "foregroundColor": "#FFFFFFFF",
+                "edgeType": "DROP_SHADOW",
+                "edgeColor": "#000000FF",
+                "windowType": "NONE",
+                "fontScale": 1.1,
+                "fontFamily": "sans-serif"
+            }
             if session.duration:
                 payload["media"]["duration"] = session.duration
             if session.tracks:
@@ -500,6 +578,9 @@ class Supervisor:
 
         if namespace == NS_MEDIA:
             return self._handle_media(_json(message.payload_utf8))
+
+        elif namespace == "urn:x-cast:com.google.cast.shaka":
+            self._log(f"SHAKA MESSAGE: {message.payload_utf8}")
 
         return True
 
@@ -624,7 +705,7 @@ class Supervisor:
         with self._lock:
             if session_id is not None:
                 if self._media_session_id is not None and session_id != self._media_session_id:
-                    self._log(f"media session changed from {self._media_session_id} to {session_id}", "debug")
+                    self._log(f"[debug] media session changed from {self._media_session_id} to {session_id}")
                 self._media_session_id = session_id
                 self.status.media_session_id = session_id
 

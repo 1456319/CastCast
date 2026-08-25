@@ -1,3 +1,4 @@
+# EDITING OF THIS FILE MAY CAUSE CATASTROPHIC APP DESYCHRONIZATION. Reference the directory at at ~/docs/synchronization_map.md to determine what other files must be adjusted in order to ensure absolute synchronization is maintained. This is to ensure that the APK, termux daemon, and chromecast portions of the app are always in synchronous, deterministic states.
 """Local JSON control API + SSE event stream.
 
 Binds to 127.0.0.1 by default so nothing off-device can drive your TV.  The UI
@@ -7,9 +8,11 @@ Binds to 127.0.0.1 by default so nothing off-device can drive your TV.  The UI
 from __future__ import annotations
 
 import json
+import re
 import queue
 import threading
 import urllib.parse
+
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .service import CastService
@@ -40,6 +43,7 @@ class _Handler(BaseHTTPRequestHandler):
         body = json.dumps(payload, default=str).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         self.send_header("Content-Length", str(len(body)))
         self._cors()
         self.end_headers()
@@ -85,6 +89,42 @@ class _Handler(BaseHTTPRequestHandler):
                     deep=one("deep") in ("1", "true", "yes"))})
             elif route == "/trash":
                 self._json({"items": self.service.get_trash()})
+            elif route == "/amazon/auth":
+                from . import amazon
+                return self._json(amazon.create_code_pair())
+            
+            elif route == "/amazon/poll":
+                from . import amazon
+                pub = one("public_code")
+                priv = one("private_code")
+                return self._json(amazon.poll_register(pub, priv))
+            elif route == "/amazon/queue":
+                self._json({"items": self.service.amazon_queue})
+            elif route == "/diagnostics/logs":
+                import os
+                audit_log = ""
+                if os.path.exists("/var/log/audit/audit.log"):
+                    try:
+                        with open("/var/log/audit/audit.log", "r") as f:
+                            audit_log = f.read()
+                    except Exception:
+                        pass
+                elif os.path.exists("/tmp/castcast.log"):
+                    try:
+                        with open("/tmp/castcast.log", "r") as f:
+                            audit_log = f.read()
+                    except Exception:
+                        pass
+                
+                last_error = ""
+                if self.service.supervisor:
+                    last_error = self.service.supervisor.status.last_error
+
+                self._json({
+                    "log_buffer": self.service.log_buffer.recent(),
+                    "last_error": last_error,
+                    "audit_log": audit_log
+                })
             elif route == "/preflight":
                 path = one("path")
                 if not path:
@@ -120,13 +160,96 @@ class _Handler(BaseHTTPRequestHandler):
                 if not paths or not isinstance(paths, list):
                     return self._json({"error": "paths must be a non-empty list of strings"}, 400)
                 self._json(svc.queue(paths))
+            
+            elif route == "/amazon/inject":
+                import os, json
+                auth_file = os.path.expanduser("~/.config/castcast/amazon_auth.json")
+                os.makedirs(os.path.dirname(auth_file), exist_ok=True)
+                with open(auth_file, "w") as f:
+                    json.dump(body, f)
+                return self._json({"success": True, "message": "Injected Amazon tokens"})
+            elif route == "/amazon/queue/add":
+                url_raw = body.get("url")
+                title = body.get("title", "")
+                if not url_raw:
+                    return self._json({"error": "url is required"}, 400)
+
+                extracted_url, extracted_title = _extract_amazon_share_info(url_raw)
+                final_url = extracted_url if extracted_url else url_raw
+                final_title = title if title else extracted_title
+
+                # Check for duplicates
+                exists = False
+                for item in self.service.amazon_queue:
+                    if item.get("url") == final_url:
+                        exists = True
+                        break
+                
+                # Make intent URLs readable if title is missing
+                if not final_title:
+                    try:
+                        import urllib.request
+                        req_url = final_url
+                        if final_url.startswith("intent://"):
+                            # Convert intent back to a fetchable URL if possible, or just extract the gti
+                            import urllib.parse
+                            qs = urllib.parse.parse_qs(urllib.parse.urlparse(final_url).query)
+                            gti = qs.get("gti", [""])[0]
+                            req_url = f"https://www.primevideo.com/region/na/detail/{gti}" if gti else ""
+                        
+                        if req_url:
+                            req = urllib.request.Request(req_url, headers={
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                                'Accept-Language': 'en-US,en;q=0.5'
+                            })
+                            html = urllib.request.urlopen(req, timeout=3.0).read().decode('utf-8', errors='ignore')
+                            m = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
+                            if m:
+                                final_title = m.group(1).replace("Prime Video:", "").strip()
+                    except Exception:
+                        pass
+                
+                # Fallbacks if the web scrape fails
+                if not final_title and final_url.startswith("intent://"):
+                    parsed = urllib.parse.urlparse(final_url)
+                    qs = urllib.parse.parse_qs(parsed.query)
+                    gti = qs.get("gti", [""])[0]
+                    final_title = f"Amazon Title: {gti}" if gti else "Amazon Video (intent)"
+                elif not final_title:
+                    parsed = urllib.parse.urlparse(final_url)
+                    m = re.search(r'/detail/([a-zA-Z0-9]+)', parsed.path)
+                    final_title = f"Amazon Title: {m.group(1)}" if m else final_url.split("?")[0]
+
+                if not exists:
+                    self.service.amazon_queue.append({"url": final_url, "title": final_title})
+                    self.service.save_amazon_queue()
+                return self._json({"success": True})
+            elif route == "/amazon/queue/reorder":
+                items = body.get("items")
+                if not isinstance(items, list):
+                    return self._json({"error": "items must be a list"}, 400)
+                self.service.amazon_queue = items
+                self.service.save_amazon_queue()
+                return self._json({"success": True})
+            elif route == "/amazon/queue/remove":
+                index = body.get("index")
+                if not isinstance(index, int) or index < 0 or index >= len(self.service.amazon_queue):
+                    return self._json({"error": "invalid index"}, 400)
+                self.service.amazon_queue.pop(index)
+                self.service.save_amazon_queue()
+                return self._json({"success": True})
             elif route == "/cast":
                 path = body.get("path")
                 if not path:
                     return self._json({"error": "path is required"}, 400)
                 self._json(svc.cast(path,
                                     allow_unsafe=bool(body.get("allow_unsafe")),
-                                    auto_prepare=body.get("auto_prepare", True)))
+                                    auto_prepare=body.get("auto_prepare", True),
+                                    audio_index=body.get("audio_index"),
+                                    subtitle_index=body.get("subtitle_index"),
+                                    license_url=body.get("license_url"),
+                                    offline_drm_token=body.get("offline_drm_token")))
             elif route == "/subtitles/opensubtitles":
                 path = body.get("path")
                 if not path:
@@ -137,6 +260,11 @@ class _Handler(BaseHTTPRequestHandler):
                 if not path:
                     return self._json({"error": "path is required"}, 400)
                 self._json(svc.prepare(path, force=bool(body.get("force"))))
+            elif route == "/remaster":
+                path = body.get("path")
+                if not path:
+                    return self._json({"error": "path is required"}, 400)
+                self._json(svc.remaster(path, force=bool(body.get("force"))))
             elif route == "/prepare/cancel":
                 self._json(svc.cancel_prepare())
             elif route == "/trash":
@@ -161,6 +289,11 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(svc.set_volume(float(body.get("level") or 0.0)))
             elif route == "/mute":
                 self._json(svc.set_muted(bool(body.get("muted"))))
+            elif route == "/shutdown":
+                import os
+                os._exit(0)
+            elif route == "/discovery/intercept":
+                self._json(svc.handle_intercept(body))
             else:
                 self._json({"error": "not found"}, 404)
         except RuntimeError as exc:
@@ -247,7 +380,48 @@ _ROUTES = {
     "POST /seek": "{position}",
     "POST /volume": "{level 0..1}",
     "POST /mute": "{muted}",
+    "POST /shutdown": "kill the daemon",
 }
+
+
+def _extract_amazon_share_info(raw_text):
+    """
+    Extracts the actual URL and a formatted title from Amazon share text.
+    Handles formats like: "Watch Hazbin Hotel - Season 1, Episode 1 - Overture on Prime Video! https://..."
+    """
+    extracted_url = raw_text
+    extracted_title = ""
+
+    url_match = re.search(r'(https?://[^\s]+)', raw_text)
+    if url_match:
+        extracted_url = url_match.group(1)
+        text_before = raw_text[:url_match.start()].strip()
+
+        if text_before:
+            text_before = text_before.replace("Watch ", "", 1)
+            text_before = text_before.replace(" on Prime Video", "")
+            text_before = text_before.replace(" on Amazon Prime", "")
+            text_before = text_before.strip("! \n\r\t-")
+            extracted_title = text_before
+
+            if "Season" in extracted_title and "Episode" in extracted_title:
+                match = re.match(r'(.*?)(?:\s*-\s*)?Season\s+(\d+),\s*Episode\s+(\d+)(?:\s*-\s*(.*))?', extracted_title)
+                if match:
+                    show = match.group(1).strip()
+                    season = match.group(2).strip()
+                    episode = match.group(3).strip()
+                    ep_name = match.group(4)
+                    extracted_title = f"{show} S{season.zfill(2)}E{episode.zfill(2)}"
+                    if ep_name:
+                        extracted_title += f" - {ep_name.strip()}"
+            elif "Season" in extracted_title:
+                match = re.match(r'(.*?)(?:\s*-\s*)?Season\s+(\d+)', extracted_title)
+                if match:
+                    show = match.group(1).strip()
+                    season = match.group(2).strip()
+                    extracted_title = f"{show} S{season.zfill(2)}"
+
+    return extracted_url, extracted_title
 
 
 class ApiServer:

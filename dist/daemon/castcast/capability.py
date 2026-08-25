@@ -121,7 +121,7 @@ REQUIRES_REENCODE = {
 }
 
 
-def _check_video(v: Optional[VideoStream], container: str, issues: List[Issue]) -> str:
+def _check_video(v: Optional[VideoStream], container: str, issues: List[Issue], is_ultra: bool) -> str:
     """Returns the required action for the video stream."""
     if v is None:
         issues.append(Issue("warning", "no_video",
@@ -137,11 +137,19 @@ def _check_video(v: Optional[VideoStream], container: str, issues: List[Issue]) 
         ))
         return "transcode"
 
+    if not is_ultra and v.codec in ("hevc", "vp9"):
+        issues.append(Issue(
+            "fatal", "codec_unsupported_on_standard_chromecast",
+            f"{v.codec.upper()} is not supported on non-Ultra Chromecasts.",
+            "Re-encode to H.264 High Profile (1080p).",
+        ))
+        return "transcode"
+
     if v.codec not in VIDEO_CODECS:
         issues.append(Issue(
             "warning", "video_codec_unknown",
-            f"Codec '{v.codec}' is not in the Ultra's published matrix; behaviour is untested.",
-            "Consider re-encoding to HEVC or H.264.",
+            f"Codec '{v.codec}' is not in the published matrix; behaviour is untested.",
+            "Consider re-encoding to H.264.",
         ))
         return "transcode"
 
@@ -258,12 +266,12 @@ def _check_audio(a: Optional[AudioStream], issues: List[Issue]) -> str:
 
 
 def evaluate(info: MediaInfo, *, prefer_fmp4: bool = False,
-             assume_avr_passthrough: bool = False) -> Verdict:
+             assume_avr_passthrough: bool = False, is_ultra: bool = True) -> Verdict:
     """Predict whether ``info`` will cast, and what to do about it if not."""
     issues: List[Issue] = []
     container = info.container
 
-    video_action = _check_video(info.primary_video, container, issues)
+    video_action = _check_video(info.primary_video, container, issues, is_ultra)
     audio_action = _check_audio(info.primary_audio, issues)
 
     if assume_avr_passthrough:

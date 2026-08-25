@@ -186,23 +186,42 @@ class _Handler(BaseHTTPRequestHandler):
                         break
                 
                 # Make intent URLs readable if title is missing
+                if not final_title:
+                    try:
+                        import urllib.request
+                        import ssl
+                        req_url = final_url
+                        if final_url.startswith("intent://"):
+                            import urllib.parse
+                            qs = urllib.parse.parse_qs(urllib.parse.urlparse(final_url).query)
+                            gti = qs.get("gti", [""])[0]
+                            req_url = f"https://www.primevideo.com/region/na/detail/{gti}" if gti else ""
+                        
+                        if req_url:
+                            ctx = ssl.create_default_context()
+                            ctx.check_hostname = False
+                            ctx.verify_mode = ssl.CERT_NONE
+                            req = urllib.request.Request(req_url, headers={
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                                'Accept': 'text/html'
+                            })
+                            html = urllib.request.urlopen(req, context=ctx, timeout=5.0).read().decode('utf-8', errors='ignore')
+                            m = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
+                            if m:
+                                final_title = m.group(1).replace("Prime Video:", "").replace("Watch ", "").strip()
+                    except Exception as e:
+                        print(f"Scrape error: {e}")
+                
+                # Fallbacks if the web scrape fails
                 if not final_title and final_url.startswith("intent://"):
-                    
                     parsed = urllib.parse.urlparse(final_url)
                     qs = urllib.parse.parse_qs(parsed.query)
                     gti = qs.get("gti", [""])[0]
-                    if gti:
-                        final_title = f"Amazon Title: {gti}"
-                    else:
-                        final_title = "Amazon Video (intent)"
+                    final_title = f"Amazon Title: {gti}" if gti else "Amazon Video (intent)"
                 elif not final_title:
-                    
                     parsed = urllib.parse.urlparse(final_url)
                     m = re.search(r'/detail/([a-zA-Z0-9]+)', parsed.path)
-                    if m:
-                        final_title = f"Amazon Title: {m.group(1)}"
-                    else:
-                        final_title = final_url.split("?")[0]
+                    final_title = f"Amazon Title: {m.group(1)}" if m else final_url.split("?")[0]
 
                 if not exists:
                     self.service.amazon_queue.append({"url": final_url, "title": final_title})
@@ -273,6 +292,11 @@ class _Handler(BaseHTTPRequestHandler):
             elif route == "/mute":
                 self._json(svc.set_muted(bool(body.get("muted"))))
             elif route == "/shutdown":
+                if getattr(svc, "media_server", None) and getattr(svc.media_server, "_ssh_process", None):
+                    try:
+                        svc.media_server._ssh_process.terminate()
+                    except:
+                        pass
                 import os
                 os._exit(0)
             elif route == "/discovery/intercept":

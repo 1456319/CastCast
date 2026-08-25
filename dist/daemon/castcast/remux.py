@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -58,7 +59,10 @@ class RemuxPlan:
 
     @property
     def command(self) -> List[str]:
-        return [FFMPEG, "-hide_banner", "-y", "-i", self.input_path] + self.args + [self.output_path]
+        cmd = [shutil.which(FFMPEG) or FFMPEG, "-hide_banner", "-y", "-i", self.input_path] + self.args + [self.output_path]
+        if "Overnight 4K Remaster" in self.description:
+            cmd = ["nice", "-n", "19"] + cmd
+        return cmd
 
     @property
     def shell_command(self) -> str:
@@ -71,20 +75,20 @@ class RemuxPlan:
         return d
 
 
-def output_path_for(input_path: str, work_dir: str, container: str) -> str:
+def output_path_for(input_path: str, work_dir: str, container: str, video_codec: str = "") -> str:
     stem = os.path.splitext(os.path.basename(input_path))[0]
-    ext = "webm" if container == "webm" else "mp4"
-    suffix = ".cast.fmp4.mp4" if container == "fmp4" else f".cast.{ext}"
+    ext = container if container in ("webm", "mkv") else "mp4"
+    codec_tag = f".{video_codec}" if video_codec else ""
+    suffix = f".cast{codec_tag}.fmp4.mp4" if container == "fmp4" else f".cast{codec_tag}.{ext}"
     return os.path.join(work_dir, stem + suffix)
 
-
-def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str) -> Optional[RemuxPlan]:
+def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str, is_ultra: bool = True) -> Optional[RemuxPlan]:
     """Return the plan needed to make ``info`` castable, or ``None`` if it already is."""
     if not verdict.needs_processing:
         return None
 
     container = verdict.target_container or "mp4"
-    out = output_path_for(info.path, work_dir, container)
+    out = output_path_for(info.path, work_dir, container, "hevc" if is_ultra and verdict.video_action == "transcode" else "h264" if verdict.video_action == "transcode" else "")
 
     args: List[str] = ["-map", "0:v:0"]
     lossless_video = True
@@ -93,12 +97,20 @@ def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str) -> Optional[Rem
     # -- video ----------------------------------------------------------
     if verdict.video_action == "transcode":
         v = info.primary_video
-        # Preserve HDR by staying 10-bit when the source is; otherwise the
-        # picture comes back washed out.
-        ten_bit = bool(v and v.bit_depth >= 10)
-        args += ["-c:v", "libx265", "-preset", "medium", "-crf", "20",
-                 "-pix_fmt", "yuv420p10le" if ten_bit else "yuv420p",
-                 "-tag:v", "hvc1"]
+
+        if is_ultra:
+            # Preserve HDR by staying 10-bit when the source is; otherwise the
+            # picture comes back washed out.
+            ten_bit = bool(v and v.bit_depth >= 10)
+            args += ["-c:v", "libx265", "-preset", "superfast", "-crf", "18",
+                     "-pix_fmt", "yuv420p10le" if ten_bit else "yuv420p",
+                     "-tag:v", "hvc1"]
+        else:
+            # Standard Chromecast maxes out at 1080p H.264
+            args += ["-c:v", "libx264", "-preset", "superfast", "-crf", "18",
+                     "-profile:v", "high", "-level", "4.1", "-pix_fmt", "yuv420p"]
+            if v and v.width > 1920:
+                args += ["-vf", "scale=-2:1080"]
         lossless_video = False
     else:
         args += ["-c:v", "copy"]
@@ -162,6 +174,53 @@ def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str) -> Optional[Rem
         expected_color_transfer=info.primary_video.color_transfer if info.primary_video else "",
         expected_color_space=info.primary_video.color_space if info.primary_video else "",
         video_codec=info.primary_video.codec if info.primary_video else "",
+    )
+
+
+def build_4k_remaster_plan(info: MediaInfo, work_dir: str) -> Optional[RemuxPlan]:
+    """Generates a plan to upconvert a 1080p source to 4K HEVC via lanczos."""
+    if not info.primary_video:
+        return None
+
+    width = info.primary_video.width
+    
+
+    # We only upconvert 1080p (or around there). If it's already 4K, skip it.
+    if width >= 3800:
+        return None
+
+    out = output_path_for(info.path, work_dir, "mkv", "hevc")
+
+    args = [
+        "-map", f"0:{info.primary_video.index}",
+        "-c:v", "libx265",
+        "-preset", "medium",  # Replaced 'slow' with 'medium' to prevent thermal throttling
+        "-crf", "18",
+        "-vf", "scale=3840:2160:flags=lanczos",
+        "-pix_fmt", "yuv420p10le",
+    ]
+
+    # Map all audio tracks
+    if info.audio:
+        args.extend(["-map", "0:a", "-c:a", "copy"])
+
+    # Embed subtitles
+    for sub in info.subtitles:
+        args.extend(["-map", f"0:{sub.index}", "-c:s", "copy"])
+
+    return RemuxPlan(
+        input_path=info.path,
+        output_path=out,
+        args=args,
+        lossless_video=False,
+        lossless_audio=True,
+        description="High-fidelity Overnight 4K Remaster (Lanczos scaling, HEVC). Extremely slow.",
+        estimated="Hours to Days depending on device power",
+        expected_hdr_format="SDR",
+        expected_color_primaries="",
+        expected_color_transfer="",
+        expected_color_space="",
+        video_codec="hevc",
     )
 
 
