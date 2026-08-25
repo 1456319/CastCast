@@ -226,4 +226,62 @@ describe('App', () => {
       expect(daemonLib.daemon.reorderAmazonQueue).toHaveBeenCalled();
     });
   });
+  it('ignores transient SSE drops if reconnected quickly', async () => {
+    let sseHandlers: daemonLib.SubscribeArgs = {};
+    vi.mocked(daemonLib.subscribe).mockImplementation((handlers) => {
+      sseHandlers = handlers;
+      return vi.fn();
+    });
+
+    vi.mocked(daemonLib.daemon.status).mockResolvedValue({
+      connected: true,
+      device: null,
+      media_server: { base_url: '', lan_ip: '', port: 0, roots: [] },
+      tools: { ffmpeg: true, ffprobe: true, yt_dlp: true },
+      remux: null,
+      cast: {
+        state: 'idle', position: 0, duration: 0, volume: 1, muted: false,
+        title: '', reconnects: 0, stream_stalls: 0, last_error: '',
+        idle_reason: '', source_path: ''
+      }
+    });
+
+    render(<App />);
+
+    await act(async () => {
+      vi.advanceTimersByTime(100);
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('Launch Daemon (Termux)')).not.toBeInTheDocument();
+    });
+
+    // Simulate SSE error
+    act(() => {
+      if (sseHandlers.onError) sseHandlers.onError();
+    });
+
+    // We shouldn't see the splash screen instantly
+    expect(screen.queryByText('Launch Daemon (Termux)')).not.toBeInTheDocument();
+
+    // Reconnect after 1 second
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+
+    act(() => {
+      if (sseHandlers.onOpen) sseHandlers.onOpen();
+    });
+
+    // Still shouldn't see the splash screen
+    expect(screen.queryByText('Launch Daemon (Termux)')).not.toBeInTheDocument();
+
+    // Now wait long enough for the timeout to actually fire, assuming we hadn't reconnected
+    // But since we did reconnect, it should be canceled, so we still won't see it.
+    await act(async () => {
+      vi.advanceTimersByTime(4000);
+    });
+
+    expect(screen.queryByText('Launch Daemon (Termux)')).not.toBeInTheDocument();
+  });
 });
