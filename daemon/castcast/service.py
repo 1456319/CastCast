@@ -22,6 +22,7 @@ from .mediaserver import MediaServer, guess_mime
 from .opensubtitles import download_best, language3
 from .probe import FFMPEG, MediaInfo, ProbeError, have_ffmpeg, have_ffprobe, probe
 from .supervisor import State, Supervisor
+from .metadata import TMDBClient, resolve_title
 
 DEFAULT_MEDIA_ROOT = "/storage/emulated/0/Download/CastCast/Chromecast"
 
@@ -518,7 +519,7 @@ class CastService:
             self.log(f"queue_insert: skipping {os.path.basename(path)} due to url error: {exc}", "warn")
             return
 
-        title = os.path.splitext(os.path.basename(path))[0]
+        title = resolve_title(path)
         tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
 
         item = {
@@ -831,7 +832,6 @@ class CastService:
         tmdb_key = self.config.get("tmdb_api_key", "")
 
         # Fast non-blocking TMDB scrape
-        from .metadata import TMDBClient
         tmdb = TMDBClient(tmdb_key)
         enriched = tmdb.enrich(title_base)
 
@@ -912,7 +912,7 @@ class CastService:
                 skipped += 1
                 continue
 
-            title = os.path.splitext(os.path.basename(path))[0]
+            title = resolve_title(path)
             tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
 
             item = {

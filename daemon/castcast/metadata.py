@@ -94,3 +94,77 @@ class TMDBClient:
                     result["backdrop_url"] = self.image_base + movie["backdrop_path"]
 
         return result
+
+import base64
+import ssl
+
+def _clean_title(raw_title: str) -> str:
+    clean = raw_title
+    clean = re.sub(r'(?i)^Watch\s+', '', clean)
+    clean = re.sub(r'(?i)\s*\|\s*Prime Video$', '', clean)
+    clean = re.sub(r'(?i)^Prime Video:\s*', '', clean)
+
+    # Clean out UUIDs
+    clean = re.sub(r'(?i)[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}_?', '', clean)
+
+    tags = [r'1080p', r'720p', r'2160p', r'4k', r'x264', r'x265', r'hevc', r'web-dl', r'bluray', r'hdtv', r'xvid', r'aac', r'ac3', r'dts', r'webrip']
+    for tag in tags:
+        # Match tag bounded by word boundary or underscore
+        clean = re.sub(r'(?i)(?:^|\b|_)' + tag + r'(?:$|\b|_)', ' ', clean)
+
+    clean = re.sub(r'\s+', ' ', clean).strip()
+    clean = re.sub(r'_+$', '', clean)
+    return clean
+
+def resolve_title(raw_url: str, provider: str = None) -> str:
+    if "proxy/?url=" in raw_url:
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(raw_url).query)
+        b64_url = qs.get("url", [""])[0]
+        if b64_url:
+            try:
+                decoded = base64.b64decode(b64_url).decode('utf-8')
+                filename = decoded.split('/')[-1]
+                if '.' in filename:
+                    filename = filename.rsplit('.', 1)[0]
+                return _clean_title(filename)
+            except Exception:
+                pass
+
+    if provider == "amazon" or "primevideo.com" in raw_url or "amzn1.dv.gti" in raw_url:
+        req_url = raw_url
+        if "amzn1.dv.gti" in raw_url and "http" not in raw_url:
+            req_url = f"https://www.primevideo.com/region/na/detail/{raw_url}"
+        elif "intent://" in raw_url:
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(raw_url).query)
+            gti = qs.get("gti", [""])[0]
+            if gti:
+                req_url = f"https://www.primevideo.com/region/na/detail/{gti}"
+
+        if req_url.startswith("http"):
+            try:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                req = urllib.request.Request(req_url, headers={
+                    'User-Agent': 'Mozilla/5.0',
+                    'Accept': 'text/html'
+                })
+                html = urllib.request.urlopen(req, context=ctx, timeout=5.0).read().decode('utf-8', errors='ignore')
+                m = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
+                if m:
+                    title = m.group(1)
+                    return _clean_title(title)
+            except Exception:
+                pass
+
+    try:
+        path = urllib.parse.urlparse(raw_url).path
+        filename = path.split('/')[-1]
+        if filename:
+            if '.' in filename:
+                filename = filename.rsplit('.', 1)[0]
+            return _clean_title(filename.replace('_', ' '))
+    except Exception:
+        pass
+
+    return _clean_title(raw_url)
