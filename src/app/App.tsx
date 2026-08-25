@@ -723,6 +723,17 @@ export default function App() {
         <section className="rounded border border-emerald-500/20 bg-black/40 p-3">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-emerald-500/50 uppercase tracking-wider">Queue - Amazon</span>
+            {amazonQueue.length > 0 && (
+              <button
+                onClick={() => {
+                  setAmazonQueue([]);
+                  daemon.reorderAmazonQueue([]).catch(console.error);
+                }}
+                className="text-xs text-emerald-500/50 hover:text-red-400"
+              >
+                clear
+              </button>
+            )}
           </div>
 
           {amazonQueue.length === 0 ? (
@@ -746,6 +757,18 @@ export default function App() {
                 >
                   <FileVideo className="h-3.5 w-3.5 shrink-0 text-emerald-500/50" />
                   <span className="min-w-0 flex-1 truncate text-emerald-200">{item.title || item.url}</span>
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const newItems = [...amazonQueue];
+                      newItems.splice(idx, 1);
+                      setAmazonQueue(newItems);
+                      daemon.reorderAmazonQueue(newItems).catch(console.error);
+                    }}
+                    className="p-1 hover:bg-emerald-500/20 rounded"
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-emerald-500/50 hover:text-red-400" />
+                  </button>
                 </div>
               ))}
             </div>

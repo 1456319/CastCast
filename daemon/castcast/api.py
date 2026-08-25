@@ -176,8 +176,35 @@ class _Handler(BaseHTTPRequestHandler):
                 final_url = extracted_url if extracted_url else url_raw
                 final_title = title if title else extracted_title
 
-                self.service.amazon_queue.append({"url": final_url, "title": final_title})
-                self.service.save_amazon_queue()
+                # Check for duplicates
+                exists = False
+                for item in self.service.amazon_queue:
+                    if item.get("url") == final_url:
+                        exists = True
+                        break
+                
+                # Make intent URLs readable if title is missing
+                if not final_title and final_url.startswith("intent://"):
+                    import urllib.parse
+                    parsed = urllib.parse.urlparse(final_url)
+                    qs = urllib.parse.parse_qs(parsed.query)
+                    gti = qs.get("gti", [""])[0]
+                    if gti:
+                        final_title = f"Amazon Title: {gti}"
+                    else:
+                        final_title = "Amazon Video (intent)"
+                elif not final_title:
+                    import urllib.parse
+                    parsed = urllib.parse.urlparse(final_url)
+                    m = re.search(r'/detail/([a-zA-Z0-9]+)', parsed.path)
+                    if m:
+                        final_title = f"Amazon Title: {m.group(1)}"
+                    else:
+                        final_title = final_url.split("?")[0]
+
+                if not exists:
+                    self.service.amazon_queue.append({"url": final_url, "title": final_title})
+                    self.service.save_amazon_queue()
                 return self._json({"success": True})
             elif route == "/amazon/queue/reorder":
                 items = body.get("items")
