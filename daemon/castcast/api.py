@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.parse
+import urllib.request
 import queue
 import threading
-import urllib.parse
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -188,11 +189,9 @@ class _Handler(BaseHTTPRequestHandler):
                 # Make intent URLs readable if title is missing
                 if not final_title:
                     try:
-                        import urllib.request
                         import ssl
                         req_url = final_url
                         if final_url.startswith("intent://"):
-                            import urllib.parse
                             qs = urllib.parse.parse_qs(urllib.parse.urlparse(final_url).query)
                             gti = qs.get("gti", [""])[0]
                             req_url = f"https://www.primevideo.com/region/na/detail/{gti}" if gti else ""
