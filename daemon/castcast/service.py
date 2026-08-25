@@ -633,6 +633,7 @@ class CastService:
             qs = urllib.parse.parse_qs(parsed.query)
             title_id = qs.get("gti", [""])[0]
             if not title_id:
+                import re
                 m = re.search(r'/detail/([a-zA-Z0-9]+)', parsed.path)
                 if m:
                     title_id = m.group(1)
