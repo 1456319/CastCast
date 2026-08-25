@@ -2,6 +2,92 @@ import re
 import urllib.request
 import urllib.parse
 import json
+import base64
+
+
+def _clean_title(raw_title: str) -> str:
+    """Remove common provider and release-name noise from a media title."""
+    title = re.sub(r"<[^>]+>", " ", raw_title or "")
+    title = re.sub(r"\s+", " ", title).strip()
+    title = re.sub(r"^\s*(?:watch\s+|prime\s+video\s*:\s*)", "", title,
+                   flags=re.IGNORECASE)
+    title = re.sub(r"\s*(?:\||[-–—])\s*prime\s+video\s*$", "", title,
+                   flags=re.IGNORECASE)
+    title = re.sub(
+        r"(?:[ ._\-]+)(?:2160p|1080p|720p|480p|4k|8k|blu-?ray|web[- .]?dl|"
+        r"webrip|hdtv|x264|x265|h\.?(?:264|265)|hevc|xvid|avc|aac|ac3|dts)\b",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", title).strip(" ._-|")
+
+
+def _title_from_proxy_url(raw_url: str) -> str:
+    """Return the upstream filename when ``raw_url`` is a base64 proxy URL."""
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(raw_url).query)
+    payload = (query.get("url") or [""])[0]
+    if not payload:
+        return ""
+    try:
+        payload += "=" * (-len(payload) % 4)
+        upstream = base64.b64decode(payload, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return ""
+    filename = urllib.parse.unquote(urllib.parse.urlsplit(upstream).path.rsplit("/", 1)[-1])
+    filename = re.sub(r"\.[A-Za-z0-9]{2,5}$", "", filename)
+    filename = re.sub(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}[_-]?", "", filename,
+                      flags=re.IGNORECASE)
+    return _clean_title(filename)
+
+
+def resolve_title(raw_url: str, provider: str = "") -> str:
+    """Resolve a readable title from provider URLs or a proxied media URL.
+
+    Network failures are intentionally non-fatal: a cleaned filename or URL is
+    more useful to the casting UI than a failed cast request.
+    """
+    raw_url = (raw_url or "").strip()
+    if not raw_url:
+        return ""
+
+    proxy_title = _title_from_proxy_url(raw_url)
+    if proxy_title:
+        return proxy_title
+
+    is_amazon = provider.lower() == "amazon" or any(
+        marker in raw_url.lower() for marker in ("amazon.com", "primevideo.com", "amzn1.dv.gti")
+    )
+    if is_amazon:
+        gti_match = re.search(r"(?:[?&]gti=|amzn1\.dv\.gti\.)([^&#\s]+)", raw_url,
+                              flags=re.IGNORECASE)
+        if raw_url.startswith("amzn1.dv.gti."):
+            detail_url = f"https://www.primevideo.com/detail?gti={raw_url}"
+        elif raw_url.startswith("intent://") and gti_match:
+            detail_url = f"https://www.primevideo.com/detail?gti={gti_match.group(1)}"
+        elif gti_match and "gti=" not in raw_url:
+            detail_url = f"https://www.primevideo.com/detail?gti={gti_match.group(0)}"
+        else:
+            detail_url = raw_url
+        try:
+            request = urllib.request.Request(detail_url, headers={
+                "User-Agent": "CastCast/1.0",
+                "Accept": "text/html",
+            })
+            response = urllib.request.urlopen(request, timeout=5.0)
+            html = response.read().decode("utf-8", errors="ignore")
+            match = re.search(r"<title[^>]*>\s*(.*?)\s*</title>", html,
+                              flags=re.IGNORECASE | re.DOTALL)
+            if match:
+                title = _clean_title(match.group(1))
+                if title:
+                    return title
+        except (OSError, ValueError):
+            pass
+
+    filename = urllib.parse.unquote(urllib.parse.urlsplit(raw_url).path.rsplit("/", 1)[-1])
+    filename = re.sub(r"\.[A-Za-z0-9]{2,5}$", "", filename)
+    return _clean_title(filename or raw_url)
 
 def parse_filename(filename: str):
     """Parses S01E02 or similar patterns to extract title, season, and episode."""

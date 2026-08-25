@@ -17,6 +17,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .service import CastService
+from .metadata import resolve_title
 
 API_PORT = 8765
 
@@ -186,41 +187,8 @@ class _Handler(BaseHTTPRequestHandler):
                         exists = True
                         break
                 
-                # Make intent URLs readable if title is missing
-                if not final_title:
-                    try:
-                        import ssl
-                        req_url = final_url
-                        if final_url.startswith("intent://"):
-                            qs = urllib.parse.parse_qs(urllib.parse.urlparse(final_url).query)
-                            gti = qs.get("gti", [""])[0]
-                            req_url = f"https://www.primevideo.com/region/na/detail/{gti}" if gti else ""
-                        
-                        if req_url:
-                            ctx = ssl.create_default_context()
-                            ctx.check_hostname = False
-                            ctx.verify_mode = ssl.CERT_NONE
-                            req = urllib.request.Request(req_url, headers={
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                                'Accept': 'text/html'
-                            })
-                            html = urllib.request.urlopen(req, context=ctx, timeout=5.0).read().decode('utf-8', errors='ignore')
-                            m = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
-                            if m:
-                                final_title = m.group(1).replace("Prime Video:", "").replace("Watch ", "").strip()
-                    except Exception as e:
-                        print(f"Scrape error: {e}")
-                
-                # Fallbacks if the web scrape fails
-                if not final_title and final_url.startswith("intent://"):
-                    parsed = urllib.parse.urlparse(final_url)
-                    qs = urllib.parse.parse_qs(parsed.query)
-                    gti = qs.get("gti", [""])[0]
-                    final_title = f"Amazon Title: {gti}" if gti else "Amazon Video (intent)"
-                elif not final_title:
-                    parsed = urllib.parse.urlparse(final_url)
-                    m = re.search(r'/detail/([a-zA-Z0-9]+)', parsed.path)
-                    final_title = f"Amazon Title: {m.group(1)}" if m else final_url.split("?")[0]
+                final_title = _clean_amazon_title(final_title) or resolve_title(
+                    final_url, provider="amazon")
 
                 if not exists:
                     self.service.amazon_queue.append({"url": final_url, "title": final_title})
@@ -435,6 +403,12 @@ def _extract_amazon_share_info(raw_text):
                     extracted_title = f"{show} S{season.zfill(2)}"
 
     return extracted_url, extracted_title
+
+
+def _clean_amazon_title(title: str) -> str:
+    """Clean user-supplied Amazon share text without another HTTP request."""
+    from .metadata import _clean_title
+    return _clean_title(title)
 
 
 class ApiServer:

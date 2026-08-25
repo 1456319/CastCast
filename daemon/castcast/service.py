@@ -19,6 +19,7 @@ from . import capability, health, remux
 from .channel import DEFAULT_TEXT_TRACK_STYLE
 from .discovery import CastDevice, DeviceCache, resolve
 from .mediaserver import MediaServer, guess_mime
+from .metadata import resolve_title
 from .opensubtitles import download_best, language3
 from .probe import FFMPEG, MediaInfo, ProbeError, have_ffmpeg, have_ffprobe, probe
 from .supervisor import State, Supervisor
@@ -152,6 +153,10 @@ class CastService:
 
     def save_amazon_queue(self):
         import json
+        for item in self.amazon_queue:
+            if isinstance(item, dict) and item.get("url"):
+                if not item.get("title"):
+                    item["title"] = resolve_title(item["url"], provider="amazon")
         os.makedirs(os.path.dirname(self.amazon_queue_path), exist_ok=True)
         try:
             with open(self.amazon_queue_path, "w") as f:
@@ -582,6 +587,8 @@ class CastService:
         if not self.supervisor:
             return {"error": "not connected to a device"}
 
+        resolved_title = resolve_title(path, provider="amazon")
+
         if offline_drm_token:
             self.log("Offline DRM token provided. Registering with local proxy.")
             license_url = self.media_server.add_drm_token(offline_drm_token)
@@ -679,7 +686,7 @@ class CastService:
                 self.supervisor.load(
                     path,
                     content_type=content_type,
-                    title="Widevine DRM Stream",
+                    title=resolved_title or "Widevine DRM Stream",
                     source_path=path,
                     license_url=license_url,
                     position=resume_pos
