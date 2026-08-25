@@ -19,14 +19,6 @@ import urllib.request
 import urllib.parse
 import urllib.error
 import json
-# NOTE FOR FUTURE CONTRIBUTORS:
-# 'time' and 'os' are currently unused but kept intentionally.
-# 'time' may be necessary groundwork for Chromecast Ultra capabilities, such as handling
-# token expiration checks locally or implementing DRM request backoff/retries.
-# 'os' could be useful for caching Amazon tokens/envelopes to disk to reduce API calls
-# when the Chromecast restarts a stream or buffers.
-import time
-import os
 import base64
 from .amazon import get_saved_auth, DEVICE_ID, DEVICE_TYPE_ID
 
