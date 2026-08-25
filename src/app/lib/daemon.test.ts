@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatDuration } from './daemon';
+import { formatDuration, formatBytes } from './daemon';
 
 describe('formatDuration', () => {
   it('should format 0 seconds correctly', () => {
@@ -42,5 +42,29 @@ describe('formatDuration', () => {
   it('should handle fractional seconds by flooring them', () => {
     expect(formatDuration(65.9)).toBe('1:05');
     expect(formatDuration(45.4)).toBe('0:45');
+  });
+
+  it('should handle negative durations', () => {
+    expect(formatDuration(-10)).toBe('0:00');
+    expect(formatDuration(-3600)).toBe('0:00');
+  });
+});
+
+describe('formatBytes', () => {
+  it('should format 0 bytes correctly', () => {
+    expect(formatBytes(0)).toBe('0 B');
+  });
+
+  it('should format bytes correctly', () => {
+    expect(formatBytes(500)).toBe('500 B');
+  });
+
+  it('should format KB correctly', () => {
+    expect(formatBytes(1024)).toBe('1.0 KB');
+    expect(formatBytes(1500)).toBe('1.5 KB');
+  });
+
+  it('should format MB correctly', () => {
+    expect(formatBytes(1048576)).toBe('1.0 MB');
   });
 });
