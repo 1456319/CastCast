@@ -626,14 +626,19 @@ class CastService:
         #          include lower-quality streams. The Chromecast Ultra natively supports H.265/HEVC
         #          at 4K — requesting only H.265 ensures we get the highest quality stream.
         # ========================================================================================
-        if "amazon.com" in path or "gti=" in path:
+        if "amazon.com" in path or "primevideo.com" in path or "gti=" in path:
             import urllib.parse
             from . import amazon_drm
             parsed = urllib.parse.urlparse(path)
             qs = urllib.parse.parse_qs(parsed.query)
             title_id = qs.get("gti", [""])[0]
             if not title_id:
-                return {"error": "Could not extract Amazon title ID (gti) from URL"}
+                import re
+                m = re.search(r'/detail/([a-zA-Z0-9]+)', parsed.path)
+                if m:
+                    title_id = m.group(1)
+            if not title_id:
+                return {"error": "Could not extract Amazon title ID from URL"}
                 
             self.log(f"Detected Amazon Title ID: {title_id}")
             amazon_data = amazon_drm.fetch_amazon_4k_manifest(title_id)

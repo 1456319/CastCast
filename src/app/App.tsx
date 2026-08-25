@@ -164,7 +164,7 @@ export default function App() {
       const result = await getSharedUrl();
       if (result.url) {
         const urlStr = result.url as string;
-        const isAmazon = urlStr.includes("amazon.com") || urlStr.includes("gti=");
+        const isAmazon = urlStr.includes("amazon.com") || urlStr.includes("primevideo.com") || urlStr.includes("gti=");
         const isPlaying = statusRef.current?.cast?.state && statusRef.current.cast.state !== "idle" && statusRef.current.cast.state !== "IDLE" && statusRef.current.cast.state !== "unknown" && statusRef.current.cast.state !== "dead" && statusRef.current.cast.state !== "disconnected";
         
         if (isAmazon && isPlaying) {
