@@ -94,8 +94,14 @@ export default function App() {
     try {
       setStatus(await daemon.status());
       setOnline(true);
-    } catch {
+      setNotice((prev) => (prev === 'Daemon process found, but unresponsive. You may need to Force Stop Termux.' ? null : prev));
+    } catch (err: any) {
       setOnline(false);
+      if (err instanceof Error && (err.message.includes('500') || err.name === 'SyntaxError' || err.message.includes('Unexpected token') || err.message.includes('Unexpected end of JSON input') || err.message.includes('Failed to parse'))) {
+        setNotice('Daemon process found, but unresponsive. You may need to Force Stop Termux.');
+      } else if (err instanceof Error && err.message.includes('Failed to fetch')) {
+        setNotice((prev) => (prev === 'Daemon process found, but unresponsive. You may need to Force Stop Termux.' ? null : prev));
+      }
     }
   }, []);
 
@@ -388,7 +394,7 @@ export default function App() {
         <div className="mx-auto max-w-md space-y-4 pt-16">
           <div className="flex items-center gap-2 text-emerald-400">
             <CircleAlert className="h-5 w-5" />
-            <span>daemon unreachable</span>
+            <span>{notice && notice.includes("unresponsive") ? "daemon zombie detected" : "daemon unreachable"}</span>
           </div>
           <p className="text-emerald-500/70">
             This UI is a face for the <span className="font-mono">castcast</span> daemon. A browser
@@ -406,7 +412,7 @@ export default function App() {
           <div className="font-mono text-emerald-500/50">expecting: {DAEMON_BASE}</div>
           {(launchMessage || notice) && (
             <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-300">
-              {notice ?? launchMessage}
+              {notice || launchMessage}
             </div>
           )}
           <div className="rounded border border-emerald-500/20 bg-black/40 p-3 text-xs text-emerald-500/70">

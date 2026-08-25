@@ -226,4 +226,27 @@ describe('App', () => {
       expect(daemonLib.daemon.reorderAmazonQueue).toHaveBeenCalled();
     });
   });
+
+  it('detects and warns about zombie daemon processes', async () => {
+    // Mock status to simulate a 500 or malformed JSON (a rejected promise due to fetch throw)
+    // specifically indicating the port is responsive but broken.
+    vi.mocked(daemonLib.daemon.status).mockRejectedValue(new Error('500 Internal Server Error'));
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Daemon process found, but unresponsive. You may need to Force Stop Termux.')).toBeInTheDocument();
+    });
+
+    cleanup();
+
+    vi.mocked(daemonLib.daemon.status).mockRejectedValue(new SyntaxError('Unexpected end of JSON input'));
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Daemon process found, but unresponsive. You may need to Force Stop Termux.')).toBeInTheDocument();
+    });
+
+  });
 });
