@@ -2,88 +2,69 @@
 
 # CastCast Synchronization Map & Checklist
 
-This document is a mandatory reference checklist for AI agents and developers. When modifying core features in CastCast, you MUST update all corresponding modules in the pipeline to ensure absolute runtime synchronicity between the Android App, the Python Daemon, and the Chromecast.
+This document is the authoritative inventory of architectural components, their roles, and their boundaries. It replaces the old scenario-based narrative with stable section IDs, inventories, and contract definitions.
 
-## 1. Modifying or Adding a Queue (e.g., Local, Amazon, Hulu)
+## Feature Placement Algorithm
 
-If you add a new queue or modify queue logic, ensure **ALL** of the following files are updated in lockstep:
+When adding a new feature or file, determine its placement using the following algorithm:
 
-*   **`daemon/castcast/service.py`:**
-    *   Add a persistent state array (e.g., `self.new_queue`).
-    *   Implement file I/O to load/save from `~/.config/castcast/new_queue.json`.
-    *   **CRITICAL (SSE):** Emit an event whenever the queue changes: `self._emit("new_queue", {"items": self.new_queue})`.
-    *   **CRITICAL (Auto-Advance):** Update `auto_advance(self, source_path)` to define where this queue sits in priority for continuous autoplay.
-*   **`daemon/castcast/api.py`:**
-    *   Add HTTP POST/GET routes in `do_POST` and `do_GET` (e.g., `/new_queue/add`, `/new_queue/reorder`, `/new_queue/remove`).
-    *   Ensure routes call the respective `self.service` methods.
-*   **`src/app/lib/daemon.ts`:**
-    *   Add strongly typed API wrapper methods (`addNewQueue`, `reorderNewQueue`, `getNewQueue`).
-    *   **CRITICAL:** Update `SubscribeArgs` interface to include the new SSE listener (e.g., `onNewQueue?: (data: any) => void;`).
-    *   **CRITICAL:** Update the `subscribe()` function to map the raw SSE stream to the new callback: `bind("new_queue", handlers.onNewQueue);`.
-*   **`src/app/App.tsx`:**
-    *   Create state for the queue (`useState`).
-    *   Register the SSE listener inside the `subscribe({ ... })` block in `useEffect` so the UI reactively updates across all devices.
-    *   Implement drag-and-drop (`handleDragStart`, `handleDragOver`, `handleDrop`). Ensure `handleDrop` safely falls back and re-fetches the actual queue from the daemon if the POST request fails.
-    *   Render the UI. Ensure play buttons inside the queue map to `daemon.cast()`.
+1. **Does it provide HTTP endpoints or SSE events?** -> `api-contract`
+2. **Is it a core daemon service/orchestrator?** -> `core-service`
+3. **Does it handle media streaming or proxying?** -> `media-routing`
+4. **Is it a standalone utility/middleware (e.g., metadata extraction)?** -> `utility-middleware`
+5. **Is it a web client adapter or UI component?** -> `web-client`
+6. **Does it bridge Android native code and web?** -> `android-bridge`
+7. **Is it related to the Chromecast receiver/sender?** -> `cast-sender-receiver`
+8. **Does it handle configuration or persistent state?** -> `config-state`
+9. **Is it a build script, daemon bootstrap, or release artifact?** -> `operations-release`
 
-## 1.5. Testing Synchronization via Vitest
+## Stable Section IDs & Inventories
 
-*   **`src/app/tests/setup.ts`**: Ensure mocks are accurately stubbing new global or Capacitor additions.
-*   **`src/app/tests/App.test.tsx`**: When a new queue or state item is added, ensure its polling, SSE integration, and explicit unsubscription behavior is represented in a unit test. Ensure that on server death (simulated via `daemon.shutdown()` or mock disconnections), SSE unsubscription and `setInterval` clearance occur to prevent UI memory leaks or hanging connections.
+*   **`core-service`**: Core daemon logic and orchestration. (e.g., `daemon/castcast/service.py`)
+*   **`api-contract`**: HTTP routes, SSE events, and frontend wrappers. (e.g., `daemon/castcast/api.py`, `src/app/lib/daemon.ts`)
+*   **`media-routing`**: Proxying, DRM, and media delivery. (e.g., `daemon/castcast/mediaserver.py`)
+*   **`utility-middleware`**: Standalone utilities and metadata extraction. (e.g., `daemon/castcast/metadata.py`)
+*   **`web-client`**: Frontend application and React components. (e.g., `src/app/App.tsx`)
+*   **`android-bridge`**: Capacitor plugins and Android native code. (e.g., `TermuxDaemonPlugin.java`)
+*   **`cast-sender-receiver`**: Chromecast receiver HTML/JS and sender logic. (e.g., `daemon/castcast/receiver/index.html`)
+*   **`config-state`**: Configuration files and persistent state storage.
+*   **`operations-release`**: Build scripts, daemon bootstrap, and release artifacts. (e.g., `termux_bootstrap.sh`)
 
-## 2. Adding New Dependencies
+## Contract Tables
 
-If a new system-level dependency is required (e.g., `node.js`, `ffmpeg`, `yt-dlp`):
+### HTTP Routes
+| Method | Path | Request Schema | Response Schema | Error Codes | Daemon Owner | Frontend Wrapper | Test |
+|---|---|---|---|---|---|---|---|
+| POST | `/new_queue/add` | ... | ... | ... | `api.py` | `daemon.ts` | ... |
+| GET | `/diagnostics/logs`| ... | ... | ... | `api.py` | `App.tsx` | ... |
 
-*   **`src/app/App.tsx` (Fallback Command):**
-    *   Update the informational "manual launch fallback" bash string that renders on the connection screen.
-    *   The string **must** include `apt-get` or `pkg install` commands to seamlessly check for and install the newly required module if it is missing.
-*   **`daemon/castcast/health.py` & `service.py`:**
-    *   Add health checks to ensure the daemon can verify the tool exists in `$PATH`.
-*   **`termux_bootstrap.sh`:**
-    *   Append the new dependency installation command so fresh setups pull it in immediately.
+### SSE Events
+| Name | Producer | Payload Schema | Frontend Subscriber/State Owner | Ordering/Replay Behavior | Test |
+|---|---|---|---|---|---|
+| `new_queue` | `service.py` | `{"items": [...]}` | `daemon.ts` | ... | ... |
+| `status` | `supervisor.py`| `{...}` | `App.tsx` | Single source of truth | ... |
 
-## 3. Player State, WebSockets & Connections
+### Config/Env Keys
+| Default | Owner | Type | Secret Classification | Validation | Health/UI Display | Migration |
+|---|---|---|---|---|---|---|
+| ... | ... | ... | ... | ... | ... | ... |
 
-When changing playback mechanics (Play/Pause, Stopping, Seeking):
+### Persistent State
+| Path | Schema/Version | Writer | Readers | Migration/Rollback | Test |
+|---|---|---|---|---|---|
+| `~/.config/castcast/new_queue.json` | JSON | `service.py` | `service.py` | ... | ... |
 
-*   **`daemon/castcast/supervisor.py`:**
-    *   This file is the single source of truth for Chromecast `status` tracking (position, volume, state). If a new command is added, you must send it via `NS_MEDIA` to the Chromecast.
-*   **`daemon/castcast/service.py`:**
-    *   Ensure `_watch(self)` handles saving the state (e.g., persistent resume feature) without breaking the 5-second network check loop.
-*   **`src/app/App.tsx`:**
-    *   **Unhook Risk:** Never disconnect the global `daemon.play` / `daemon.pause` mapping from the main player UI. Doing so breaks the remote control aspect of the app.
-    *   **Desync Risk:** Do not optimistically assume state. Always rely on the `status` object fed by the `onStatus` SSE pipeline for the single source of truth.
+### Native Plugins
+| TypeScript Signature | Java Method/Event | Registration | Permissions | Lifecycle Behavior | Test |
+|---|---|---|---|---|---|
+| `TermuxDaemonPlugin` | `launchTermux` | Capacitor | ... | ... | ... |
 
-## 4. Diagnostics & Logs
+### Receiver Contract
+| Sender Producer | Receiver Consumer | Payload Shape/Defaults | Compatibility Policy | Test |
+|---|---|---|---|---|
+| `supervisor.py` | `index.html` | ... | ... | ... |
 
-If you add a new module that can fail (e.g., a new scraping dependency):
-
-*   **`daemon/castcast/service.py`:**
-    *   Ensure errors from this new module are passed to `self.log(msg, "warn"|"error")` so they enter the daemon log buffer.
-*   **`daemon/castcast/api.py`:**
-    *   The `/diagnostics/logs` (Maximum Verbosity) endpoint should scrape any specific local audit files generated by the new dependency.
-*   **`src/app/App.tsx`:**
-    *   The Maximum Verbosity button/modal must accurately render these new diagnostics (remember to parse `res.json()` before displaying, not raw stringification).
-
-## 5. Media Routing (The Proxy)
-
-When routing new media types (e.g., Amazon, custom DRM, subtitles):
-
-*   **`daemon/castcast/mediaserver.py`:**
-    *   **CRITICAL (Range Headers):** The proxy MUST handle HTTP `Range` requests from Shaka Player (Chromecast). Hardcoding a `200 OK` for a range request will destroy the player's timeline math. You must proxy `206 Partial Content`, `Content-Range`, and `Accept-Ranges` headers identically to the upstream source.
-    *   **CRITICAL (DRM):** If adding a new streaming service, ensure its manifest (MPD) goes through the proxy so PSSH boxes can be injected, and ensure the DRM tokens are mapped properly in the license endpoint.
-
-## 6. Process Lifecycle & Cleanup (The Zombie Protocol)
-
-When the server receives a shutdown request, it must cleanly terminate all processes to prevent holding ports open.
-*   **`daemon/castcast/api.py` (`/shutdown`)**: Must invoke cleanup procedures before `os._exit(0)`.
-*   **`daemon/castcast/service.py`**: Must provide mechanisms to terminate all active subprocesses (`_remuxer.cancel()`, `media_server.stop()`).
-*   **Failure Consequence**: Thrown exceptions during shutdown (like `UnboundLocalError`) will abort the exit, creating zombie servers that hold onto the 8765 port, preventing new instances from binding.
-
-## 7. React Frontend Connection State & Splash Screen
-
-The UI splash screen ("Launch Daemon" button) is controlled by the frontend's polling and SSE event stream connection state.
-*   **`src/app/App.tsx` (Connection Polling)**: The polling interval must be strictly cleared upon manual shutdown (`clearInterval(pollIntervalRef.current)`).
-*   **`src/app/App.tsx` (SSE Listener)**: The event stream must be strictly unsubscribed (`unsubscribeRef.current()`) upon manual shutdown.
-*   **Failure Consequence**: If SSE subscriptions or polling loops are left active after a `kill server` event, the UI might momentarily hit the daemon as it's dying (or a newly launched daemon), immediately jumping the user back to the "Online" state when they actually requested a shutdown, or getting stuck "Waiting for 127.0.0.1:8765" if a zombie server is blocking the port but ignoring requests.
+### Build Artifacts
+| Source | Output | Generation Command | Whether Committed | Freshness Check |
+|---|---|---|---|---|
+| `daemon/` | `dist/daemon/` | `npm run build` | No | CI check |

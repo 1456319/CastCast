@@ -1,0 +1,43 @@
+version: 1
+defaults:
+  exclude:
+    - dist/**
+    - node_modules/**
+    - android/.gradle/**
+    - "**/*.lock"
+    - "src/app/components/ui/**"
+    - "src/app/components/figma/**"
+    - "daemon/tests/**"
+    - "android/app/src/test/**"
+    - "android/app/src/androidTest/**"
+
+files:
+  daemon/castcast/service.py:
+    section: core-service
+    role: daemon-orchestrator
+    boundaries: [api-contract, media-routing, config-state, operations-release]
+
+  daemon/castcast/api.py:
+    section: api-contract
+    role: http-and-sse-server
+    boundaries: [core-service, web-client, operations-release]
+
+  src/app/lib/daemon.ts:
+    section: api-contract
+    role: daemon-client-and-sse
+    boundaries: [core-service, web-client]
+
+  daemon/castcast/metadata.py:
+    section: utility-middleware
+    role: title-extraction
+    boundaries: [core-service, api-contract, web-client]
+
+  daemon/castcast/receiver/index.html:
+    section: cast-sender-receiver
+    role: custom-cast-receiver
+    boundaries: [media-routing, api-contract]
+
+  android/app/src/main/java/app/videoqualitychecker/castcast/TermuxDaemonPlugin.java:
+    section: android-bridge
+    role: termux-launch-plugin
+    boundaries: [web-client, config-state, operations-release]
