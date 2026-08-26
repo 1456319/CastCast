@@ -81,20 +81,17 @@ def process_file(file_path, expected_metadata, action, dry_run=False):
     except UnicodeDecodeError:
         return False, "Not valid UTF-8"
         
-    with open(file_path, 'r', encoding='utf-8', newline='') as f:
-        lines = f.readlines()
+    lines = content.splitlines(keepends=True)
         
     header_idx = -1
     existing_meta = None
     
-    # check for conflicting metadata (any line containing synchronization-map but not matching our pattern)
-    # Actually, we should check if there's any text saying "synchronization-map" that we didn't parse properly.
-    for i, line in enumerate(lines):
-        if "synchronization-map:" in line.lower():
+    # Check only the first 50 lines for headers
+    for i, line in enumerate(lines[:50]):
+        if re.match(r"^(#|//|<!--)\s*synchronization-map:", line, re.I):
             m = SYNC_HEADER_PATTERN.match(line.strip())
             if m:
                 if header_idx != -1:
-                    # Multiple headers found, that's a conflict
                     return False, f"Conflicting existing metadata: multiple headers found"
                 header_idx = i
                 existing_meta = m.groupdict()
