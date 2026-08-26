@@ -1,3 +1,4 @@
+# synchronization-map: section=media-routing; role=video-remuxer; boundaries=core-service,operations-release; doc=docs/SYNCHRONIZATION_MAP.md
 """Turn a ``Verdict`` into an ffmpeg command, and run it with progress.
 
 The guiding principle: **never re-encode video if a remux will do.**  Changing

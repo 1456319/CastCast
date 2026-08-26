@@ -1,3 +1,4 @@
+// synchronization-map: section=android-bridge; role=main-activity; boundaries=config-state; doc=docs/SYNCHRONIZATION_MAP.md
 package app.videoqualitychecker.castcast;
 
 import com.getcapacitor.BridgeActivity;

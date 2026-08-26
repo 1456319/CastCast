@@ -1,3 +1,4 @@
+# synchronization-map: section=core-service; role=cast-supervisor; boundaries=cast-sender-receiver; doc=docs/SYNCHRONIZATION_MAP.md
 # EDITING OF THIS FILE MAY CAUSE CATASTROPHIC APP DESYCHRONIZATION. Reference the directory at at ~/docs/synchronization_map.md to determine what other files must be adjusted in order to ensure absolute synchronization is maintained. This is to ensure that the APK, termux daemon, and chromecast portions of the app are always in synchronous, deterministic states.
 """The connection supervisor -- a VLC-style CASTv2 state machine that fights
 to keep the link up.

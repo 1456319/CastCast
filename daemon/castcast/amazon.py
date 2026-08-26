@@ -1,3 +1,4 @@
+# synchronization-map: section=media-routing; role=amazon-extraction; boundaries=utility-middleware; doc=docs/SYNCHRONIZATION_MAP.md
 import urllib.request
 import urllib.parse
 import json

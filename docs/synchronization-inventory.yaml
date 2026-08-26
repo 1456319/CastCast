@@ -1,43 +1,146 @@
 version: 1
 defaults:
   exclude:
-    - dist/**
-    - node_modules/**
-    - android/.gradle/**
-    - "**/*.lock"
-    - "src/app/components/ui/**"
-    - "src/app/components/figma/**"
-    - "daemon/tests/**"
-    - "android/app/src/test/**"
-    - "android/app/src/androidTest/**"
-
+  - dist/**
+  - node_modules/**
+  - android/.gradle/**
+  - '**/*.lock'
+  - src/app/components/ui/**
+  - src/app/components/figma/**
+  - daemon/tests/**
+  - android/app/src/test/**
+  - android/app/src/androidTest/**
+  - android/app/src/main/assets/**
+  - src/app/tests/**
+  - '**/*.test.ts'
+  - '**/__init__.py'
+  - '**/__main__.py'
 files:
   daemon/castcast/service.py:
     section: core-service
     role: daemon-orchestrator
-    boundaries: [api-contract, media-routing, config-state, operations-release]
-
+    boundaries:
+    - api-contract
+    - media-routing
+    - config-state
+    - operations-release
   daemon/castcast/api.py:
     section: api-contract
     role: http-and-sse-server
-    boundaries: [core-service, web-client, operations-release]
-
+    boundaries:
+    - core-service
+    - web-client
+    - operations-release
   src/app/lib/daemon.ts:
     section: api-contract
     role: daemon-client-and-sse
-    boundaries: [core-service, web-client]
-
+    boundaries:
+    - core-service
+    - web-client
   daemon/castcast/metadata.py:
     section: utility-middleware
     role: title-extraction
-    boundaries: [core-service, api-contract, web-client]
-
+    boundaries:
+    - core-service
+    - api-contract
+    - web-client
   daemon/castcast/receiver/index.html:
     section: cast-sender-receiver
     role: custom-cast-receiver
-    boundaries: [media-routing, api-contract]
-
+    boundaries:
+    - media-routing
+    - api-contract
   android/app/src/main/java/app/videoqualitychecker/castcast/TermuxDaemonPlugin.java:
     section: android-bridge
     role: termux-launch-plugin
-    boundaries: [web-client, config-state, operations-release]
+    boundaries:
+    - web-client
+    - config-state
+    - operations-release
+  daemon/castcast/rules.py:
+    section: media-routing
+    role: media-rules
+    boundaries:
+    - core-service
+  daemon/castcast/amazon.py:
+    section: media-routing
+    role: amazon-extraction
+    boundaries:
+    - utility-middleware
+  daemon/castcast/channel.py:
+    section: cast-sender-receiver
+    role: cast-channel
+    boundaries:
+    - core-service
+  daemon/castcast/remux.py:
+    section: media-routing
+    role: video-remuxer
+    boundaries:
+    - core-service
+    - operations-release
+  daemon/castcast/health.py:
+    section: utility-middleware
+    role: health-check
+    boundaries:
+    - api-contract
+  daemon/castcast/mediaserver.py:
+    section: media-routing
+    role: local-media-server
+    boundaries:
+    - core-service
+    - api-contract
+  daemon/castcast/amazon_drm.py:
+    section: media-routing
+    role: amazon-drm-handler
+    boundaries:
+    - utility-middleware
+  daemon/castcast/supervisor.py:
+    section: core-service
+    role: cast-supervisor
+    boundaries:
+    - cast-sender-receiver
+  daemon/castcast/discovery.py:
+    section: cast-sender-receiver
+    role: mdns-discovery
+    boundaries:
+    - core-service
+  daemon/castcast/probe.py:
+    section: media-routing
+    role: ffprobe-utility
+    boundaries:
+    - core-service
+  daemon/castcast/capability.py:
+    section: config-state
+    role: capabilities-state
+    boundaries:
+    - core-service
+  daemon/castcast/protobuf.py:
+    section: cast-sender-receiver
+    role: cast-protobufs
+    boundaries:
+    - cast-sender-receiver
+  daemon/castcast/opensubtitles.py:
+    section: media-routing
+    role: subtitle-conversion
+    boundaries:
+    - core-service
+  src/app/lib/discovery-browser.ts:
+    section: web-client
+    role: browser-mdns
+    boundaries:
+    - api-contract
+  src/app/lib/termux-daemon.ts:
+    section: web-client
+    role: termux-client
+    boundaries:
+    - android-bridge
+  android/app/src/main/java/app/videoqualitychecker/castcast/DiscoveryBrowserPlugin.java:
+    section: android-bridge
+    role: mdns-plugin
+    boundaries:
+    - web-client
+  android/app/src/main/java/app/videoqualitychecker/castcast/MainActivity.java:
+    section: android-bridge
+    role: main-activity
+    boundaries:
+    - config-state

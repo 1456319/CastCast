@@ -1,3 +1,4 @@
+// synchronization-map: section=web-client; role=termux-client; boundaries=android-bridge; doc=docs/SYNCHRONIZATION_MAP.md
 import { Capacitor, registerPlugin } from "@capacitor/core";
 
 export interface LaunchDaemonResult {

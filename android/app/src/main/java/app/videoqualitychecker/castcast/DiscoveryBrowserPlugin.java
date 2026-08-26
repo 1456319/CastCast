@@ -1,3 +1,4 @@
+// synchronization-map: section=android-bridge; role=mdns-plugin; boundaries=web-client; doc=docs/SYNCHRONIZATION_MAP.md
 package app.videoqualitychecker.castcast;
 
 import android.app.Dialog;

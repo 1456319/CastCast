@@ -1,3 +1,4 @@
+# synchronization-map: section=media-routing; role=amazon-drm-handler; boundaries=utility-middleware; doc=docs/SYNCHRONIZATION_MAP.md
 """
 Amazon Prime Video Widevine DRM Integration for 4K UHD Chromecast Streaming
 

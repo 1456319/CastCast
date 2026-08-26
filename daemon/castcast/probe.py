@@ -1,3 +1,4 @@
+# synchronization-map: section=media-routing; role=ffprobe-utility; boundaries=core-service; doc=docs/SYNCHRONIZATION_MAP.md
 """ffprobe wrapper -> a normalised description of a media file.
 
 This is the raw-fact layer.  It makes no judgements about castability; that is

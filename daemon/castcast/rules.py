@@ -1,3 +1,4 @@
+# synchronization-map: section=media-routing; role=media-rules; boundaries=core-service; doc=docs/SYNCHRONIZATION_MAP.md
 import json
 import os
 import time

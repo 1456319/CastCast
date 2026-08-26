@@ -1,3 +1,4 @@
+# synchronization-map: section=media-routing; role=local-media-server; boundaries=core-service,api-contract; doc=docs/SYNCHRONIZATION_MAP.md
 # EDITING OF THIS FILE MAY CAUSE CATASTROPHIC APP DESYCHRONIZATION. Reference the directory at at ~/docs/synchronization_map.md to determine what other files must be adjusted in order to ensure absolute synchronization is maintained. This is to ensure that the APK, termux daemon, and chromecast portions of the app are always in synchronous, deterministic states.
 """Local LAN HTTP server that the Chromecast pulls bytes from.
 

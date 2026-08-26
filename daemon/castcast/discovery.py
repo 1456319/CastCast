@@ -1,3 +1,4 @@
+# synchronization-map: section=cast-sender-receiver; role=mdns-discovery; boundaries=core-service; doc=docs/SYNCHRONIZATION_MAP.md
 """Chromecast discovery over mDNS, with no zeroconf dependency.
 
 The upstream Chromecast-Controller shelled out to ``avahi-browse`` ("why

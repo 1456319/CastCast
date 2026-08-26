@@ -1,3 +1,4 @@
+// synchronization-map: section=web-client; role=browser-mdns; boundaries=api-contract; doc=docs/SYNCHRONIZATION_MAP.md
 import { registerPlugin, PluginListenerHandle } from "@capacitor/core";
 
 export interface StreamDetectedEvent {
