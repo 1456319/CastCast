@@ -77,6 +77,7 @@ export interface LibraryItem extends Partial<Preflight> {
   path: string;
   name: string;
   rel: string;
+  title?: string;
   size_bytes: number;
 }
 

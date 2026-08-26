@@ -185,15 +185,16 @@ class _Handler(BaseHTTPRequestHandler):
                     final_title = "Fetching title..."
 
                 # Check for duplicates
-                exists = False
-                for item in self.service.amazon_queue:
-                    if item.get("url") == final_url:
-                        exists = True
-                        break
+                with self.service._lock:
+                    exists = False
+                    for item in self.service.amazon_queue:
+                        if item.get("url") == final_url:
+                            exists = True
+                            break
 
-                if not exists:
-                    self.service.amazon_queue.append({"url": final_url, "title": final_title})
-                    self.service.save_amazon_queue()
+                    if not exists:
+                        self.service.amazon_queue.append({"url": final_url, "title": final_title})
+                        self.service.save_amazon_queue()
                     
                     # If it's a bare URL with no extracted title, resolve asynchronously
                     if final_title == "Fetching title...":
@@ -203,15 +204,17 @@ class _Handler(BaseHTTPRequestHandler):
                 items = body.get("items")
                 if not isinstance(items, list):
                     return self._json({"error": "items must be a list"}, 400)
-                self.service.amazon_queue = items
-                self.service.save_amazon_queue()
+                with self.service._lock:
+                    self.service.amazon_queue = items
+                    self.service.save_amazon_queue()
                 return self._json({"success": True})
             elif route == "/amazon/queue/remove":
                 index = body.get("index")
-                if not isinstance(index, int) or index < 0 or index >= len(self.service.amazon_queue):
-                    return self._json({"error": "invalid index"}, 400)
-                self.service.amazon_queue.pop(index)
-                self.service.save_amazon_queue()
+                with self.service._lock:
+                    if not isinstance(index, int) or index < 0 or index >= len(self.service.amazon_queue):
+                        return self._json({"error": "invalid index"}, 400)
+                    self.service.amazon_queue.pop(index)
+                    self.service.save_amazon_queue()
                 return self._json({"success": True})
             elif route == "/cast":
                 path = body.get("path")

@@ -154,30 +154,32 @@ class CastService:
 
     def save_amazon_queue(self):
         import json
-        os.makedirs(os.path.dirname(self.amazon_queue_path), exist_ok=True)
-        try:
-            with open(self.amazon_queue_path, "w") as f:
-                json.dump(self.amazon_queue, f)
-            self._emit("amazon_queue", {"items": self.amazon_queue})
-        except Exception as e:
-            self.log(f"Failed to save amazon_queue: {e}", "warn")
+        with self._lock:
+            os.makedirs(os.path.dirname(self.amazon_queue_path), exist_ok=True)
+            try:
+                with open(self.amazon_queue_path, "w") as f:
+                    json.dump(self.amazon_queue, f)
+                self._emit("amazon_queue", {"items": self.amazon_queue})
+            except Exception as e:
+                self.log(f"Failed to save amazon_queue: {e}", "warn")
 
     def resolve_amazon_title_async(self, url: str):
+        import threading
+        from .metadata import resolve_title
         def worker():
             try:
-                from .metadata import resolve_title
                 real_title = resolve_title(url, provider="amazon")
                 if real_title and real_title != url:
-                    changed = False
-                    for item in self.amazon_queue:
-                        if item.get("url") == url:
-                            item["title"] = real_title
-                            changed = True
-                    if changed:
-                        self.save_amazon_queue()
+                    with self._lock:
+                        changed = False
+                        for item in self.amazon_queue:
+                            if item.get("url") == url:
+                                item["title"] = real_title
+                                changed = True
+                        if changed:
+                            self.save_amazon_queue()
             except Exception as e:
                 self.log(f"Async title resolution failed for {url}: {e}", "warn")
-        import threading
         threading.Thread(target=worker, daemon=True, name="TitleResolverThread").start()
 
     def _config_value(self, key: str, env_name: str) -> str:
@@ -574,12 +576,13 @@ class CastService:
     # -- casting -----------------------------------------------------------
 
     def auto_advance(self, source_path: str) -> None:
-        if hasattr(self, "amazon_queue") and self.amazon_queue:
-            next_item = self.amazon_queue.pop(0)
-            self.save_amazon_queue()
-            self.log(f"amazon_queue auto-advancing to {next_item.get('title', next_item.get('url'))}")
-            threading.Thread(target=self.cast, args=(next_item["url"],), daemon=True).start()
-            return
+        with self._lock:
+            if hasattr(self, "amazon_queue") and self.amazon_queue:
+                next_item = self.amazon_queue.pop(0)
+                self.save_amazon_queue()
+                self.log(f"amazon_queue auto-advancing to {next_item.get('title', next_item.get('url'))}")
+                threading.Thread(target=self.cast, args=(next_item["url"],), daemon=True).start()
+                return
 
         entries = self.library(deep=False)
         for i, entry in enumerate(entries):

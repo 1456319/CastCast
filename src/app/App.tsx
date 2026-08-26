@@ -191,7 +191,7 @@ export default function App() {
         } else {
           setNotice(`Extracting streams, please wait...`);
           try {
-            await daemon.cast(urlStr, true);
+            await daemon.cast(urlStr, true, undefined, undefined, "Amazon Video");
             setNotice(`Success! Sending stream to TV...`);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -353,7 +353,7 @@ export default function App() {
   const doCast = (allowUnsafe = false) =>
     selected &&
     run("cast", async () => {
-      const result = await daemon.cast(selected.path, allowUnsafe, selectedAudioId, selectedSubtitleId);
+      const result = await daemon.cast(selected.path, allowUnsafe, selectedAudioId, selectedSubtitleId, selected.title);
       if (result.error) setNotice(result.error);
       if (result.converting) setNotice("Conversion started — cast again when it finishes.");
       if (result.casting) markLoading(selected.name, selected.path);
