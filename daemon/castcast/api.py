@@ -1,3 +1,4 @@
+# synchronization-map: section=api-contract; role=http-and-sse-server; boundaries=core-service,web-client,operations-release; doc=docs/SYNCHRONIZATION_MAP.md
 # EDITING OF THIS FILE MAY CAUSE CATASTROPHIC APP DESYCHRONIZATION. Reference the directory at at ~/docs/synchronization_map.md to determine what other files must be adjusted in order to ensure absolute synchronization is maintained. This is to ensure that the APK, termux daemon, and chromecast portions of the app are always in synchronous, deterministic states.
 """Local JSON control API + SSE event stream.
 

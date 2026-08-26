@@ -1,3 +1,4 @@
+// synchronization-map: section=android-bridge; role=termux-launch-plugin; boundaries=web-client,config-state,operations-release; doc=docs/SYNCHRONIZATION_MAP.md
 package app.videoqualitychecker.castcast;
 
 import android.content.Intent;

@@ -1,0 +1,44 @@
+name: Synchronization Map Assurance
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install PyYAML
+        run: pip install PyYAML
+
+      - name: Install NPM dependencies
+        run: npm ci || npm install
+
+      - name: Validate Synchronization Headers
+        run: python scripts/check_sync_headers.py
+
+      - name: Frontend Tests
+        run: npm test
+
+      - name: Daemon Tests
+        run: PYTHONPATH=daemon python -m unittest discover -s daemon/tests -v
+
+      - name: Build Freshness Check
+        run: npm run build

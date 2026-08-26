@@ -1,3 +1,4 @@
+# synchronization-map: section=utility-middleware; role=title-extraction; boundaries=core-service,api-contract,web-client; doc=docs/SYNCHRONIZATION_MAP.md
 import re
 import urllib.request
 import urllib.parse
