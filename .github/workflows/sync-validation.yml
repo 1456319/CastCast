@@ -26,7 +26,7 @@ jobs:
           python-version: '3.11'
           
       - name: Install PyYAML
-        run: pip install PyYAML
+        run: pip install PyYAML pytest
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v3
@@ -44,7 +44,7 @@ jobs:
         run: pnpm test
 
       - name: Daemon Tests
-        run: PYTHONPATH=daemon python -m unittest discover -s daemon/tests -v
+        run: PYTHONPATH=daemon pytest daemon/tests -v
 
       - name: Build Freshness Check
         run: pnpm run build
