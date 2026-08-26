@@ -182,7 +182,7 @@ class _Handler(BaseHTTPRequestHandler):
                 final_title = title if title else extracted_title
 
                 if not final_title:
-                    final_title = resolve_title(final_url, provider="amazon")
+                    final_title = "Fetching title..."
 
                 # Check for duplicates
                 exists = False
@@ -194,6 +194,10 @@ class _Handler(BaseHTTPRequestHandler):
                 if not exists:
                     self.service.amazon_queue.append({"url": final_url, "title": final_title})
                     self.service.save_amazon_queue()
+                    
+                    # If it's a bare URL with no extracted title, resolve asynchronously
+                    if final_title == "Fetching title...":
+                        self.service.resolve_amazon_title_async(final_url)
                 return self._json({"success": True})
             elif route == "/amazon/queue/reorder":
                 items = body.get("items")
@@ -211,6 +215,7 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json({"success": True})
             elif route == "/cast":
                 path = body.get("path")
+                title = body.get("title")
                 if not path:
                     return self._json({"error": "path is required"}, 400)
                 self._json(svc.cast(path,
@@ -219,7 +224,8 @@ class _Handler(BaseHTTPRequestHandler):
                                     audio_index=body.get("audio_index"),
                                     subtitle_index=body.get("subtitle_index"),
                                     license_url=body.get("license_url"),
-                                    offline_drm_token=body.get("offline_drm_token")))
+                                    offline_drm_token=body.get("offline_drm_token"),
+                                    title=title))
             elif route == "/subtitles/opensubtitles":
                 path = body.get("path")
                 if not path:

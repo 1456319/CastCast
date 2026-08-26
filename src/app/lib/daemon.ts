@@ -143,10 +143,16 @@ export const daemon = {
   preflight: (path: string) => request<Preflight>(`/preflight?path=${encodeURIComponent(path)}`),
   connect: (host: string, port = 8009) => post<Status>("/connect", { host, port }),
   disconnect: () => post<Status>("/disconnect"),
-  cast: (path: string, allowUnsafe = false, audioIndex?: number | null, subtitleIndex?: number | null) =>
+    cast: (
+    path: string, 
+    allowUnsafe = false, 
+    audioIndex?: number | null, 
+    subtitleIndex?: number | null,
+    title?: string
+  ) =>
     post<Preflight & { casting?: boolean; url?: string; converting?: boolean; requires_confirmation?: boolean }>(
       "/cast",
-      { path, allow_unsafe: allowUnsafe, audio_index: audioIndex, subtitle_index: subtitleIndex },
+      { path, allow_unsafe: allowUnsafe, audio_index: audioIndex, subtitle_index: subtitleIndex, title },
     ),
   queue: (paths: string[]) =>
     post<{ queued?: number; skipped?: number; preparing?: number; error?: string }>("/queue", { paths }),

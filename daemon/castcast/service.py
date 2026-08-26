@@ -162,6 +162,24 @@ class CastService:
         except Exception as e:
             self.log(f"Failed to save amazon_queue: {e}", "warn")
 
+    def resolve_amazon_title_async(self, url: str):
+        def worker():
+            try:
+                from .metadata import resolve_title
+                real_title = resolve_title(url, provider="amazon")
+                if real_title and real_title != url:
+                    changed = False
+                    for item in self.amazon_queue:
+                        if item.get("url") == url:
+                            item["title"] = real_title
+                            changed = True
+                    if changed:
+                        self.save_amazon_queue()
+            except Exception as e:
+                self.log(f"Async title resolution failed for {url}: {e}", "warn")
+        import threading
+        threading.Thread(target=worker, daemon=True, name="TitleResolverThread").start()
+
     def _config_value(self, key: str, env_name: str) -> str:
         return str(self.config.get(key) or os.environ.get(env_name, ""))
 
@@ -343,6 +361,7 @@ class CastService:
                         "path": full,
                         "name": filename,
                         "rel": os.path.relpath(full, root),
+                        "title": resolve_title(full),
                         "size_bytes": _size(full),
                     }
                     if deep:
@@ -577,7 +596,7 @@ class CastService:
              auto_prepare: bool = True, subtitle_path: str = "",
              subtitle_language: str = "", audio_index: Optional[int] = None,
              subtitle_index: Optional[int] = None, license_url: str = None,
-             offline_drm_token: str = None) -> dict:
+             offline_drm_token: str = None, title: str = None) -> dict:
         """The whole pipeline: pre-flight, convert if needed, serve, LOAD."""
         if not self.supervisor:
             return {"error": "not connected to a device"}
@@ -679,7 +698,7 @@ class CastService:
                 self.supervisor.load(
                     path,
                     content_type=content_type,
-                    title="Widevine DRM Stream",
+                    title=title or resolve_title(path),
                     source_path=path,
                     license_url=license_url,
                     position=resume_pos

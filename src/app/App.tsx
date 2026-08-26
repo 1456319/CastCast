@@ -715,7 +715,7 @@ export default function App() {
                   }`}
                 >
                   <FileVideo className="h-3.5 w-3.5 shrink-0 text-emerald-500/50" />
-                  <span className="min-w-0 flex-1 truncate text-emerald-200">{item.rel}</span>
+                  <span className="min-w-0 flex-1 truncate text-emerald-200" title={item.rel}>{item.title || item.rel}</span>
                   <span className="shrink-0 font-mono text-emerald-500/40">
                     {formatBytes(item.size_bytes)}
                   </span>
@@ -764,7 +764,7 @@ export default function App() {
                   className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left cursor-pointer hover:bg-emerald-500/10`}
                   onClick={() => {
                      // Optionally cast the amazon url
-                     daemon.cast(item.url, true).catch(e => setNotice(String(e)));
+                     daemon.cast(item.url, true, undefined, undefined, item.title).catch(e => setNotice(String(e)));
                   }}
                 >
                   <FileVideo className="h-3.5 w-3.5 shrink-0 text-emerald-500/50" />
