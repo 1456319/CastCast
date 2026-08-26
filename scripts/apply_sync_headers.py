@@ -134,6 +134,9 @@ def process_file(file_path, expected_metadata, action, dry_run=False):
             
     lines.insert(insert_idx, expected_header + newline_char)
     
+    # Preserve executable bit
+    original_mode = os.stat(file_path).st_mode
+    
     with open(file_path, 'wb') as f:
         if bom:
             f.write(bom)
@@ -141,7 +144,7 @@ def process_file(file_path, expected_metadata, action, dry_run=False):
             f.write(line.encode('utf-8'))
             
     # Preserve executable bit
-    os.chmod(file_path, os.stat(file_path).st_mode)
+    os.chmod(file_path, original_mode)
             
     return True, "Updated header" if existing_meta else "Added header"
 

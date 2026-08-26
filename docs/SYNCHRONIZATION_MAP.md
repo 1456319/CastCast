@@ -36,13 +36,13 @@ When adding a new feature or file, determine its placement using the following a
 | Method | Path | Request Schema | Response Schema | Error Codes | Daemon Owner | Frontend Wrapper | Test |
 |---|---|---|---|---|---|---|---|
 | POST | `/new_queue/add` | ... | ... | ... | `api.py` | `daemon.ts` | ... |
-| GET | `/diagnostics/logs`| ... | ... | ... | `api.py` | `App.tsx` | ... |
+| GET | `/diagnostics/logs` | ... | ... | ... | `api.py` | `App.tsx` | ... |
 
 ### SSE Events
 | Name | Producer | Payload Schema | Frontend Subscriber/State Owner | Ordering/Replay Behavior | Test |
 |---|---|---|---|---|---|
 | `new_queue` | `service.py` | `{"items": [...]}` | `daemon.ts` | ... | ... |
-| `status` | `supervisor.py`| `{...}` | `App.tsx` | Single source of truth | ... |
+| `status` | `supervisor.py` | `{...}` | `App.tsx` | Single source of truth | ... |
 
 ### Config/Env Keys
 | Default | Owner | Type | Secret Classification | Validation | Health/UI Display | Migration |
