@@ -118,20 +118,24 @@ def _clean_title(raw_title: str) -> str:
     return clean
 
 def resolve_title(raw_url: str, provider: str = None) -> str:
+    if not isinstance(raw_url, str) or not raw_url.strip():
+        return "Unknown title"
+
     if "proxy/?url=" in raw_url:
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(raw_url).query)
         b64_url = qs.get("url", [""])[0]
         if b64_url:
             try:
                 decoded = base64.b64decode(b64_url).decode('utf-8')
-                filename = decoded.split('/')[-1]
+                filename = urllib.parse.unquote(decoded.split('/')[-1])
                 if '.' in filename:
                     filename = filename.rsplit('.', 1)[0]
                 return _clean_title(filename)
             except Exception:
                 pass
 
-    if provider == "amazon" or "primevideo.com" in raw_url or "amzn1.dv.gti" in raw_url:
+    is_amazon = provider == "amazon" or "primevideo.com" in raw_url or "amzn1.dv.gti" in raw_url
+    if is_amazon:
         req_url = raw_url
         if "amzn1.dv.gti" in raw_url and "http" not in raw_url:
             req_url = f"https://www.primevideo.com/region/na/detail/{raw_url}"
@@ -153,14 +157,16 @@ def resolve_title(raw_url: str, provider: str = None) -> str:
                 html = urllib.request.urlopen(req, context=ctx, timeout=5.0).read().decode('utf-8', errors='ignore')
                 m = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
                 if m:
-                    title = m.group(1)
-                    return _clean_title(title)
+                    title = m.group(1).strip()
+                    if title:
+                        return _clean_title(title)
             except Exception:
                 pass
+        return "Amazon Video"
 
     try:
         path = urllib.parse.urlparse(raw_url).path
-        filename = path.split('/')[-1]
+        filename = urllib.parse.unquote(path.split('/')[-1])
         if filename:
             if '.' in filename:
                 filename = filename.rsplit('.', 1)[0]
@@ -168,4 +174,5 @@ def resolve_title(raw_url: str, provider: str = None) -> str:
     except Exception:
         pass
 
-    return _clean_title(raw_url)
+    fallback = _clean_title(raw_url)
+    return fallback if fallback else "Unknown title"

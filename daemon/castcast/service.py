@@ -169,17 +169,18 @@ class CastService:
         def worker():
             try:
                 real_title = resolve_title(url, provider="amazon")
-                if real_title and real_title != url:
-                    with self._lock:
-                        changed = False
-                        for item in self.amazon_queue:
-                            if item.get("url") == url:
-                                item["title"] = real_title
-                                changed = True
-                        if changed:
-                            self.save_amazon_queue()
             except Exception as e:
                 self.log(f"Async title resolution failed for {url}: {e}", "warn")
+                real_title = "Amazon Video"
+            
+            with self._lock:
+                changed = False
+                for item in self.amazon_queue:
+                    if item.get("url") == url and item.get("title") == "Fetching title...":
+                        item["title"] = real_title
+                        changed = True
+                if changed:
+                    self.save_amazon_queue()
         threading.Thread(target=worker, daemon=True, name="TitleResolverThread").start()
 
     def _config_value(self, key: str, env_name: str) -> str:

@@ -68,3 +68,36 @@ class TestTitleCleaning:
         assert _clean_title("Some Show S01E05 720p WEBRip") == "Some Show S01E05"
         assert _clean_title("Watch Some Movie | Prime Video") == "Some Movie"
         assert _clean_title("Prime Video: Another Show") == "Another Show"
+
+class TestMetadataRobustness:
+    def test_invalid_inputs(self):
+        assert resolve_title(None) == "Unknown title"
+        assert resolve_title("") == "Unknown title"
+        assert resolve_title("   ") == "Unknown title"
+        assert resolve_title(123) == "Unknown title"
+
+    def test_url_encoded_filename(self):
+        url = "https://cdn.example.test/media/My%20Movie.2024.mp4?token=secret"
+        assert resolve_title(url) == "My Movie.2024"
+
+    @patch('urllib.request.urlopen')
+    def test_amazon_network_failure(self, mock_urlopen):
+        import urllib.error
+        # Mock a timeout or DNS failure
+        mock_urlopen.side_effect = urllib.error.URLError("Timeout")
+        
+        # When Amazon URL fails to fetch
+        title = resolve_title("https://www.primevideo.com/detail/1234", provider="amazon")
+        
+        # It should fall back to "Amazon Video" (the fallback added in the refactor)
+        assert title == "Amazon Video"
+
+    @patch('urllib.request.urlopen')
+    def test_amazon_no_title(self, mock_urlopen):
+        # Mock HTML with no title tag
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"<html><body>No title here</body></html>"
+        mock_urlopen.return_value = mock_response
+
+        title = resolve_title("https://www.primevideo.com/detail/5678", provider="amazon")
+        assert title == "Amazon Video"
