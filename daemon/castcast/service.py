@@ -582,7 +582,12 @@ class CastService:
                 next_item = self.amazon_queue.pop(0)
                 self.save_amazon_queue()
                 self.log(f"amazon_queue auto-advancing to {next_item.get('title', next_item.get('url'))}")
-                threading.Thread(target=self.cast, args=(next_item["url"],), daemon=True).start()
+                threading.Thread(
+                    target=self.cast,
+                    args=(next_item["url"],),
+                    kwargs={"title": next_item.get("title")},
+                    daemon=True,
+                ).start()
                 return
 
         entries = self.library(deep=False)
@@ -853,15 +858,19 @@ class CastService:
             return {**report, "error": str(exc)}
 
         title_base = os.path.basename(path)
-        tmdb_key = self.config.get("tmdb_api_key", "")
-
-        # Fast non-blocking TMDB scrape
-        tmdb = TMDBClient(tmdb_key)
-        enriched = tmdb.enrich(title_base)
-
-        title = enriched["title"]
-        subtitle = enriched["subtitle"]
-        poster_url = enriched["poster_url"]
+        if not title:
+            tmdb_key = self.config.get("tmdb_api_key", "")
+            # Fast non-blocking TMDB scrape
+            tmdb = TMDBClient(tmdb_key)
+            enriched = tmdb.enrich(title_base)
+            title = enriched["title"]
+            subtitle = enriched.get("subtitle", "")
+            poster_url = enriched.get("poster_url", "")
+            backdrop_url = enriched.get("backdrop_url", "")
+        else:
+            subtitle = ""
+            poster_url = ""
+            backdrop_url = ""
 
         tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
         if audio_index is not None:
@@ -879,7 +888,7 @@ class CastService:
             title=title,
             subtitle=subtitle,
             poster_url=poster_url,
-            backdrop_url=enriched.get("backdrop_url", ""),
+            backdrop_url=backdrop_url,
             duration=float(info.get("duration_s") or 0.0),
             source_path=path,
             tracks=tracks,

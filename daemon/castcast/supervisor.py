@@ -213,6 +213,7 @@ class Supervisor:
             self.status.has_text_tracks = bool(tracks)
         self._log(f"queued LOAD {title or url}")
         self._try_load()
+        self._emit("media", self.snapshot())
 
     def queue_insert(self, item: dict) -> None:
         """Append an item to the current queue."""
@@ -256,6 +257,7 @@ class Supervisor:
 
         self._log(f"queued QUEUE_LOAD with {len(items)} items")
         self._try_load()
+        self._emit("media", self.snapshot())
 
     def play(self) -> Optional[int]:
         return self._media_command({"type": "PLAY"})
