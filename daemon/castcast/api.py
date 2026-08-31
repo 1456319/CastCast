@@ -195,7 +195,7 @@ class _Handler(BaseHTTPRequestHandler):
                     if not exists:
                         self.service.amazon_queue.append({"url": final_url, "title": final_title})
                         self.service.save_amazon_queue()
-                    
+
                     # If it's a bare URL with no extracted title, resolve asynchronously
                     if final_title == "Fetching title...":
                         self.service.resolve_amazon_title_async(final_url)
@@ -272,7 +272,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b'{"status": "ok"}')
-                
+
                 # Graceful cleanup of all processes and threads
                 try:
                     if hasattr(svc, "_remuxer") and svc._remuxer:
@@ -280,7 +280,7 @@ class _Handler(BaseHTTPRequestHandler):
                     svc.stop()
                 except Exception as e:
                     print(f"Error during shutdown cleanup: {e}")
-                    
+
                 import os
                 os._exit(0)
             elif route == "/discovery/intercept":

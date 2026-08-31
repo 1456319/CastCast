@@ -110,11 +110,12 @@ def _clean_title(raw_title: str) -> str:
 
     tags = [r'1080p', r'720p', r'2160p', r'4k', r'x264', r'x265', r'hevc', r'web-dl', r'bluray', r'hdtv', r'xvid', r'aac', r'ac3', r'dts', r'webrip']
     for tag in tags:
-        # Match tag bounded by word boundary or underscore
-        clean = re.sub(r'(?i)(?:^|\b|_)' + tag + r'(?:$|\b|_)', ' ', clean)
+        # Match tag bounded by word boundary, dot, or underscore
+        clean = re.sub(r'(?i)(?:\b|[._])' + tag + r'(?:\b|[._])', ' ', clean)
 
+    clean = re.sub(r'(?:\s*\.\s*)+', '.', clean)
     clean = re.sub(r'\s+', ' ', clean).strip()
-    clean = re.sub(r'_+$', '', clean)
+    clean = re.sub(r'^[._\s]+|[._\s]+$', '', clean)
     return clean
 
 def resolve_title(raw_url: str, provider: str = None) -> str:

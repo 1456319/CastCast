@@ -1,3 +1,4 @@
+// DO NOT change the contents or parameters of the vitest suite without expressed, written, human permission. if a UI-rendering vitest fails, we will know with certainty.
 import { render, screen, waitFor, act, fireEvent, cleanup } from '@testing-library/react';
 import App from '../App';
 import * as daemonLib from '../lib/daemon';
@@ -13,7 +14,9 @@ vi.mock('../lib/daemon', async (importOriginal) => {
       getAmazonQueue: vi.fn(),
       getTrash: vi.fn(),
       library: vi.fn(),
-      reorderAmazonQueue: vi.fn()
+      reorderAmazonQueue: vi.fn(),
+      cast: vi.fn(),
+      preflight: vi.fn(),
     },
     subscribe: vi.fn()
   };
@@ -247,6 +250,83 @@ describe('App', () => {
     await waitFor(() => {
       expect(screen.getByText('Daemon process found, but unresponsive. You may need to Force Stop Termux.')).toBeInTheDocument();
     });
+  });
 
+  it('renders pre-resolved titles in library and passes title when casting', async () => {
+    // DO NOT change the contents or parameters of the vitest suite without expressed, written, human permission. if a UI-rendering vitest fails, we will know with certainty.
+    vi.mocked(daemonLib.daemon.status).mockResolvedValue({
+      connected: true,
+      device: { host: '192.168.1.100', friendly_name: 'Living Room TV', model: 'Chromecast', is_ultra: true },
+      media_server: { base_url: '', lan_ip: '', port: 0, roots: [] },
+      tools: { ffmpeg: true, ffprobe: true, yt_dlp: true },
+      remux: null,
+      cast: {
+        state: 'idle', position: 0, duration: 0, volume: 1, muted: false,
+        title: '', reconnects: 0, stream_stalls: 0, last_error: '',
+        idle_reason: '', source_path: ''
+      }
+    });
+
+    vi.mocked(daemonLib.daemon.library).mockResolvedValue({
+      items: [
+        {
+          path: '/storage/media/My.Super.Clean.Movie.1080p.mp4',
+          name: 'My.Super.Clean.Movie.1080p.mp4',
+          rel: 'My.Super.Clean.Movie.1080p.mp4',
+          title: 'My Super Clean Movie',
+          size_bytes: 104857600
+        }
+      ]
+    });
+    vi.mocked(daemonLib.daemon.preflight).mockResolvedValue({
+      verdict: { castable: true, needs_processing: false, issues: [], video_action: 'copy', audio_action: 'copy' },
+      media: {
+        duration_s: 120,
+        video: [{ codec: 'h264', width: 1920, height: 1080, fps: 24, pix_fmt: 'yuv420p' }],
+        audio: [{ index: 1, codec: 'aac', language: 'eng', channels: 2 }],
+        subtitles: []
+      }
+    });
+    vi.mocked(daemonLib.daemon.cast).mockResolvedValue({ casting: true });
+
+    render(<App />);
+
+    await act(async () => {
+      vi.advanceTimersByTime(100);
+    });
+
+    // Tap scan button to load library items
+    const scanButton = screen.getByRole('button', { name: /scan/i });
+    await act(async () => {
+      fireEvent.click(scanButton);
+    });
+
+    // Verify pre-resolved title is rendered
+    await waitFor(() => {
+      expect(screen.getByText('My Super Clean Movie')).toBeInTheDocument();
+    });
+
+    // Select the library item
+    const itemElement = screen.getByText('My Super Clean Movie');
+    await act(async () => {
+      fireEvent.click(itemElement);
+    });
+
+    // Click cast button
+    const castButton = screen.getByRole('button', { name: /^cast$/i });
+    await act(async () => {
+      fireEvent.click(castButton);
+    });
+
+    // Verify daemon.cast was invoked with the pre-resolved title
+    await waitFor(() => {
+      expect(daemonLib.daemon.cast).toHaveBeenCalledWith(
+        '/storage/media/My.Super.Clean.Movie.1080p.mp4',
+        false,
+        null,
+        null,
+        'My Super Clean Movie'
+      );
+    });
   });
 });

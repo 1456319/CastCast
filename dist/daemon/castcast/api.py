@@ -1,3 +1,4 @@
+# synchronization-map: section=api-contract; role=http-and-sse-server; boundaries=core-service,web-client,operations-release; doc=docs/SYNCHRONIZATION_MAP.md
 # EDITING OF THIS FILE MAY CAUSE CATASTROPHIC APP DESYCHRONIZATION. Reference the directory at at ~/docs/synchronization_map.md to determine what other files must be adjusted in order to ensure absolute synchronization is maintained. This is to ensure that the APK, termux daemon, and chromecast portions of the app are always in synchronous, deterministic states.
 """Local JSON control API + SSE event stream.
 
@@ -9,13 +10,15 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.parse
+import urllib.request
 import queue
 import threading
-import urllib.parse
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .service import CastService
+from .metadata import resolve_title
 
 API_PORT = 8765
 
@@ -178,69 +181,44 @@ class _Handler(BaseHTTPRequestHandler):
                 final_url = extracted_url if extracted_url else url_raw
                 final_title = title if title else extracted_title
 
-                # Check for duplicates
-                exists = False
-                for item in self.service.amazon_queue:
-                    if item.get("url") == final_url:
-                        exists = True
-                        break
-                
-                # Make intent URLs readable if title is missing
                 if not final_title:
-                    try:
-                        import urllib.request
-                        req_url = final_url
-                        if final_url.startswith("intent://"):
-                            # Convert intent back to a fetchable URL if possible, or just extract the gti
-                            import urllib.parse
-                            qs = urllib.parse.parse_qs(urllib.parse.urlparse(final_url).query)
-                            gti = qs.get("gti", [""])[0]
-                            req_url = f"https://www.primevideo.com/region/na/detail/{gti}" if gti else ""
-                        
-                        if req_url:
-                            req = urllib.request.Request(req_url, headers={
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                                'Accept-Language': 'en-US,en;q=0.5'
-                            })
-                            html = urllib.request.urlopen(req, timeout=3.0).read().decode('utf-8', errors='ignore')
-                            m = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
-                            if m:
-                                final_title = m.group(1).replace("Prime Video:", "").strip()
-                    except Exception:
-                        pass
-                
-                # Fallbacks if the web scrape fails
-                if not final_title and final_url.startswith("intent://"):
-                    parsed = urllib.parse.urlparse(final_url)
-                    qs = urllib.parse.parse_qs(parsed.query)
-                    gti = qs.get("gti", [""])[0]
-                    final_title = f"Amazon Title: {gti}" if gti else "Amazon Video (intent)"
-                elif not final_title:
-                    parsed = urllib.parse.urlparse(final_url)
-                    m = re.search(r'/detail/([a-zA-Z0-9]+)', parsed.path)
-                    final_title = f"Amazon Title: {m.group(1)}" if m else final_url.split("?")[0]
+                    final_title = "Fetching title..."
 
-                if not exists:
-                    self.service.amazon_queue.append({"url": final_url, "title": final_title})
-                    self.service.save_amazon_queue()
+                # Check for duplicates
+                with self.service._lock:
+                    exists = False
+                    for item in self.service.amazon_queue:
+                        if item.get("url") == final_url:
+                            exists = True
+                            break
+
+                    if not exists:
+                        self.service.amazon_queue.append({"url": final_url, "title": final_title})
+                        self.service.save_amazon_queue()
+
+                    # If it's a bare URL with no extracted title, resolve asynchronously
+                    if final_title == "Fetching title...":
+                        self.service.resolve_amazon_title_async(final_url)
                 return self._json({"success": True})
             elif route == "/amazon/queue/reorder":
                 items = body.get("items")
                 if not isinstance(items, list):
                     return self._json({"error": "items must be a list"}, 400)
-                self.service.amazon_queue = items
-                self.service.save_amazon_queue()
+                with self.service._lock:
+                    self.service.amazon_queue = items
+                    self.service.save_amazon_queue()
                 return self._json({"success": True})
             elif route == "/amazon/queue/remove":
                 index = body.get("index")
-                if not isinstance(index, int) or index < 0 or index >= len(self.service.amazon_queue):
-                    return self._json({"error": "invalid index"}, 400)
-                self.service.amazon_queue.pop(index)
-                self.service.save_amazon_queue()
+                with self.service._lock:
+                    if not isinstance(index, int) or index < 0 or index >= len(self.service.amazon_queue):
+                        return self._json({"error": "invalid index"}, 400)
+                    self.service.amazon_queue.pop(index)
+                    self.service.save_amazon_queue()
                 return self._json({"success": True})
             elif route == "/cast":
                 path = body.get("path")
+                title = body.get("title")
                 if not path:
                     return self._json({"error": "path is required"}, 400)
                 self._json(svc.cast(path,
@@ -249,7 +227,8 @@ class _Handler(BaseHTTPRequestHandler):
                                     audio_index=body.get("audio_index"),
                                     subtitle_index=body.get("subtitle_index"),
                                     license_url=body.get("license_url"),
-                                    offline_drm_token=body.get("offline_drm_token")))
+                                    offline_drm_token=body.get("offline_drm_token"),
+                                    title=title))
             elif route == "/subtitles/opensubtitles":
                 path = body.get("path")
                 if not path:
@@ -290,6 +269,18 @@ class _Handler(BaseHTTPRequestHandler):
             elif route == "/mute":
                 self._json(svc.set_muted(bool(body.get("muted"))))
             elif route == "/shutdown":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"status": "ok"}')
+
+                # Graceful cleanup of all processes and threads
+                try:
+                    if hasattr(svc, "_remuxer") and svc._remuxer:
+                        svc._remuxer.cancel()
+                    svc.stop()
+                except Exception as e:
+                    print(f"Error during shutdown cleanup: {e}")
+
                 import os
                 os._exit(0)
             elif route == "/discovery/intercept":

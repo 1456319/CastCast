@@ -85,10 +85,10 @@ class TestMetadataRobustness:
         import urllib.error
         # Mock a timeout or DNS failure
         mock_urlopen.side_effect = urllib.error.URLError("Timeout")
-        
+
         # When Amazon URL fails to fetch
         title = resolve_title("https://www.primevideo.com/detail/1234", provider="amazon")
-        
+
         # It should fall back to "Amazon Video" (the fallback added in the refactor)
         assert title == "Amazon Video"
 

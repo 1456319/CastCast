@@ -1,3 +1,4 @@
+# synchronization-map: section=core-service; role=cast-supervisor; boundaries=cast-sender-receiver; doc=docs/SYNCHRONIZATION_MAP.md
 # EDITING OF THIS FILE MAY CAUSE CATASTROPHIC APP DESYCHRONIZATION. Reference the directory at at ~/docs/synchronization_map.md to determine what other files must be adjusted in order to ensure absolute synchronization is maintained. This is to ensure that the APK, termux daemon, and chromecast portions of the app are always in synchronous, deterministic states.
 """The connection supervisor -- a VLC-style CASTv2 state machine that fights
 to keep the link up.
@@ -212,6 +213,7 @@ class Supervisor:
             self.status.has_text_tracks = bool(tracks)
         self._log(f"queued LOAD {title or url}")
         self._try_load()
+        self._emit("media", self.snapshot())
 
     def queue_insert(self, item: dict) -> None:
         """Append an item to the current queue."""
@@ -255,6 +257,7 @@ class Supervisor:
 
         self._log(f"queued QUEUE_LOAD with {len(items)} items")
         self._try_load()
+        self._emit("media", self.snapshot())
 
     def play(self) -> Optional[int]:
         return self._media_command({"type": "PLAY"})
@@ -263,10 +266,7 @@ class Supervisor:
         return self._media_command({"type": "PAUSE"})
 
     def seek(self, position: float) -> Optional[int]:
-        cmd = {"type": "SEEK", "currentTime": max(position, 0.0)}
-        if self.status and self.status.active_track_ids:
-            cmd["activeTrackIds"] = self.status.active_track_ids
-        return self._media_command(cmd)
+        return self._media_command({"type": "SEEK", "currentTime": max(position, 0.0)})
 
     def queue_remove(self, item_ids: list[int]) -> Optional[int]:
         return self._media_command({"type": "QUEUE_REMOVE", "itemIds": item_ids})

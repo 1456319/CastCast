@@ -1,3 +1,4 @@
+# synchronization-map: section=cast-sender-receiver; role=cast-protobufs; boundaries=cast-sender-receiver; doc=docs/SYNCHRONIZATION_MAP.md
 """Minimal protobuf codec for the CASTv2 ``CastMessage`` frame.
 
 Google's ``cast_channel.proto`` is small enough that vendoring protoc plus the

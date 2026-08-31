@@ -1,3 +1,4 @@
+# synchronization-map: section=core-service; role=daemon-orchestrator; boundaries=api-contract,media-routing,config-state,operations-release; doc=docs/SYNCHRONIZATION_MAP.md
 # EDITING OF THIS FILE MAY CAUSE CATASTROPHIC APP DESYCHRONIZATION. Reference the directory at at ~/docs/synchronization_map.md to determine what other files must be adjusted in order to ensure absolute synchronization is maintained. This is to ensure that the APK, termux daemon, and chromecast portions of the app are always in synchronous, deterministic states.
 """The daemon service object: owns the supervisor, media server, library and
 the pre-flight pipeline.
@@ -22,6 +23,7 @@ from .mediaserver import MediaServer, guess_mime
 from .opensubtitles import download_best, language3
 from .probe import FFMPEG, MediaInfo, ProbeError, have_ffmpeg, have_ffprobe, probe
 from .supervisor import State, Supervisor
+from .metadata import TMDBClient, resolve_title
 
 DEFAULT_MEDIA_ROOT = "/storage/emulated/0/Download/CastCast/Chromecast"
 
@@ -152,13 +154,32 @@ class CastService:
 
     def save_amazon_queue(self):
         import json
-        os.makedirs(os.path.dirname(self.amazon_queue_path), exist_ok=True)
-        try:
-            with open(self.amazon_queue_path, "w") as f:
-                json.dump(self.amazon_queue, f)
-            self._emit("amazon_queue", {"items": self.amazon_queue})
-        except Exception as e:
-            self.log(f"Failed to save amazon_queue: {e}", "warn")
+        with self._lock:
+            os.makedirs(os.path.dirname(self.amazon_queue_path), exist_ok=True)
+            try:
+                with open(self.amazon_queue_path, "w") as f:
+                    json.dump(self.amazon_queue, f)
+                self._emit("amazon_queue", {"items": self.amazon_queue})
+            except Exception as e:
+                self.log(f"Failed to save amazon_queue: {e}", "warn")
+
+    def resolve_amazon_title_async(self, url: str):
+        def worker():
+            try:
+                real_title = resolve_title(url, provider="amazon")
+            except Exception as e:
+                self.log(f"Async title resolution failed for {url}: {e}", "warn")
+                real_title = "Amazon Video"
+
+            with self._lock:
+                changed = False
+                for item in self.amazon_queue:
+                    if item.get("url") == url and item.get("title") == "Fetching title...":
+                        item["title"] = real_title
+                        changed = True
+                if changed:
+                    self.save_amazon_queue()
+        threading.Thread(target=worker, daemon=True, name="TitleResolverThread").start()
 
     def _config_value(self, key: str, env_name: str) -> str:
         return str(self.config.get(key) or os.environ.get(env_name, ""))
@@ -341,6 +362,7 @@ class CastService:
                         "path": full,
                         "name": filename,
                         "rel": os.path.relpath(full, root),
+                        "title": resolve_title(full),
                         "size_bytes": _size(full),
                     }
                     if deep:
@@ -461,9 +483,7 @@ class CastService:
                     _path, job_plan, duration = self._remaster_queue.get()
                     self.log(f"Starting queued remaster: {job_plan.description}")
                     # wait until not busy
-                    import time
-                    while self._remuxer.busy:
-                        time.sleep(5)
+                    self._remuxer.idle_event.wait()
                     self._remuxer.run(job_plan, duration_s=duration)
                     self._remaster_queue.task_done()
             t = threading.Thread(target=queue_worker, daemon=True, name="castcast-remaster-queue")
@@ -520,7 +540,7 @@ class CastService:
             self.log(f"queue_insert: skipping {os.path.basename(path)} due to url error: {exc}", "warn")
             return
 
-        title = os.path.splitext(os.path.basename(path))[0]
+        title = resolve_title(path)
         tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
 
         item = {
@@ -555,12 +575,18 @@ class CastService:
     # -- casting -----------------------------------------------------------
 
     def auto_advance(self, source_path: str) -> None:
-        if hasattr(self, "amazon_queue") and self.amazon_queue:
-            next_item = self.amazon_queue.pop(0)
-            self.save_amazon_queue()
-            self.log(f"amazon_queue auto-advancing to {next_item.get('title', next_item.get('url'))}")
-            threading.Thread(target=self.cast, args=(next_item["url"],), daemon=True).start()
-            return
+        with self._lock:
+            if hasattr(self, "amazon_queue") and self.amazon_queue:
+                next_item = self.amazon_queue.pop(0)
+                self.save_amazon_queue()
+                self.log(f"amazon_queue auto-advancing to {next_item.get('title', next_item.get('url'))}")
+                threading.Thread(
+                    target=self.cast,
+                    args=(next_item["url"],),
+                    kwargs={"title": next_item.get("title")},
+                    daemon=True,
+                ).start()
+                return
 
         entries = self.library(deep=False)
         for i, entry in enumerate(entries):
@@ -577,7 +603,7 @@ class CastService:
              auto_prepare: bool = True, subtitle_path: str = "",
              subtitle_language: str = "", audio_index: Optional[int] = None,
              subtitle_index: Optional[int] = None, license_url: str = None,
-             offline_drm_token: str = None) -> dict:
+             offline_drm_token: str = None, title: str = None) -> dict:
         """The whole pipeline: pre-flight, convert if needed, serve, LOAD."""
         if not self.supervisor:
             return {"error": "not connected to a device"}
@@ -633,6 +659,7 @@ class CastService:
             qs = urllib.parse.parse_qs(parsed.query)
             title_id = qs.get("gti", [""])[0]
             if not title_id:
+                import re
                 m = re.search(r'/detail/([a-zA-Z0-9]+)', parsed.path)
                 if m:
                     title_id = m.group(1)
@@ -678,7 +705,7 @@ class CastService:
                 self.supervisor.load(
                     path,
                     content_type=content_type,
-                    title="Widevine DRM Stream",
+                    title=title or resolve_title(path),
                     source_path=path,
                     license_url=license_url,
                     position=resume_pos
@@ -829,16 +856,19 @@ class CastService:
             return {**report, "error": str(exc)}
 
         title_base = os.path.basename(path)
-        tmdb_key = self.config.get("tmdb_api_key", "")
-
-        # Fast non-blocking TMDB scrape
-        from .metadata import TMDBClient
-        tmdb = TMDBClient(tmdb_key)
-        enriched = tmdb.enrich(title_base)
-
-        title = enriched["title"]
-        subtitle = enriched["subtitle"]
-        poster_url = enriched["poster_url"]
+        if not title:
+            tmdb_key = self.config.get("tmdb_api_key", "")
+            # Fast non-blocking TMDB scrape
+            tmdb = TMDBClient(tmdb_key)
+            enriched = tmdb.enrich(title_base)
+            title = enriched["title"]
+            subtitle = enriched.get("subtitle", "")
+            poster_url = enriched.get("poster_url", "")
+            backdrop_url = enriched.get("backdrop_url", "")
+        else:
+            subtitle = ""
+            poster_url = ""
+            backdrop_url = ""
 
         tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
         if audio_index is not None:
@@ -856,7 +886,7 @@ class CastService:
             title=title,
             subtitle=subtitle,
             poster_url=poster_url,
-            backdrop_url=enriched.get("backdrop_url", ""),
+            backdrop_url=backdrop_url,
             duration=float(info.get("duration_s") or 0.0),
             source_path=path,
             tracks=tracks,
@@ -913,7 +943,7 @@ class CastService:
                 skipped += 1
                 continue
 
-            title = os.path.splitext(os.path.basename(path))[0]
+            title = resolve_title(path)
             tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
 
             item = {

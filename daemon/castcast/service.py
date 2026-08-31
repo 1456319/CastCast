@@ -164,15 +164,13 @@ class CastService:
                 self.log(f"Failed to save amazon_queue: {e}", "warn")
 
     def resolve_amazon_title_async(self, url: str):
-        import threading
-        from .metadata import resolve_title
         def worker():
             try:
                 real_title = resolve_title(url, provider="amazon")
             except Exception as e:
                 self.log(f"Async title resolution failed for {url}: {e}", "warn")
                 real_title = "Amazon Video"
-            
+
             with self._lock:
                 changed = False
                 for item in self.amazon_queue:
@@ -598,7 +596,12 @@ class CastService:
                     if os.path.dirname(next_entry["path"]) == os.path.dirname(source_path):
                         self.log(f"auto-advancing to {next_entry['name']}")
                         # Run cast in a background thread to avoid blocking the supervisor receiver thread
-                        threading.Thread(target=self.cast, args=(next_entry["path"],), daemon=True).start()
+                        threading.Thread(
+                            target=self.cast,
+                            args=(next_entry["path"],),
+                            kwargs={"title": next_entry.get("title")},
+                            daemon=True,
+                        ).start()
                 break
 
     def cast(self, path: str, *, allow_unsafe: bool = False,

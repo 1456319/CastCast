@@ -1,3 +1,4 @@
+# synchronization-map: section=config-state; role=capabilities-state; boundaries=core-service; doc=docs/SYNCHRONIZATION_MAP.md
 """Chromecast Ultra capability matrix and the pre-flight verdict engine.
 
 Why this exists

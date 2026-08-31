@@ -1,3 +1,4 @@
+# synchronization-map: section=media-routing; role=subtitle-conversion; boundaries=core-service; doc=docs/SYNCHRONIZATION_MAP.md
 """Small OpenSubtitles client for on-demand sideloaded Chromecast subtitles."""
 
 from __future__ import annotations

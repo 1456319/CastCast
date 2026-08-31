@@ -1,3 +1,4 @@
+# synchronization-map: section=cast-sender-receiver; role=cast-channel; boundaries=core-service; doc=docs/SYNCHRONIZATION_MAP.md
 """CASTv2 transport: TLS socket + 4-byte-big-endian length-prefixed framing."""
 
 from __future__ import annotations

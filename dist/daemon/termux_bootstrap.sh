@@ -88,6 +88,7 @@ log_action "[OK] Dependencies verified."
 log_action "Cleaning up old daemon instances..."
 pkill -f "python3 -m castcast" || true
 pkill -f "pinggy.io" || true
+pkill -f "localhost.run" || true
 sleep 1
 
 # 5. Launch the Daemon

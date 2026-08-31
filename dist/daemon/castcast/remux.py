@@ -1,3 +1,4 @@
+# synchronization-map: section=media-routing; role=video-remuxer; boundaries=core-service,operations-release; doc=docs/SYNCHRONIZATION_MAP.md
 """Turn a ``Verdict`` into an ffmpeg command, and run it with progress.
 
 The guiding principle: **never re-encode video if a remux will do.**  Changing
@@ -256,6 +257,8 @@ class Remuxer:
         self._proc: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
         self.job: Optional[RemuxJob] = None
+        self.idle_event = threading.Event()
+        self.idle_event.set()
 
     @property
     def busy(self) -> bool:
@@ -271,6 +274,13 @@ class Remuxer:
 
     def run(self, plan: RemuxPlan, duration_s: float = 0.0, original_info: Optional[MediaInfo] = None) -> RemuxJob:
         """Blocking.  Call from a worker thread."""
+        self.idle_event.clear()
+        try:
+            return self._run_inner(plan, duration_s, original_info)
+        finally:
+            self.idle_event.set()
+
+    def _run_inner(self, plan: RemuxPlan, duration_s: float = 0.0, original_info: Optional[MediaInfo] = None) -> RemuxJob:
         if not have_ffmpeg():
             job = RemuxJob(plan=plan, state="failed",
                            error=f"{FFMPEG} not found on PATH. On Termux: pkg install ffmpeg")
