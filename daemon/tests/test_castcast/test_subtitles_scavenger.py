@@ -1,6 +1,7 @@
 import unittest
 import os
 import tempfile
+import subprocess
 from unittest.mock import MagicMock, patch
 from castcast.service import CastService
 from castcast.supervisor import Supervisor
@@ -217,3 +218,128 @@ class TestSubtitleScavenger(unittest.TestCase):
             # Default activation must be English (sidecar)
             eng_track = [t for t in self.svc._current_scavenged_tracks if t["language"] == "eng"][0]
             self.assertEqual(active_ids, [eng_track["track_id"]])
+
+    @patch('castcast.service.have_ffmpeg', return_value=True)
+    @patch('subprocess.run')
+    def test_zero_byte_cache_ignored_and_cleaned_up(self, mock_run, mock_ffmpeg):
+        mock_run.return_value = MagicMock(returncode=0)
+        video_path = os.path.join(self.media_dir, "ZeroByte.mkv")
+        with open(video_path, "w") as f:
+            f.write("dummy")
+
+        probe_info = {
+            "subtitles": [
+                {"index": 2, "language": "eng", "title": "", "codec": "subrip"}
+            ]
+        }
+
+        # Create a 0-byte cache file in work_dir
+        cached_vtt = self.svc._embedded_vtt_path(video_path, 2, "eng")
+        with open(cached_vtt, "w") as f:
+            pass  # 0 bytes
+        self.assertEqual(os.path.getsize(cached_vtt), 0)
+
+        # Scavenging should ignore the 0-byte file and invoke ffmpeg
+        tracks = self.svc._scavenge_all_local_subtitles(video_path, probe_info)
+        self.assertEqual(len(tracks), 1)
+        mock_run.assert_called_once()
+
+        # Now test extraction failure unlinking the partial/corrupt file
+        mock_run.reset_mock()
+        mock_run.return_value = MagicMock(returncode=1, stderr=b"ffmpeg failure")
+        with open(cached_vtt, "w") as f:
+            f.write("corrupted partial content")
+        os.utime(cached_vtt, (0, 0))
+        self.assertTrue(os.path.exists(cached_vtt))
+
+        tracks_fail = self.svc._scavenge_all_local_subtitles(video_path, probe_info)
+        self.assertEqual(tracks_fail, [])
+        # Corrupt file must be unlinked
+        self.assertFalse(os.path.exists(cached_vtt))
+
+    @patch('castcast.service.have_ffmpeg', return_value=True)
+    @patch('subprocess.run')
+    def test_subprocess_timeout_and_oserror_handled_gracefully(self, mock_run, mock_ffmpeg):
+        # Stream 2 times out, stream 3 succeeds
+        mock_run.side_effect = [
+            subprocess.TimeoutExpired(cmd="ffmpeg", timeout=300),
+            MagicMock(returncode=0, stderr=b""),
+        ]
+        video_path = os.path.join(self.media_dir, "Timeout.mkv")
+        with open(video_path, "w") as f:
+            f.write("dummy")
+
+        probe_info = {
+            "subtitles": [
+                {"index": 2, "language": "eng", "title": "Slow", "codec": "subrip"},
+                {"index": 3, "language": "jpn", "title": "Fast", "codec": "ass"}
+            ]
+        }
+
+        # Put a partial file for stream 2 to verify timeout unlinks it
+        partial_vtt = self.svc._embedded_vtt_path(video_path, 2, "eng")
+        with open(partial_vtt, "w") as f:
+            f.write("partial")
+        os.utime(partial_vtt, (0, 0))
+
+        tracks = self.svc._scavenge_all_local_subtitles(video_path, probe_info)
+        self.assertEqual(len(tracks), 1)
+        self.assertEqual(tracks[0]["language"], "jpn")
+        self.assertFalse(os.path.exists(partial_vtt))
+
+        # Test OSError on sidecar conversion
+        mock_run.side_effect = OSError("ffmpeg binary missing")
+        sidecar_srt = os.path.join(self.media_dir, "Timeout.es.srt")
+        with open(sidecar_srt, "w") as f:
+            f.write("1\n00:00:01,000 --> 00:00:02,000\nHola")
+
+        sidecar_tracks = self.svc._scavenge_all_local_subtitles(video_path, {"subtitles": []})
+        # Gracefully skipped on OSError
+        self.assertEqual(sidecar_tracks, [])
+
+    @patch('castcast.service.have_ffmpeg', return_value=True)
+    @patch('subprocess.run')
+    def test_sidecar_non_language_tokens_default_to_english(self, mock_run, mock_ffmpeg):
+        mock_run.return_value = MagicMock(returncode=0)
+        video_path = os.path.join(self.media_dir, "ActionMovie.2024.mkv")
+        with open(video_path, "w") as f:
+            f.write("dummy")
+
+        # Sidecars with non-language tokens (e.g., sdh, 1080p)
+        sidecar_sdh = os.path.join(self.media_dir, "ActionMovie.2024.sdh.srt")
+        sidecar_res = os.path.join(self.media_dir, "ActionMovie.2024.1080p.srt")
+        with open(sidecar_sdh, "w") as f:
+            f.write("1\n00:00:01,000 --> 00:00:02,000\nBang")
+        with open(sidecar_res, "w") as f:
+            f.write("1\n00:00:01,000 --> 00:00:02,000\nBoom")
+
+        tracks = self.svc._scavenge_all_local_subtitles(video_path, {"subtitles": []})
+        self.assertEqual(len(tracks), 2)
+        # Both should fall back to English (self.default_language)
+        for t in tracks:
+            self.assertEqual(t["language"], "eng")
+
+        # In _tracks_for_load, English track must be activated by default
+        caf_tracks, active_ids = self.svc._tracks_for_load(tracks)
+        self.assertEqual(len(caf_tracks), 2)
+        self.assertEqual(active_ids, [tracks[0]["track_id"]])
+
+    def test_tracks_for_load_skips_unserved_paths_on_value_error(self):
+        tracks = [
+            {"track_id": 1, "language": "eng", "label": "Good", "vtt_path": "/valid/good.vtt"},
+            {"track_id": 2, "language": "spa", "label": "Bad", "vtt_path": "/invalid/bad.vtt"}
+        ]
+
+        def mock_url_for(p):
+            if "bad" in p:
+                raise ValueError("path outside served roots")
+            return f"http://127.0.0.1:8765/work/{os.path.basename(p)}"
+
+        self.svc.media_server.url_for = mock_url_for
+        caf_tracks, active_ids = self.svc._tracks_for_load(tracks)
+
+        # Track 2 skipped due to ValueError; Track 1 loaded
+        self.assertEqual(len(caf_tracks), 1)
+        self.assertEqual(caf_tracks[0]["trackId"], 1)
+        self.assertEqual(active_ids, [1])
+

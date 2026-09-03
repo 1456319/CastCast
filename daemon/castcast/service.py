@@ -1280,7 +1280,7 @@ class CastService:
                     is_cached = False
                     if os.path.exists(out_path) and os.path.exists(path):
                         try:
-                            is_cached = os.path.getmtime(out_path) >= os.path.getmtime(path)
+                            is_cached = os.path.getsize(out_path) > 0 and os.path.getmtime(out_path) >= os.path.getmtime(path)
                         except OSError:
                             is_cached = False
 
@@ -1295,11 +1295,25 @@ class CastService:
                             f"DEBUG-ONLY: extracting embedded subtitle track {idx} ({lang}): {' '.join(cmd)}",
                             "debug",
                         )
-                        proc = subprocess.run(cmd, capture_output=True, timeout=300, check=False)
-                        if proc.returncode != 0:
-                            detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
-                            reason = detail[-1] if detail else proc.returncode
-                            self.log(f"embedded subtitle extraction failed (stream {idx}): {reason}", "warn")
+                        try:
+                            proc = subprocess.run(cmd, capture_output=True, timeout=300, check=False)
+                            if proc.returncode != 0:
+                                detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+                                reason = detail[-1] if detail else proc.returncode
+                                self.log(f"embedded subtitle extraction failed (stream {idx}): {reason}", "warn")
+                                if os.path.exists(out_path):
+                                    try:
+                                        os.unlink(out_path)
+                                    except OSError:
+                                        pass
+                                continue
+                        except (subprocess.TimeoutExpired, OSError) as exc:
+                            self.log(f"embedded subtitle extraction error (stream {idx}): {exc}", "warn")
+                            if os.path.exists(out_path):
+                                try:
+                                    os.unlink(out_path)
+                                except OSError:
+                                    pass
                             continue
 
                     tracks.append({
@@ -1354,13 +1368,13 @@ class CastService:
                             continue
                         parsed_lang = language3(t_lower)
                         if not extracted_lang and parsed_lang and (
-                            t_lower in LANGUAGE_NAMES or len(t_lower) in (2, 3) or t_lower in {"english", "spanish", "french", "german"}
+                            t_lower in LANGUAGE_NAMES or (len(t_lower) in (2, 3) and t_lower.isalpha()) or t_lower in {"english", "spanish", "french", "german"}
                         ):
                             extracted_lang = parsed_lang
                         else:
                             extra_tokens.append(token)
                     if not extracted_lang:
-                        extracted_lang = language3(tokens[0]) if tokens else self.default_language
+                        extracted_lang = self.default_language
                     lang = extracted_lang
                     extra = " ".join(extra_tokens)
 
@@ -1383,7 +1397,7 @@ class CastService:
                     is_cached = False
                     if os.path.exists(out_path) and os.path.exists(full):
                         try:
-                            is_cached = os.path.getmtime(out_path) >= os.path.getmtime(full)
+                            is_cached = os.path.getsize(out_path) > 0 and os.path.getmtime(out_path) >= os.path.getmtime(full)
                         except OSError:
                             is_cached = False
 
@@ -1395,11 +1409,25 @@ class CastService:
                     else:
                         cmd = [FFMPEG, "-hide_banner", "-y", "-i", full, "-f", "webvtt", out_path]
                         self.log(f"DEBUG-ONLY: converting sidecar subtitles to WebVTT: {' '.join(cmd)}", "debug")
-                        proc = subprocess.run(cmd, capture_output=True, timeout=120, check=False)
-                        if proc.returncode != 0:
-                            detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
-                            reason = detail[-1] if detail else proc.returncode
-                            self.log(f"sidecar subtitle conversion failed: {reason}", "warn")
+                        try:
+                            proc = subprocess.run(cmd, capture_output=True, timeout=120, check=False)
+                            if proc.returncode != 0:
+                                detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+                                reason = detail[-1] if detail else proc.returncode
+                                self.log(f"sidecar subtitle conversion failed: {reason}", "warn")
+                                if os.path.exists(out_path):
+                                    try:
+                                        os.unlink(out_path)
+                                    except OSError:
+                                        pass
+                                continue
+                        except (subprocess.TimeoutExpired, OSError) as exc:
+                            self.log(f"sidecar subtitle conversion error ({filename}): {exc}", "warn")
+                            if os.path.exists(out_path):
+                                try:
+                                    os.unlink(out_path)
+                                except OSError:
+                                    pass
                             continue
                     vtt_path = out_path
 
@@ -1423,7 +1451,11 @@ class CastService:
         if isinstance(tracks, str):
             if not tracks:
                 return [], []
-            url = self.media_server.url_for(tracks)
+            try:
+                url = self.media_server.url_for(tracks)
+            except ValueError as exc:
+                self.log(f"failed to generate url for subtitle path {tracks}: {exc}", "warn")
+                return [], []
             lang = language3(language or self.default_language)
             return ([{
                 "trackId": 1,
@@ -1445,7 +1477,16 @@ class CastService:
         for t in tracks:
             track_id = t["track_id"]
             lang = t.get("language") or "und"
-            url = self.media_server.url_for(t["vtt_path"]) if t.get("vtt_path") else t.get("trackContentId", "")
+            vtt_path = t.get("vtt_path")
+            if vtt_path:
+                try:
+                    url = self.media_server.url_for(vtt_path)
+                except ValueError as exc:
+                    self.log(f"skipping subtitle track {track_id} ({vtt_path}) due to url error: {exc}", "warn")
+                    continue
+            else:
+                url = t.get("trackContentId", "")
+
             caf_tracks.append({
                 "trackId": track_id,
                 "type": "TEXT",
