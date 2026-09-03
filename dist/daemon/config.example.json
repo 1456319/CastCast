@@ -1,0 +1,21 @@
+{
+  "media_roots": ["/storage/emulated/0/Download/Chromecast"],
+
+  "work_dir": null,
+
+  "static_host": null,
+  "static_port": 8009,
+  "auto_connect_host": null,
+
+  "media_port": 0,
+  "api_host": "127.0.0.1",
+  "api_port": 8765,
+
+  "device_auth": false,
+  "prefer_fmp4": false,
+  "avr_passthrough": false,
+
+  "default_language": "eng",
+  "opensubtitles_api_key": "",
+  "opensubtitles_token": ""
+}
