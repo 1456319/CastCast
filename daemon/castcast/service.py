@@ -159,6 +159,7 @@ class CastService:
         )
         self._queued_for_later = set()
         self._current_scavenged_tracks: List[dict] = []
+        self._current_source_type: str = "local"
         self._lock = threading.RLock()
         self._events: List[Callable[[str, dict], None]] = []
         self._watchdog: Optional[threading.Thread] = None
@@ -643,11 +644,27 @@ class CastService:
         if not self.supervisor:
             return {"error": "not connected to a device"}
 
+        clean_path = path
+        url_match = re.search(r'(https?://[^\s]+)', path)
+        if url_match:
+            clean_path = url_match.group(1)
+
+        path_lower = clean_path.lower()
+        if "amazon.com" in path_lower or "primevideo.com" in path_lower or "gti=" in path_lower:
+            self._current_source_type = "amazon"
+            self._current_scavenged_tracks = []
+        elif "youtube.com" in path_lower or "youtu.be" in path_lower:
+            self._current_source_type = "youtube"
+            self._current_scavenged_tracks = []
+        elif clean_path.startswith(("http://", "https://")):
+            self._current_source_type = "web"
+            self._current_scavenged_tracks = []
+        else:
+            self._current_source_type = "local"
+
         if offline_drm_token:
             self.log("Offline DRM token provided. Registering with local proxy.")
             license_url = self.media_server.add_drm_token(offline_drm_token)
-
-        import re
         
         # ========================================================================================
         # AMAZON PRIME VIDEO 4K UHD CASTING PIPELINE (WIDEVINE DRM)
@@ -694,7 +711,6 @@ class CastService:
             qs = urllib.parse.parse_qs(parsed.query)
             title_id = qs.get("gti", [""])[0]
             if not title_id:
-                import re
                 m = re.search(r'/detail/([a-zA-Z0-9]+)', parsed.path)
                 if m:
                     title_id = m.group(1)
@@ -1503,6 +1519,43 @@ class CastService:
             active_track_ids = [default_active_id]
 
         return caf_tracks, active_track_ids
+
+    def select_subtitle_track(self, track_id: Optional[int]) -> dict:
+        self.log(f"DEBUG-ONLY: selecting subtitle track {track_id}", "debug")
+        if not self.supervisor:
+            return {"error": "not connected to a device"}
+
+        if track_id is None:
+            self.supervisor.set_active_tracks([])
+            return {"active_track_ids": []}
+
+        try:
+            tid = int(track_id)
+        except (ValueError, TypeError):
+            return {"error": f"invalid track_id: {track_id}"}
+
+        if tid == 0:
+            self.supervisor.set_active_tracks([])
+            return {"active_track_ids": []}
+
+        valid_ids = {t["track_id"] for t in self._current_scavenged_tracks if "track_id" in t}
+        if valid_ids and tid not in valid_ids:
+            self.log(f"DEBUG-ONLY: track_id {tid} not found in available tracks ({valid_ids})", "warn")
+            return {"error": f"track_id {tid} not found in available tracks"}
+
+        self.supervisor.set_active_tracks([tid])
+        return {"active_track_ids": [tid]}
+
+    def get_available_subtitles(self) -> dict:
+        active_track_ids = []
+        if self.supervisor and hasattr(self.supervisor, "status"):
+            active_track_ids = getattr(self.supervisor.status, "active_track_ids", []) or []
+        return {
+            "source_type": self._current_source_type,
+            "active_track_ids": active_track_ids,
+            "tracks": list(self._current_scavenged_tracks),
+            "remote_supported": True,
+        }
 
     # -- transport passthrough --------------------------------------------
 

@@ -103,6 +103,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(amazon.poll_register(pub, priv))
             elif route == "/amazon/queue":
                 self._json({"items": self.service.amazon_queue})
+            elif route == "/subtitles/available":
+                self._json(self.service.get_available_subtitles())
             elif route == "/diagnostics/logs":
                 import os
                 audit_log = ""
@@ -234,6 +236,8 @@ class _Handler(BaseHTTPRequestHandler):
                 if not path:
                     return self._json({"error": "path is required"}, 400)
                 self._json(svc.request_subtitles(path, body.get("language") or ""))
+            elif route == "/subtitles/select":
+                self._json(svc.select_subtitle_track(body.get("track_id")))
             elif route == "/prepare":
                 path = body.get("path")
                 if not path:
@@ -355,6 +359,7 @@ _ROUTES = {
     "GET /devices": "discover Chromecasts",
     "GET /library?deep=1": "list media, optionally with pre-flight verdicts",
     "GET /trash": "list trashed media",
+    "GET /subtitles/available": "available subtitle tracks and current active track",
     "GET /preflight?path=": "probe + castability verdict + ffmpeg plan",
     "GET /logs?since=N": "recent log lines",
     "GET /events": "SSE stream of logs, state changes, media status",
@@ -362,6 +367,7 @@ _ROUTES = {
     "POST /disconnect": "",
     "POST /cast": "{path, allow_unsafe?, auto_prepare?}",
     "POST /queue": "{paths} queue a list of castable media",
+    "POST /subtitles/select": "{track_id} switch subtitle track via EDIT_TRACKS_INFO (null to disable)",
     "POST /subtitles/opensubtitles": "{path, language?} download and sideload subtitles",
     "POST /prepare": "{path, force?}  run the remux",
     "POST /prepare/cancel": "",

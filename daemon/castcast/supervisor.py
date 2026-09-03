@@ -271,6 +271,21 @@ class Supervisor:
     def queue_remove(self, item_ids: list[int]) -> Optional[int]:
         return self._media_command({"type": "QUEUE_REMOVE", "itemIds": item_ids})
 
+    def set_active_tracks(self, active_track_ids: list[int]) -> Optional[int]:
+        self._log(f"DEBUG-ONLY: Supervisor.set_active_tracks activeTrackIds={active_track_ids}")
+        with self._lock:
+            self.status.active_track_ids = active_track_ids
+            self.status.has_text_tracks = bool(active_track_ids)
+            if self._session:
+                self._session.active_track_ids = active_track_ids
+                self._session.has_text_tracks = bool(active_track_ids)
+        req_id = self._media_command({
+            "type": "EDIT_TRACKS_INFO",
+            "activeTrackIds": active_track_ids
+        })
+        self._emit("media", self.snapshot())
+        return req_id
+
     def stop_media(self) -> None:
         self._media_command({"type": "STOP"})
         with self._lock:
