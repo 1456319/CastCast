@@ -27,7 +27,38 @@ from .metadata import TMDBClient, resolve_title
 
 DEFAULT_MEDIA_ROOT = "/storage/emulated/0/Download/CastCast/Chromecast"
 
-SUBTITLE_EXTENSIONS = {".vtt", ".srt", ".ass", ".ssa"}
+SUBTITLE_EXTENSIONS = {".vtt", ".srt", ".ass", ".ssa", ".sub"}
+
+LANGUAGE_NAMES = {
+    "eng": "English", "en": "English",
+    "spa": "Spanish", "es": "Spanish",
+    "fre": "French", "fra": "French", "fr": "French",
+    "ger": "German", "deu": "German", "de": "German",
+    "ita": "Italian", "it": "Italian",
+    "jpn": "Japanese", "ja": "Japanese",
+    "zho": "Chinese", "chi": "Chinese", "zh": "Chinese",
+    "kor": "Korean", "ko": "Korean",
+    "rus": "Russian", "ru": "Russian",
+    "por": "Portuguese", "pt": "Portuguese",
+    "hin": "Hindi", "hi": "Hindi",
+    "ara": "Arabic", "ar": "Arabic",
+    "pol": "Polish", "pl": "Polish",
+    "nld": "Dutch", "dut": "Dutch", "nl": "Dutch",
+    "swe": "Swedish", "sv": "Swedish",
+    "nor": "Norwegian", "no": "Norwegian",
+    "dan": "Danish", "da": "Danish",
+    "fin": "Finnish", "fi": "Finnish",
+    "ell": "Greek", "gre": "Greek", "el": "Greek",
+    "tur": "Turkish", "tr": "Turkish",
+    "heb": "Hebrew", "he": "Hebrew",
+    "tha": "Thai", "th": "Thai",
+    "vie": "Vietnamese", "vi": "Vietnamese",
+    "ind": "Indonesian", "id": "Indonesian",
+    "ces": "Czech", "cze": "Czech", "cs": "Czech",
+    "hun": "Hungarian", "hu": "Hungarian",
+    "ukr": "Ukrainian", "uk": "Ukrainian",
+    "und": "Undetermined",
+}
 
 VIDEO_EXTENSIONS = {
     ".avi",
@@ -127,6 +158,7 @@ class CastService:
             "OPENSUBTITLES_TOKEN",
         )
         self._queued_for_later = set()
+        self._current_scavenged_tracks: List[dict] = []
         self._lock = threading.RLock()
         self._events: List[Callable[[str, dict], None]] = []
         self._watchdog: Optional[threading.Thread] = None
@@ -531,9 +563,6 @@ class CastService:
         if language_note:
             self.log(language_note, "debug")
 
-        subtitle_path = self._extract_default_subtitle(path, info)
-        subtitle_language = self.default_language if subtitle_path else ""
-
         try:
             url = self.media_server.url_for(target)
         except ValueError as exc:
@@ -541,7 +570,8 @@ class CastService:
             return
 
         title = resolve_title(path)
-        tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
+        scavenged = self._scavenge_all_local_subtitles(path, info)
+        tracks, active_track_ids = self._tracks_for_load(scavenged)
 
         item = {
             "autoplay": True,
@@ -852,9 +882,32 @@ class CastService:
         target, language_note = self._target_for_default_language(target, info)
         if language_note:
             self.log(language_note, "debug")
-        if not subtitle_path:
-            subtitle_path = self._extract_default_subtitle(path, original_info)
-            subtitle_language = self.default_language if subtitle_path else subtitle_language
+
+        # Local subtitle scavenging (Tier 1: embedded streams + directory sidecars)
+        media_info = original_info if (original_info.get("subtitles")) else info
+        scavenged_tracks = self._scavenge_all_local_subtitles(path, media_info)
+
+        if subtitle_path:
+            matching = [t for t in scavenged_tracks if t.get("vtt_path") == subtitle_path]
+            if matching:
+                selected_id = matching[0]["track_id"]
+            else:
+                selected_id = len(scavenged_tracks) + 1
+                lang = language3(subtitle_language or self.default_language)
+                scavenged_tracks.append({
+                    "track_id": selected_id,
+                    "language": lang,
+                    "label": f"{LANGUAGE_NAMES.get(lang, lang.upper())} [External]",
+                    "vtt_path": subtitle_path,
+                    "source": "sidecar",
+                })
+            tracks, _ = self._tracks_for_load(scavenged_tracks)
+            active_track_ids = [selected_id]
+        else:
+            tracks, active_track_ids = self._tracks_for_load(scavenged_tracks)
+
+        self._current_scavenged_tracks = scavenged_tracks
+
         try:
             url = self.media_server.url_for(target)
         except ValueError as exc:
@@ -875,12 +928,11 @@ class CastService:
             poster_url = ""
             backdrop_url = ""
 
-        tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
+        if subtitle_index is not None:
+            active_track_ids = [subtitle_index]
+
         if audio_index is not None:
             active_track_ids.append(audio_index)
-
-        if subtitle_index is not None:
-            active_track_ids.append(subtitle_index)
 
         content_type = self._get_content_type(target, info)
         resume_pos = max(0.0, self.resume_state.get(path, 0.0) - 10.0)
@@ -938,9 +990,6 @@ class CastService:
             if language_note:
                 self.log(language_note, "debug")
 
-            subtitle_path = self._extract_default_subtitle(path, info)
-            subtitle_language = self.default_language if subtitle_path else ""
-
             try:
                 url = self.media_server.url_for(target)
             except ValueError as exc:
@@ -949,7 +998,8 @@ class CastService:
                 continue
 
             title = resolve_title(path)
-            tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
+            scavenged = self._scavenge_all_local_subtitles(path, info)
+            tracks, active_track_ids = self._tracks_for_load(scavenged)
 
             item = {
                 "autoplay": True,
@@ -1183,20 +1233,235 @@ class CastService:
             self.supervisor.seek(float(snap.get("position") or 0.0))
         return {**cast_result, "subtitles": result.__dict__}
 
-    def _tracks_for_load(self, subtitle_path: str = "", language: str = "") -> tuple[list, list]:
-        if not subtitle_path:
+    def _embedded_vtt_path(self, path: str, index: int, language: str) -> str:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        digest = hashlib.sha1((path + str(index) + language + "embedded").encode()).hexdigest()[:12]
+        return os.path.join(self.work_dir, f"{stem}.{language}.{index}.{digest}.vtt")
+
+    def _scavenge_all_local_subtitles(self, path: str, info: dict) -> list[dict]:
+        """Scavenge all local subtitles (embedded container streams + directory sidecars).
+
+        Extracts/converts all streams to WebVTT in work_dir and assigns incremental track IDs.
+        Preserves 4K UHD qualification by strictly avoiding video re-encoding / hardsubbing.
+        """
+        tracks: list[dict] = []
+        track_id = 1
+        seen_paths = set()
+
+        self.log(f"DEBUG-ONLY: scavenging local subtitles for {os.path.basename(path)}", "debug")
+
+        # 1. Embedded container subtitle streams
+        subtitles = (info or {}).get("subtitles") or []
+        if subtitles:
+            self.log(f"DEBUG-ONLY: found {len(subtitles)} embedded subtitle stream(s)", "debug")
+            if not have_ffmpeg():
+                self.log("DEBUG-ONLY: embedded subtitles found but ffmpeg is unavailable", "debug")
+            else:
+                for sub in subtitles:
+                    codec = (sub.get("codec") or "").lower()
+                    idx = sub.get("index")
+                    if codec in {"pgs", "hdmv_pgs_subtitle", "dvd_subtitle", "dvdsub", "pgssub"}:
+                        self.log(
+                            f"DEBUG-ONLY: skipping bitmap subtitle stream {idx} (codec: {codec}) to preserve hardware overlay",
+                            "debug",
+                        )
+                        continue
+
+                    raw_lang = sub.get("language") or "und"
+                    lang = language3(raw_lang)
+                    lang_name = LANGUAGE_NAMES.get(lang, lang.upper())
+                    title = (sub.get("title") or "").strip()
+                    if title and title.lower() not in {lang_name.lower(), lang.lower()}:
+                        label = f"{lang_name} ({title}) [Embedded]"
+                    else:
+                        label = f"{lang_name} [Embedded]"
+
+                    out_path = self._embedded_vtt_path(path, idx, lang)
+                    is_cached = False
+                    if os.path.exists(out_path) and os.path.exists(path):
+                        try:
+                            is_cached = os.path.getmtime(out_path) >= os.path.getmtime(path)
+                        except OSError:
+                            is_cached = False
+
+                    if is_cached:
+                        self.log(
+                            f"DEBUG-ONLY: using cached embedded {lang} subtitles: {os.path.basename(out_path)}",
+                            "debug",
+                        )
+                    else:
+                        cmd = self._subtitle_extract_command(path, sub, out_path)
+                        self.log(
+                            f"DEBUG-ONLY: extracting embedded subtitle track {idx} ({lang}): {' '.join(cmd)}",
+                            "debug",
+                        )
+                        proc = subprocess.run(cmd, capture_output=True, timeout=300, check=False)
+                        if proc.returncode != 0:
+                            detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+                            reason = detail[-1] if detail else proc.returncode
+                            self.log(f"embedded subtitle extraction failed (stream {idx}): {reason}", "warn")
+                            continue
+
+                    tracks.append({
+                        "track_id": track_id,
+                        "language": lang,
+                        "label": label,
+                        "vtt_path": out_path,
+                        "source": "embedded",
+                    })
+                    seen_paths.add(out_path)
+                    track_id += 1
+
+        # 2. Directory sidecar subtitle files
+        directory = os.path.dirname(os.path.abspath(path))
+        stem = os.path.splitext(os.path.basename(path))[0]
+        if os.path.isdir(directory):
+            self.log(f"DEBUG-ONLY: scanning directory {directory} for sidecar subtitles matching {stem}", "debug")
+            try:
+                entries = sorted(os.listdir(directory))
+            except OSError as exc:
+                self.log(f"failed to read directory {directory}: {exc}", "warn")
+                entries = []
+
+            for filename in entries:
+                full = os.path.join(directory, filename)
+                name_stem, ext = os.path.splitext(filename)
+                if ext.lower() not in SUBTITLE_EXTENSIONS:
+                    continue
+                if not os.path.isfile(full):
+                    continue
+
+                if name_stem != stem and not (
+                    name_stem.lower().startswith(stem.lower() + ".")
+                    or name_stem.lower().startswith(stem.lower() + "-")
+                    or name_stem.lower().startswith(stem.lower() + "_")
+                ):
+                    continue
+
+                # Parse language from sidecar filename
+                if name_stem.lower() == stem.lower():
+                    lang = self.default_language
+                    extra = ""
+                else:
+                    remainder = name_stem[len(stem):].lstrip("._- ")
+                    tokens = [t for t in re.split(r"[._ -]+", remainder) if t]
+                    extracted_lang = None
+                    extra_tokens = []
+                    for token in tokens:
+                        t_lower = token.lower()
+                        if t_lower in {"forced", "default", "cc", "sdh", "commentary"}:
+                            extra_tokens.append(token)
+                            continue
+                        parsed_lang = language3(t_lower)
+                        if not extracted_lang and parsed_lang and (
+                            t_lower in LANGUAGE_NAMES or len(t_lower) in (2, 3) or t_lower in {"english", "spanish", "french", "german"}
+                        ):
+                            extracted_lang = parsed_lang
+                        else:
+                            extra_tokens.append(token)
+                    if not extracted_lang:
+                        extracted_lang = language3(tokens[0]) if tokens else self.default_language
+                    lang = extracted_lang
+                    extra = " ".join(extra_tokens)
+
+                lang_name = LANGUAGE_NAMES.get(lang, lang.upper())
+                if extra:
+                    label = f"{lang_name} ({extra}) [Sidecar]"
+                else:
+                    label = f"{lang_name} [Sidecar]"
+
+                if ext.lower() == ".vtt":
+                    vtt_path = full
+                else:
+                    if not have_ffmpeg():
+                        self.log(
+                            f"DEBUG-ONLY: sidecar subtitles require WebVTT conversion but ffmpeg is unavailable: {filename}",
+                            "warn",
+                        )
+                        continue
+                    out_path = self._sidecar_vtt_path(full, lang)
+                    is_cached = False
+                    if os.path.exists(out_path) and os.path.exists(full):
+                        try:
+                            is_cached = os.path.getmtime(out_path) >= os.path.getmtime(full)
+                        except OSError:
+                            is_cached = False
+
+                    if is_cached:
+                        self.log(
+                            f"DEBUG-ONLY: using cached sidecar {lang} subtitles: {os.path.basename(out_path)}",
+                            "debug",
+                        )
+                    else:
+                        cmd = [FFMPEG, "-hide_banner", "-y", "-i", full, "-f", "webvtt", out_path]
+                        self.log(f"DEBUG-ONLY: converting sidecar subtitles to WebVTT: {' '.join(cmd)}", "debug")
+                        proc = subprocess.run(cmd, capture_output=True, timeout=120, check=False)
+                        if proc.returncode != 0:
+                            detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+                            reason = detail[-1] if detail else proc.returncode
+                            self.log(f"sidecar subtitle conversion failed: {reason}", "warn")
+                            continue
+                    vtt_path = out_path
+
+                if vtt_path in seen_paths:
+                    continue
+
+                tracks.append({
+                    "track_id": track_id,
+                    "language": lang,
+                    "label": label,
+                    "vtt_path": vtt_path,
+                    "source": "sidecar",
+                })
+                seen_paths.add(vtt_path)
+                track_id += 1
+
+        self.log(f"DEBUG-ONLY: scavenged {len(tracks)} local subtitle track(s) for {os.path.basename(path)}", "debug")
+        return tracks
+
+    def _tracks_for_load(self, tracks: list[dict] | str = "", language: str = "") -> tuple[list[dict], list[int]]:
+        if isinstance(tracks, str):
+            if not tracks:
+                return [], []
+            url = self.media_server.url_for(tracks)
+            lang = language3(language or self.default_language)
+            return ([{
+                "trackId": 1,
+                "type": "TEXT",
+                "trackContentId": url,
+                "trackContentType": "text/vtt",
+                "name": LANGUAGE_NAMES.get(lang, lang.upper()),
+                "language": lang,
+                "subtype": "SUBTITLES",
+            }], [1])
+
+        if not tracks:
             return [], []
-        url = self.media_server.url_for(subtitle_path)
-        lang = language3(language or self.default_language)
-        return ([{
-            "trackId": 1,
-            "type": "TEXT",
-            "trackContentId": url,
-            "trackContentType": "text/vtt",
-            "name": lang.upper(),
-            "language": lang,
-            "subtype": "SUBTITLES",
-        }], [1])
+
+        caf_tracks = []
+        active_track_ids: list[int] = []
+        default_active_id = None
+
+        for t in tracks:
+            track_id = t["track_id"]
+            lang = t.get("language") or "und"
+            url = self.media_server.url_for(t["vtt_path"]) if t.get("vtt_path") else t.get("trackContentId", "")
+            caf_tracks.append({
+                "trackId": track_id,
+                "type": "TEXT",
+                "trackContentId": url,
+                "trackContentType": "text/vtt",
+                "name": t.get("label") or LANGUAGE_NAMES.get(lang, lang.upper()),
+                "language": lang,
+                "subtype": "SUBTITLES",
+            })
+            if lang == "eng" and default_active_id is None:
+                default_active_id = track_id
+
+        if default_active_id is not None:
+            active_track_ids = [default_active_id]
+
+        return caf_tracks, active_track_ids
 
     # -- transport passthrough --------------------------------------------
 
