@@ -50,12 +50,38 @@ class TestSubtitlesSwitching(unittest.TestCase):
         result = self.svc.select_subtitle_track(1)
         self.assertEqual(result, {"error": "not connected to a device"})
 
+    def test_select_track_when_scavenged_tracks_empty_returns_error(self):
+        self.svc._current_scavenged_tracks = []
+        result = self.svc.select_subtitle_track(1)
+        self.assertIn("error", result)
+        self.svc.supervisor.set_active_tracks.assert_not_called()
+
+    def test_select_boolean_track_id_returns_error(self):
+        result_true = self.svc.select_subtitle_track(True)
+        self.assertIn("error", result_true)
+        result_false = self.svc.select_subtitle_track(False)
+        self.assertIn("error", result_false)
+        self.svc.supervisor.set_active_tracks.assert_not_called()
+
     def test_available_subtitles_query(self):
         status = self.svc.get_available_subtitles()
         self.assertEqual(len(status["tracks"]), 2)
         self.assertEqual(status["active_track_ids"], [1])
         self.assertTrue(status["remote_supported"])
         self.assertEqual(status["source_type"], "local")
+
+    def test_remote_supported_dynamic_classification(self):
+        self.svc._current_source_type = "local"
+        self.assertTrue(self.svc.get_available_subtitles()["remote_supported"])
+
+        self.svc._current_source_type = "youtube"
+        self.assertTrue(self.svc.get_available_subtitles()["remote_supported"])
+
+        self.svc._current_source_type = "web"
+        self.assertFalse(self.svc.get_available_subtitles()["remote_supported"])
+
+        self.svc._current_source_type = "amazon"
+        self.assertFalse(self.svc.get_available_subtitles()["remote_supported"])
 
     def test_available_subtitles_when_no_active_tracks_or_disconnected(self):
         self.svc.supervisor.status.active_track_ids = None
@@ -76,6 +102,12 @@ class TestSubtitlesSwitching(unittest.TestCase):
             self.svc.cast("/home/deck/Videos/Movie.mp4")
             self.assertEqual(self.svc._current_source_type, "local")
 
+            # Local file with domain in name must NOT be misclassified as youtube/amazon
+            self.svc.cast("/home/deck/Videos/youtube.com_clip.mp4")
+            self.assertEqual(self.svc._current_source_type, "local")
+            self.svc.cast("/home/deck/Videos/amazon.com_rip.mkv")
+            self.assertEqual(self.svc._current_source_type, "local")
+
             # YouTube
             with patch('castcast.service.have_ytdlp', return_value=False):
                 self.svc.cast("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
@@ -91,6 +123,13 @@ class TestSubtitlesSwitching(unittest.TestCase):
             }):
                 self.svc.cast("https://www.amazon.com/gp/video/detail/B012345678")
                 self.assertEqual(self.svc._current_source_type, "amazon")
+
+    def test_cast_unconditionally_resets_current_scavenged_tracks(self):
+        self.svc._current_scavenged_tracks = [{"track_id": 99, "language": "eng"}]
+        with patch.object(self.svc, 'preflight', return_value={"error": "corrupted"}):
+            res = self.svc.cast("/home/deck/Videos/Corrupted.mp4")
+            self.assertIn("error", res)
+            self.assertEqual(self.svc._current_scavenged_tracks, [])
 
     def test_supervisor_set_active_tracks(self):
         sup = Supervisor("127.0.0.1")

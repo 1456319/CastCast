@@ -644,21 +644,22 @@ class CastService:
         if not self.supervisor:
             return {"error": "not connected to a device"}
 
+        self._current_scavenged_tracks = []
+
         clean_path = path
         url_match = re.search(r'(https?://[^\s]+)', path)
         if url_match:
             clean_path = url_match.group(1)
 
-        path_lower = clean_path.lower()
-        if "amazon.com" in path_lower or "primevideo.com" in path_lower or "gti=" in path_lower:
-            self._current_source_type = "amazon"
-            self._current_scavenged_tracks = []
-        elif "youtube.com" in path_lower or "youtu.be" in path_lower:
-            self._current_source_type = "youtube"
-            self._current_scavenged_tracks = []
-        elif clean_path.startswith(("http://", "https://")):
-            self._current_source_type = "web"
-            self._current_scavenged_tracks = []
+        is_url = bool(url_match or clean_path.startswith(("http://", "https://")))
+        if is_url:
+            path_lower = clean_path.lower()
+            if "amazon.com" in path_lower or "primevideo.com" in path_lower or "gti=" in path_lower:
+                self._current_source_type = "amazon"
+            elif "youtube.com" in path_lower or "youtu.be" in path_lower:
+                self._current_source_type = "youtube"
+            else:
+                self._current_source_type = "web"
         else:
             self._current_source_type = "local"
 
@@ -1525,6 +1526,9 @@ class CastService:
         if not self.supervisor:
             return {"error": "not connected to a device"}
 
+        if isinstance(track_id, bool):
+            return {"error": f"invalid track_id: {track_id}"}
+
         if track_id is None:
             self.supervisor.set_active_tracks([])
             return {"active_track_ids": []}
@@ -1539,8 +1543,8 @@ class CastService:
             return {"active_track_ids": []}
 
         valid_ids = {t["track_id"] for t in self._current_scavenged_tracks if "track_id" in t}
-        if valid_ids and tid not in valid_ids:
-            self.log(f"DEBUG-ONLY: track_id {tid} not found in available tracks ({valid_ids})", "warn")
+        if tid not in valid_ids:
+            self.log(f"DEBUG-ONLY: subtitle track_id {tid} not found in available tracks: {valid_ids}", "warn")
             return {"error": f"track_id {tid} not found in available tracks"}
 
         self.supervisor.set_active_tracks([tid])
@@ -1554,7 +1558,7 @@ class CastService:
             "source_type": self._current_source_type,
             "active_track_ids": active_track_ids,
             "tracks": list(self._current_scavenged_tracks),
-            "remote_supported": True,
+            "remote_supported": self._current_source_type in ("local", "youtube"),
         }
 
     # -- transport passthrough --------------------------------------------
