@@ -36,7 +36,7 @@ def set_log_callback(cb):
     _log_callback = cb
 
 def _log(msg: str, level: str = "info"):
-    py_level = logging.INFO if level == "info" else logging.WARNING if level == "warn" else logging.DEBUG
+    py_level = logging.ERROR if level == "error" else logging.WARNING if level == "warn" else logging.INFO if level == "info" else logging.DEBUG
     logger.log(py_level, msg)
     if _log_callback:
         try:

@@ -145,7 +145,7 @@ def transform_dash_manifest(body_content: str, target_url: str) -> str:
         return tag
 
     body_content = re.sub(
-        r'<AdaptationSet[^>]*>.*?</AdaptationSet>',
+        r'<(?:\w+:)?AdaptationSet[^>]*>.*?</(?:\w+:)?AdaptationSet>',
         process_adaptation_set,
         body_content,
         flags=re.DOTALL
@@ -213,7 +213,7 @@ class _Handler(BaseHTTPRequestHandler):
     # -- verbs ------------------------------------------------------------
 
     def do_OPTIONS(self):  # noqa: N802
-        self.server.media_server._logger(f"Received OPTIONS: {self.path}")
+        self.server.media_server.log(f"Received OPTIONS: {self.path}", "debug")
         if self.path.startswith("/drm/") or self.path.startswith("/amazon/license"):
             self.send_response(200)
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -225,7 +225,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_error(405)
 
     def do_POST(self):
-        self.server.media_server._logger(f"Received POST: {self.path}")
+        self.server.media_server.log(f"Received POST: {self.path}", "debug")
 
         # ====================================================================
         # [AMAZON LICENSE PROXY ENDPOINT]

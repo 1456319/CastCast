@@ -1026,7 +1026,7 @@ class CastService:
             resume_pos = max(0.0, raw_pos - 10.0)
 
         if not title or title in ("Fetching title...", "Unknown title"):
-            title = resolve_title(path)
+            title = resolve_title(path, provider="amazon")
             with self._lock:
                 changed = False
                 for item in self.amazon_queue:
