@@ -378,17 +378,10 @@ export default function App() {
       setNotice(`Queued ${result.queued ?? 0} item(s); ${result.preparing ?? 0} preparing, ${result.skipped ?? 0} skipped.`);
     });
 
-  const requestSubtitles = () =>
-    cast?.source_path &&
-    run("subtitles", async () => {
-      const result = await daemon.requestOpenSubtitles(cast.source_path, "eng");
-      if (result.error) setNotice(result.error);
-      else setNotice("English subtitles loaded from OpenSubtitles.");
-    });
-
   const cast = status?.cast;
   const live = cast ? LIVE_STATES.has(cast.state) : false;
   const remux = status?.remux;
+  const activeTrackKey = cast?.active_track_ids?.join(",") || "";
 
   useEffect(() => {
     if (!live || !cast?.active_track_ids?.length) {
@@ -414,7 +407,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [live, cast?.active_track_ids]);
+  }, [live, activeTrackKey]);
 
   // ---- daemon offline ------------------------------------------------
   if (!online) {
@@ -626,7 +619,7 @@ export default function App() {
               </button>
               {(() => {
                 const hasActiveSubs = (cast.active_track_ids?.length || 0) > 0;
-                const isSubtitlesOn = Boolean(cast.has_text_tracks || hasActiveSubs);
+                const isSubtitlesOn = hasActiveSubs;
                 const displayLang = (activeSubtitleLang || "EN").toUpperCase();
 
                 return (

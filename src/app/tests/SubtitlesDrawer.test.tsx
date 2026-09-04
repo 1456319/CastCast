@@ -186,4 +186,88 @@ describe('SubtitlesDrawer', () => {
     fireEvent.click(backdrop);
     expect(onClose).toHaveBeenCalledTimes(2);
   });
+
+  it('passes language input to listRemoteSubtitles when searching external subtitles', async () => {
+    vi.mocked(daemonLib.daemon.getAvailableSubtitles).mockResolvedValue({
+      source_type: 'local',
+      active_track_ids: [],
+      tracks: [],
+      remote_supported: true
+    });
+
+    vi.mocked(daemonLib.daemon.listRemoteSubtitles).mockResolvedValue([]);
+
+    render(<SubtitlesDrawer isOpen={true} onClose={vi.fn()} sourceType="local" />);
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/search subtitles/i)).toBeInTheDocument();
+      expect(screen.getByPlaceholderText(/language/i)).toBeInTheDocument();
+    });
+
+    const queryInput = screen.getByPlaceholderText(/search subtitles/i);
+    const langInput = screen.getByPlaceholderText(/language/i);
+
+    fireEvent.change(queryInput, { target: { value: 'The Matrix' } });
+    fireEvent.change(langInput, { target: { value: 'spa' } });
+
+    const searchButton = screen.getByRole('button', { name: /^search$/i });
+    fireEvent.click(searchButton);
+
+    await waitFor(() => {
+      expect(daemonLib.daemon.listRemoteSubtitles).toHaveBeenCalledWith({
+        query: 'The Matrix',
+        language: 'spa'
+      });
+    });
+  });
+
+  it('dismisses drawer when Escape key is pressed', async () => {
+    vi.mocked(daemonLib.daemon.getAvailableSubtitles).mockResolvedValue({
+      source_type: 'local',
+      active_track_ids: [],
+      tracks: [],
+      remote_supported: false
+    });
+
+    const onClose = vi.fn();
+    render(<SubtitlesDrawer isOpen={true} onClose={onClose} sourceType="local" />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /turn subtitles off/i })).toBeInTheDocument();
+    });
+
+    fireEvent.keyDown(window, { key: 'Escape', code: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('resets error on handleSelectTrack and handleTurnOff', async () => {
+    vi.mocked(daemonLib.daemon.getAvailableSubtitles).mockResolvedValue({
+      source_type: 'local',
+      active_track_ids: [1],
+      tracks: [{ track_id: 1, language: 'eng', label: 'English', source: 'embedded' }],
+      remote_supported: false
+    });
+
+    render(<SubtitlesDrawer isOpen={true} onClose={vi.fn()} sourceType="local" />);
+
+    await waitFor(() => {
+      expect(screen.getByText('English')).toBeInTheDocument();
+    });
+
+    // Simulate an error occurring first on selection failure
+    vi.mocked(daemonLib.daemon.selectSubtitle).mockRejectedValueOnce(new Error('Switch failed'));
+    fireEvent.click(screen.getByText('English'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Switch failed')).toBeInTheDocument();
+    });
+
+    // Next action (e.g. handleTurnOff) should clear previous error
+    vi.mocked(daemonLib.daemon.selectSubtitle).mockResolvedValue(undefined as any);
+    fireEvent.click(screen.getByRole('button', { name: /turn subtitles off/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByText('Switch failed')).not.toBeInTheDocument();
+    });
+  });
 });

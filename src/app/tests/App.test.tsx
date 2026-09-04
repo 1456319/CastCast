@@ -17,6 +17,8 @@ vi.mock('../lib/daemon', async (importOriginal) => {
       reorderAmazonQueue: vi.fn(),
       cast: vi.fn(),
       preflight: vi.fn(),
+      getAvailableSubtitles: vi.fn(),
+      selectSubtitle: vi.fn(),
     },
     subscribe: vi.fn()
   };
@@ -32,6 +34,12 @@ describe('App', () => {
     vi.mocked(daemonLib.daemon.library).mockResolvedValue({ items: [] });
     vi.mocked(daemonLib.daemon.getTrash).mockResolvedValue({ items: [] });
     vi.mocked(daemonLib.daemon.getAmazonQueue).mockResolvedValue({ items: [] });
+    vi.mocked(daemonLib.daemon.getAvailableSubtitles).mockResolvedValue({
+      source_type: 'local',
+      active_track_ids: [],
+      tracks: [],
+      remote_supported: false
+    });
     vi.mocked(daemonLib.subscribe).mockReturnValue(vi.fn());
   });
 
@@ -327,6 +335,33 @@ describe('App', () => {
         null,
         'My Super Clean Movie'
       );
+    });
+  });
+
+  it('renders "Subtitles: Off" when subtitles are disabled even if has_text_tracks is true', async () => {
+    vi.mocked(daemonLib.daemon.status).mockResolvedValue({
+      connected: true,
+      device: { host: '192.168.1.100', friendly_name: 'Living Room TV', model: 'Chromecast', is_ultra: true },
+      media_server: { base_url: '', lan_ip: '', port: 0, roots: [] },
+      tools: { ffmpeg: true, ffprobe: true, yt_dlp: true },
+      remux: null,
+      cast: {
+        state: 'playing', position: 10, duration: 100, volume: 1, muted: false,
+        title: 'Test Movie', reconnects: 0, stream_stalls: 0, last_error: '',
+        idle_reason: '', source_path: '',
+        has_text_tracks: true,
+        active_track_ids: []
+      }
+    });
+
+    render(<App />);
+
+    await act(async () => {
+      vi.advanceTimersByTime(100);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Subtitles: Off')).toBeInTheDocument();
     });
   });
 });

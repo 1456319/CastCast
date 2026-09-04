@@ -89,6 +89,19 @@ export const SubtitlesDrawer: React.FC<SubtitlesDrawerProps> = ({
     }
   }, [propActiveTrackIds]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const effectiveSource = (subtitlesData?.source_type || sourceType || "local").toLowerCase();
@@ -118,6 +131,7 @@ export const SubtitlesDrawer: React.FC<SubtitlesDrawerProps> = ({
   const badge = getSourceBadge();
 
   const handleSelectTrack = async (trackId: number) => {
+    setError(null);
     try {
       await daemon.selectSubtitle(trackId);
       const newIds = [trackId];
@@ -129,6 +143,7 @@ export const SubtitlesDrawer: React.FC<SubtitlesDrawerProps> = ({
   };
 
   const handleTurnOff = async () => {
+    setError(null);
     try {
       await daemon.selectSubtitle(null);
       setActiveTrackIds([]);
@@ -387,6 +402,13 @@ export const SubtitlesDrawer: React.FC<SubtitlesDrawerProps> = ({
                       onChange={(e) => setSearchQuery(e.target.value)}
                       placeholder="Search subtitles (title or IMDb)..."
                       className="flex-1 rounded border border-emerald-500/30 bg-[#050807] px-3 py-1.5 text-xs text-emerald-200 placeholder-emerald-600 focus:border-emerald-400 focus:outline-none"
+                    />
+                    <input
+                      type="text"
+                      value={searchLang}
+                      onChange={(e) => setSearchLang(e.target.value)}
+                      placeholder="Language (e.g. spa, fre)"
+                      className="w-28 rounded border border-emerald-500/30 bg-[#050807] px-2.5 py-1.5 text-xs text-emerald-200 placeholder-emerald-600 focus:border-emerald-400 focus:outline-none"
                     />
                     <button
                       type="submit"
