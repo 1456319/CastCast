@@ -81,6 +81,73 @@ def detect_lan_ip(target: str = "8.8.8.8") -> str:
         sock.close()
 
 
+def transform_dash_manifest(body_content: str, target_url: str) -> str:
+    """
+    In-flight transformation for proxied DASH manifests (e.g. Amazon Prime Video).
+
+    1. BaseURL injection: points to original CDN directory so relative URLs resolve.
+    2. Filters non-English audio tracks ONLY, leaving all text/subtitle tracks (in all languages)
+       and video tracks completely intact.
+    3. Strips PlayReady ContentProtection entirely.
+    4. Wraps bare Widevine protobufs in valid MP4 pssh boxes.
+    5. Preserves all 4K video representations (height="2160") completely untouched.
+    """
+    import re, base64
+
+    # 1. BaseURL injection
+    base_url = target_url[:target_url.rfind('/')+1]
+    body_content = re.sub(r'(<MPD[^>]*>)', r'\1\n  <BaseURL>' + base_url + r'</BaseURL>', body_content, count=1)
+
+    # 2. Filter non-English audio tracks ONLY (leave all subtitle and video tracks intact)
+    def filter_english_audio(match):
+        tag = match.group(0)
+        lang_match = re.search(r'lang="([^"]+)"', tag)
+        if lang_match:
+            lang = lang_match.group(1).lower()
+            if not lang.startswith("en"):
+                return ""
+        return tag
+
+    def is_audio_adaptation_set(tag: str) -> bool:
+        has_audio = 'contentType="audio"' in tag or 'mimeType="audio"' in tag
+        has_text = any(t in tag for t in ['contentType="text"', 'contentType="subtitle"', 'mimeType="text"', 'text/vtt', 'application/ttml+xml'])
+        has_video = 'contentType="video"' in tag or 'height=' in tag
+        return has_audio and not has_text and not has_video
+
+    body_content = re.sub(
+        r'<AdaptationSet[^>]*>.*?</AdaptationSet>',
+        lambda m: filter_english_audio(m) if is_audio_adaptation_set(m.group(0)) else m.group(0),
+        body_content,
+        flags=re.DOTALL
+    )
+
+    # 3. Strip PlayReady ContentProtection entirely
+    body_content = re.sub(r'<ContentProtection[^>]*schemeIdUri="urn:uuid:9A04F079-9840-4286-AB92-E65BE0885F95"[^>]*>.*?</ContentProtection>', '', body_content, flags=re.DOTALL)
+
+    # 4. Wrap remaining bare Widevine protobufs in valid MP4 pssh boxes
+    def fix_widevine_pssh(match):
+        inner_b64 = match.group(1)
+        try:
+            decoded = base64.b64decode(inner_b64)
+            if len(decoded) > 8 and decoded[4:8] == b'pssh':
+                return match.group(0)  # Already valid
+            system_id = bytes.fromhex("EDEF8BA979D64ACEA3C827DCD51D21ED")
+            box = bytearray()
+            box.extend((32 + len(decoded)).to_bytes(4, 'big'))
+            box.extend(b'pssh')
+            box.extend(b'\x00\x00\x00\x00')
+            box.extend(system_id)
+            box.extend(len(decoded).to_bytes(4, 'big'))
+            box.extend(decoded)
+            valid_b64 = base64.b64encode(box).decode('utf-8')
+            return f'<cenc:pssh>{valid_b64}</cenc:pssh>'
+        except Exception:
+            return match.group(0)
+
+    body_content = re.sub(r'<cenc:pssh>\s*(.*?)\s*</cenc:pssh>', fix_widevine_pssh, body_content, flags=re.DOTALL)
+    return body_content
+
+
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "castcast"
@@ -313,55 +380,8 @@ class _Handler(BaseHTTPRequestHandler):
                 # or truncate (cutting off the manifest). Both cause LOAD_FAILED.
                 # ====================================================================
                 elif "dash+xml" in content_type.lower() or target_url.endswith(".mpd"):
-                    import re, base64
                     body_content = response.read().decode("utf-8", "replace")
-                    
-                    # Amazon's MPD URLs are relative, but if we proxied the MPD, we changed the base URL!
-                    # We MUST insert a <BaseURL> pointing to the original Amazon MPD directory!
-                    base_url = target_url[:target_url.rfind('/')+1]
-                    body_content = re.sub(r'(<MPD[^>]*>)', r'\1\n  <BaseURL>' + base_url + r'</BaseURL>', body_content, count=1)
-                    
-                    # Strip out non-English audio and text/subtitle tracks
-                    def filter_english(match):
-                        tag = match.group(0)
-                        lang_match = re.search(r'lang="([^"]+)"', tag)
-                        if lang_match:
-                            lang = lang_match.group(1).lower()
-                            if not lang.startswith("en"):
-                                return ""
-                                
-                        # We will no longer mangle the Role tag. Amazon uses 'caption'.
-                        # Mangling it to 'forced_subtitle' may be breaking Shaka's internal sync engine on seek.
-                        return tag
-                    body_content = re.sub(r'<AdaptationSet[^>]*>.*?</AdaptationSet>', 
-                        lambda m: filter_english(m) if any(attr in m.group(0) for attr in ['contentType="audio"', 'contentType="text"', 'contentType="subtitle"', 'mimeType="audio"', 'mimeType="text"']) else m.group(0), 
-                        body_content, flags=re.DOTALL)
-                    
-                    # Strip PlayReady ContentProtection entirely
-                    body_content = re.sub(r'<ContentProtection[^>]*schemeIdUri="urn:uuid:9A04F079-9840-4286-AB92-E65BE0885F95"[^>]*>.*?</ContentProtection>', '', body_content, flags=re.DOTALL)
-                    
-                    # Wrap the remaining bare Widevine protobufs in valid MP4 pssh boxes
-                    def fix_widevine_pssh(match):
-                        inner_b64 = match.group(1)
-                        try:
-                            decoded = base64.b64decode(inner_b64)
-                            if len(decoded) > 8 and decoded[4:8] == b'pssh':
-                                return match.group(0) # Already valid
-                            system_id = bytes.fromhex("EDEF8BA979D64ACEA3C827DCD51D21ED")
-                            box = bytearray()
-                            box.extend((32 + len(decoded)).to_bytes(4, 'big'))
-                            box.extend(b'pssh')
-                            box.extend(b'\x00\x00\x00\x00')
-                            box.extend(system_id)
-                            box.extend(len(decoded).to_bytes(4, 'big'))
-                            box.extend(decoded)
-                            valid_b64 = base64.b64encode(box).decode('utf-8')
-                            return f'<cenc:pssh>{valid_b64}</cenc:pssh>'
-                        except:
-                            return match.group(0)
-                    
-                    body_content = re.sub(r'<cenc:pssh>\s*(.*?)\s*</cenc:pssh>', fix_widevine_pssh, body_content, flags=re.DOTALL)
-                    
+                    body_content = transform_dash_manifest(body_content, target_url)
                     final_body = body_content.encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", content_type)

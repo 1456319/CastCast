@@ -23,11 +23,17 @@ from .mediaserver import MediaServer, guess_mime
 from .opensubtitles import download_best, language3
 from .probe import FFMPEG, MediaInfo, ProbeError, have_ffmpeg, have_ffprobe, probe
 from .supervisor import State, Supervisor
-from .metadata import TMDBClient, resolve_title
+from .metadata import TMDBClient, parse_filename, resolve_title
+from .subtitles_remote import (
+    LANGUAGE_NAMES,
+    parse_youtube_subtitles,
+    SubDLClient,
+    download_subtitle_to_vtt,
+)
 
 DEFAULT_MEDIA_ROOT = "/storage/emulated/0/Download/CastCast/Chromecast"
 
-SUBTITLE_EXTENSIONS = {".vtt", ".srt", ".ass", ".ssa"}
+SUBTITLE_EXTENSIONS = {".vtt", ".srt", ".ass", ".ssa", ".sub"}
 
 VIDEO_EXTENSIONS = {
     ".avi",
@@ -126,7 +132,15 @@ class CastService:
             "opensubtitles_token",
             "OPENSUBTITLES_TOKEN",
         )
+        self.subdl_api_key = self._config_value(
+            "subdl_api_key",
+            "SUBDL_API_KEY",
+        )
         self._queued_for_later = set()
+        self._current_scavenged_tracks: List[dict] = []
+        self._current_source_type: str = "local"
+        self._current_media_path: str = ""
+        self._current_youtube_info: dict = {}
         self._lock = threading.RLock()
         self._events: List[Callable[[str, dict], None]] = []
         self._watchdog: Optional[threading.Thread] = None
@@ -531,9 +545,6 @@ class CastService:
         if language_note:
             self.log(language_note, "debug")
 
-        subtitle_path = self._extract_default_subtitle(path, info)
-        subtitle_language = self.default_language if subtitle_path else ""
-
         try:
             url = self.media_server.url_for(target)
         except ValueError as exc:
@@ -541,7 +552,8 @@ class CastService:
             return
 
         title = resolve_title(path)
-        tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
+        scavenged = self._scavenge_all_local_subtitles(path, info)
+        tracks, active_track_ids = self._tracks_for_load(scavenged)
 
         item = {
             "autoplay": True,
@@ -596,7 +608,12 @@ class CastService:
                     if os.path.dirname(next_entry["path"]) == os.path.dirname(source_path):
                         self.log(f"auto-advancing to {next_entry['name']}")
                         # Run cast in a background thread to avoid blocking the supervisor receiver thread
-                        threading.Thread(target=self.cast, args=(next_entry["path"],), daemon=True).start()
+                        threading.Thread(
+                            target=self.cast,
+                            args=(next_entry["path"],),
+                            kwargs={"title": next_entry.get("title")},
+                            daemon=True,
+                        ).start()
                 break
 
     def cast(self, path: str, *, allow_unsafe: bool = False,
@@ -608,11 +625,30 @@ class CastService:
         if not self.supervisor:
             return {"error": "not connected to a device"}
 
+        self._current_scavenged_tracks = []
+        self._current_media_path = path
+        self._current_youtube_info = {}
+
+        clean_path = path
+        url_match = re.search(r'(https?://[^\s]+)', path)
+        if url_match:
+            clean_path = url_match.group(1)
+
+        is_url = bool(url_match or clean_path.startswith(("http://", "https://")))
+        if is_url:
+            path_lower = clean_path.lower()
+            if "amazon.com" in path_lower or "primevideo.com" in path_lower or "gti=" in path_lower:
+                self._current_source_type = "amazon"
+            elif "youtube.com" in path_lower or "youtu.be" in path_lower:
+                self._current_source_type = "youtube"
+            else:
+                self._current_source_type = "web"
+        else:
+            self._current_source_type = "local"
+
         if offline_drm_token:
             self.log("Offline DRM token provided. Registering with local proxy.")
             license_url = self.media_server.add_drm_token(offline_drm_token)
-
-        import re
         
         # ========================================================================================
         # AMAZON PRIME VIDEO 4K UHD CASTING PIPELINE (WIDEVINE DRM)
@@ -651,40 +687,8 @@ class CastService:
         #          amazon_drm.py. This will cause Amazon to return a mixed-codec manifest that may
         #          include lower-quality streams. The Chromecast Ultra natively supports H.265/HEVC
         #          at 4K — requesting only H.265 ensures we get the highest quality stream.
-        # ========================================================================================
-        if "amazon.com" in path or "primevideo.com" in path or "gti=" in path:
-            import urllib.parse
-            from . import amazon_drm
-            parsed = urllib.parse.urlparse(path)
-            qs = urllib.parse.parse_qs(parsed.query)
-            title_id = qs.get("gti", [""])[0]
-            if not title_id:
-                import re
-                m = re.search(r'/detail/([a-zA-Z0-9]+)', parsed.path)
-                if m:
-                    title_id = m.group(1)
-            if not title_id:
-                return {"error": "Could not extract Amazon title ID from URL"}
-                
-            self.log(f"Detected Amazon Title ID: {title_id}")
-            amazon_data = amazon_drm.fetch_amazon_4k_manifest(title_id)
-            
-            import base64
-            encoded_url = base64.b64encode(amazon_data["mpd_url"].encode("utf-8")).decode("utf-8")
-            path = f"http://{self.media_server.lan_ip}:{self.media_server.port}/proxy/?url={encoded_url}"
-            self.log(f"Amazon 4K Manifest (Proxied): {path}")
-            
-            self.media_server.drm_tokens[f"amazon_{title_id}"] = {
-                "actor_token": amazon_data["actor_token"],
-                "playback_envelope": amazon_data["playback_envelope"]
-            }
-            if hasattr(self.media_server, "public_url") and self.media_server.public_url:
-                license_url = f"{self.media_server.public_url}/amazon/license?title_id={title_id}"
-                self.log(f"Using public HTTPS proxy for DRM: {license_url}")
-            else:
-                license_url = f"http://{self.media_server.lan_ip}:{self.media_server.port}/amazon/license?title_id={title_id}"
-                self.log("Warning: Using local HTTP proxy for DRM. This may fail due to Chromecast Mixed Content restrictions.", "warn")
-            
+        if is_url and ("amazon.com" in path_lower or "primevideo.com" in path_lower or "gti=" in path_lower):
+            return self._cast_amazon(clean_path, title=title)
         if not path:
             return {"error": "Media path is empty or could not be resolved"}
             
@@ -847,9 +851,32 @@ class CastService:
         target, language_note = self._target_for_default_language(target, info)
         if language_note:
             self.log(language_note, "debug")
-        if not subtitle_path:
-            subtitle_path = self._extract_default_subtitle(path, original_info)
-            subtitle_language = self.default_language if subtitle_path else subtitle_language
+
+        # Local subtitle scavenging (Tier 1: embedded streams + directory sidecars)
+        media_info = original_info if (original_info.get("subtitles")) else info
+        scavenged_tracks = self._scavenge_all_local_subtitles(path, media_info)
+
+        if subtitle_path:
+            matching = [t for t in scavenged_tracks if t.get("vtt_path") == subtitle_path]
+            if matching:
+                selected_id = matching[0]["track_id"]
+            else:
+                selected_id = len(scavenged_tracks) + 1
+                lang = language3(subtitle_language or self.default_language)
+                scavenged_tracks.append({
+                    "track_id": selected_id,
+                    "language": lang,
+                    "label": f"{LANGUAGE_NAMES.get(lang, lang.upper())} [External]",
+                    "vtt_path": subtitle_path,
+                    "source": "sidecar",
+                })
+            tracks, _ = self._tracks_for_load(scavenged_tracks)
+            active_track_ids = [selected_id]
+        else:
+            tracks, active_track_ids = self._tracks_for_load(scavenged_tracks)
+
+        self._current_scavenged_tracks = scavenged_tracks
+
         try:
             url = self.media_server.url_for(target)
         except ValueError as exc:
@@ -870,12 +897,11 @@ class CastService:
             poster_url = ""
             backdrop_url = ""
 
-        tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
+        if subtitle_index is not None:
+            active_track_ids = [subtitle_index]
+
         if audio_index is not None:
             active_track_ids.append(audio_index)
-
-        if subtitle_index is not None:
-            active_track_ids.append(subtitle_index)
 
         content_type = self._get_content_type(target, info)
         resume_pos = max(0.0, self.resume_state.get(path, 0.0) - 10.0)
@@ -901,6 +927,85 @@ class CastService:
         device_name = self.device.friendly_name if self.device else "?"
         self.log(f"casting {title} [{resolution}] -> {device_name}")
         return {**report, "casting": True, "url": url}
+
+    def _cast_amazon(self, path: str, title: Optional[str] = None, resume_pos: Optional[float] = None, manifest_text: Optional[str] = None) -> dict:
+        import urllib.parse
+        import urllib.request
+        import base64
+        from . import amazon_drm
+
+        self.log(f"DEBUG-ONLY: _cast_amazon processing path: {path}", "debug")
+        with self._lock:
+            self._current_scavenged_tracks = []
+        self._current_source_type = "amazon"
+        self._current_media_path = path
+
+        parsed = urllib.parse.urlparse(path)
+        qs = urllib.parse.parse_qs(parsed.query)
+        title_id = qs.get("gti", [""])[0]
+        if not title_id:
+            m = re.search(r'/detail/([a-zA-Z0-9]+)', parsed.path)
+            if m:
+                title_id = m.group(1)
+        if not title_id:
+            self.log("DEBUG-ONLY: Could not extract Amazon title ID from URL", "warn")
+            return {"error": "Could not extract Amazon title ID from URL"}
+
+        self.log(f"Detected Amazon Title ID: {title_id}")
+        amazon_data = amazon_drm.fetch_amazon_4k_manifest(title_id)
+
+        encoded_url = base64.b64encode(amazon_data["mpd_url"].encode("utf-8")).decode("utf-8")
+        proxied_path = f"http://{self.media_server.lan_ip}:{self.media_server.port}/proxy/?url={encoded_url}"
+        self.log(f"Amazon 4K Manifest (Proxied): {proxied_path}")
+
+        self.media_server.drm_tokens[f"amazon_{title_id}"] = {
+            "actor_token": amazon_data["actor_token"],
+            "playback_envelope": amazon_data["playback_envelope"]
+        }
+        if hasattr(self.media_server, "public_url") and self.media_server.public_url:
+            license_url = f"{self.media_server.public_url}/amazon/license?title_id={title_id}"
+            self.log(f"Using public HTTPS proxy for DRM: {license_url}")
+        else:
+            license_url = f"http://{self.media_server.lan_ip}:{self.media_server.port}/amazon/license?title_id={title_id}"
+            self.log("Warning: Using local HTTP proxy for DRM. This may fail due to Chromecast Mixed Content restrictions.", "warn")
+
+        # Fetch and parse manifest subtitles
+        if not manifest_text:
+            manifest_text = amazon_data.get("manifest_text")
+        if not manifest_text and amazon_data.get("mpd_url"):
+            try:
+                self.log(f"DEBUG-ONLY: Fetching Amazon MPD manifest for subtitle parsing: {amazon_data['mpd_url']}", "debug")
+                req = urllib.request.Request(amazon_data["mpd_url"], headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    manifest_text = resp.read().decode("utf-8", "replace")
+            except Exception as exc:
+                self.log(f"DEBUG-ONLY: Failed to fetch Amazon MPD manifest for subtitles: {exc}", "warn")
+                manifest_text = ""
+
+        if manifest_text:
+            try:
+                self.log("DEBUG-ONLY: Parsing MPD subtitles from Amazon manifest", "debug")
+                tracks = amazon_drm.parse_mpd_subtitles(manifest_text)
+                with self._lock:
+                    self._current_scavenged_tracks = tracks
+                self.log(f"DEBUG-ONLY: Populated {len(tracks)} Amazon subtitle tracks into _current_scavenged_tracks", "debug")
+            except Exception as exc:
+                self.log(f"DEBUG-ONLY: Error parsing MPD subtitles: {exc}", "warn")
+
+        content_type = "application/dash+xml"
+        if resume_pos is None:
+            raw_pos = max(self.resume_state.get(proxied_path, 0.0), self.resume_state.get(path, 0.0))
+            resume_pos = max(0.0, raw_pos - 10.0)
+
+        self.supervisor.load(
+            proxied_path,
+            content_type=content_type,
+            title=title or resolve_title(path),
+            source_path=path,
+            license_url=license_url,
+            position=resume_pos
+        )
+        return {"casting": True, "url": proxied_path, "drm": True}
 
     def queue(self, paths: list[str]) -> dict:
         """Queue multiple items for playback. Pre-flights each and only queues castable ones."""
@@ -933,9 +1038,6 @@ class CastService:
             if language_note:
                 self.log(language_note, "debug")
 
-            subtitle_path = self._extract_default_subtitle(path, info)
-            subtitle_language = self.default_language if subtitle_path else ""
-
             try:
                 url = self.media_server.url_for(target)
             except ValueError as exc:
@@ -944,7 +1046,8 @@ class CastService:
                 continue
 
             title = resolve_title(path)
-            tracks, active_track_ids = self._tracks_for_load(subtitle_path, subtitle_language)
+            scavenged = self._scavenge_all_local_subtitles(path, info)
+            tracks, active_track_ids = self._tracks_for_load(scavenged)
 
             item = {
                 "autoplay": True,
@@ -1178,20 +1281,436 @@ class CastService:
             self.supervisor.seek(float(snap.get("position") or 0.0))
         return {**cast_result, "subtitles": result.__dict__}
 
-    def _tracks_for_load(self, subtitle_path: str = "", language: str = "") -> tuple[list, list]:
-        if not subtitle_path:
+    def _embedded_vtt_path(self, path: str, index: int, language: str) -> str:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        digest = hashlib.sha1((path + str(index) + language + "embedded").encode()).hexdigest()[:12]
+        return os.path.join(self.work_dir, f"{stem}.{language}.{index}.{digest}.vtt")
+
+    def _scavenge_all_local_subtitles(self, path: str, info: dict) -> list[dict]:
+        """Scavenge all local subtitles (embedded container streams + directory sidecars).
+
+        Extracts/converts all streams to WebVTT in work_dir and assigns incremental track IDs.
+        Preserves 4K UHD qualification by strictly avoiding video re-encoding / hardsubbing.
+        """
+        tracks: list[dict] = []
+        track_id = 1
+        seen_paths = set()
+
+        self.log(f"DEBUG-ONLY: scavenging local subtitles for {os.path.basename(path)}", "debug")
+
+        # 1. Embedded container subtitle streams
+        subtitles = (info or {}).get("subtitles") or []
+        if subtitles:
+            self.log(f"DEBUG-ONLY: found {len(subtitles)} embedded subtitle stream(s)", "debug")
+            if not have_ffmpeg():
+                self.log("DEBUG-ONLY: embedded subtitles found but ffmpeg is unavailable", "debug")
+            else:
+                for sub in subtitles:
+                    codec = (sub.get("codec") or "").lower()
+                    idx = sub.get("index")
+                    if codec in {"pgs", "hdmv_pgs_subtitle", "dvd_subtitle", "dvdsub", "pgssub"}:
+                        self.log(
+                            f"DEBUG-ONLY: skipping bitmap subtitle stream {idx} (codec: {codec}) to preserve hardware overlay",
+                            "debug",
+                        )
+                        continue
+
+                    raw_lang = sub.get("language") or "und"
+                    lang = language3(raw_lang)
+                    lang_name = LANGUAGE_NAMES.get(lang, lang.upper())
+                    title = (sub.get("title") or "").strip()
+                    if title and title.lower() not in {lang_name.lower(), lang.lower()}:
+                        label = f"{lang_name} ({title}) [Embedded]"
+                    else:
+                        label = f"{lang_name} [Embedded]"
+
+                    out_path = self._embedded_vtt_path(path, idx, lang)
+                    is_cached = False
+                    if os.path.exists(out_path) and os.path.exists(path):
+                        try:
+                            is_cached = os.path.getsize(out_path) > 0 and os.path.getmtime(out_path) >= os.path.getmtime(path)
+                        except OSError:
+                            is_cached = False
+
+                    if is_cached:
+                        self.log(
+                            f"DEBUG-ONLY: using cached embedded {lang} subtitles: {os.path.basename(out_path)}",
+                            "debug",
+                        )
+                    else:
+                        cmd = self._subtitle_extract_command(path, sub, out_path)
+                        self.log(
+                            f"DEBUG-ONLY: extracting embedded subtitle track {idx} ({lang}): {' '.join(cmd)}",
+                            "debug",
+                        )
+                        try:
+                            proc = subprocess.run(cmd, capture_output=True, timeout=300, check=False)
+                            if proc.returncode != 0:
+                                detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+                                reason = detail[-1] if detail else proc.returncode
+                                self.log(f"embedded subtitle extraction failed (stream {idx}): {reason}", "warn")
+                                if os.path.exists(out_path):
+                                    try:
+                                        os.unlink(out_path)
+                                    except OSError:
+                                        pass
+                                continue
+                        except (subprocess.TimeoutExpired, OSError) as exc:
+                            self.log(f"embedded subtitle extraction error (stream {idx}): {exc}", "warn")
+                            if os.path.exists(out_path):
+                                try:
+                                    os.unlink(out_path)
+                                except OSError:
+                                    pass
+                            continue
+
+                    tracks.append({
+                        "track_id": track_id,
+                        "language": lang,
+                        "label": label,
+                        "vtt_path": out_path,
+                        "source": "embedded",
+                    })
+                    seen_paths.add(out_path)
+                    track_id += 1
+
+        # 2. Directory sidecar subtitle files
+        directory = os.path.dirname(os.path.abspath(path))
+        stem = os.path.splitext(os.path.basename(path))[0]
+        if os.path.isdir(directory):
+            self.log(f"DEBUG-ONLY: scanning directory {directory} for sidecar subtitles matching {stem}", "debug")
+            try:
+                entries = sorted(os.listdir(directory))
+            except OSError as exc:
+                self.log(f"failed to read directory {directory}: {exc}", "warn")
+                entries = []
+
+            for filename in entries:
+                full = os.path.join(directory, filename)
+                name_stem, ext = os.path.splitext(filename)
+                if ext.lower() not in SUBTITLE_EXTENSIONS:
+                    continue
+                if not os.path.isfile(full):
+                    continue
+
+                if name_stem != stem and not (
+                    name_stem.lower().startswith(stem.lower() + ".")
+                    or name_stem.lower().startswith(stem.lower() + "-")
+                    or name_stem.lower().startswith(stem.lower() + "_")
+                ):
+                    continue
+
+                # Parse language from sidecar filename
+                if name_stem.lower() == stem.lower():
+                    lang = self.default_language
+                    extra = ""
+                else:
+                    remainder = name_stem[len(stem):].lstrip("._- ")
+                    tokens = [t for t in re.split(r"[._ -]+", remainder) if t]
+                    extracted_lang = None
+                    extra_tokens = []
+                    for token in tokens:
+                        t_lower = token.lower()
+                        if t_lower in {"forced", "default", "cc", "sdh", "commentary"}:
+                            extra_tokens.append(token)
+                            continue
+                        parsed_lang = language3(t_lower)
+                        if not extracted_lang and parsed_lang and (
+                            t_lower in LANGUAGE_NAMES or (len(t_lower) in (2, 3) and t_lower.isalpha()) or t_lower in {"english", "spanish", "french", "german"}
+                        ):
+                            extracted_lang = parsed_lang
+                        else:
+                            extra_tokens.append(token)
+                    if not extracted_lang:
+                        extracted_lang = self.default_language
+                    lang = extracted_lang
+                    extra = " ".join(extra_tokens)
+
+                lang_name = LANGUAGE_NAMES.get(lang, lang.upper())
+                if extra:
+                    label = f"{lang_name} ({extra}) [Sidecar]"
+                else:
+                    label = f"{lang_name} [Sidecar]"
+
+                if ext.lower() == ".vtt":
+                    vtt_path = full
+                else:
+                    if not have_ffmpeg():
+                        self.log(
+                            f"DEBUG-ONLY: sidecar subtitles require WebVTT conversion but ffmpeg is unavailable: {filename}",
+                            "warn",
+                        )
+                        continue
+                    out_path = self._sidecar_vtt_path(full, lang)
+                    is_cached = False
+                    if os.path.exists(out_path) and os.path.exists(full):
+                        try:
+                            is_cached = os.path.getsize(out_path) > 0 and os.path.getmtime(out_path) >= os.path.getmtime(full)
+                        except OSError:
+                            is_cached = False
+
+                    if is_cached:
+                        self.log(
+                            f"DEBUG-ONLY: using cached sidecar {lang} subtitles: {os.path.basename(out_path)}",
+                            "debug",
+                        )
+                    else:
+                        cmd = [FFMPEG, "-hide_banner", "-y", "-i", full, "-f", "webvtt", out_path]
+                        self.log(f"DEBUG-ONLY: converting sidecar subtitles to WebVTT: {' '.join(cmd)}", "debug")
+                        try:
+                            proc = subprocess.run(cmd, capture_output=True, timeout=120, check=False)
+                            if proc.returncode != 0:
+                                detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+                                reason = detail[-1] if detail else proc.returncode
+                                self.log(f"sidecar subtitle conversion failed: {reason}", "warn")
+                                if os.path.exists(out_path):
+                                    try:
+                                        os.unlink(out_path)
+                                    except OSError:
+                                        pass
+                                continue
+                        except (subprocess.TimeoutExpired, OSError) as exc:
+                            self.log(f"sidecar subtitle conversion error ({filename}): {exc}", "warn")
+                            if os.path.exists(out_path):
+                                try:
+                                    os.unlink(out_path)
+                                except OSError:
+                                    pass
+                            continue
+                    vtt_path = out_path
+
+                if vtt_path in seen_paths:
+                    continue
+
+                tracks.append({
+                    "track_id": track_id,
+                    "language": lang,
+                    "label": label,
+                    "vtt_path": vtt_path,
+                    "source": "sidecar",
+                })
+                seen_paths.add(vtt_path)
+                track_id += 1
+
+        self.log(f"DEBUG-ONLY: scavenged {len(tracks)} local subtitle track(s) for {os.path.basename(path)}", "debug")
+        return tracks
+
+    def _tracks_for_load(self, tracks: list[dict] | str = "", language: str = "") -> tuple[list[dict], list[int]]:
+        if isinstance(tracks, str):
+            if not tracks:
+                return [], []
+            try:
+                url = self.media_server.url_for(tracks)
+            except ValueError as exc:
+                self.log(f"failed to generate url for subtitle path {tracks}: {exc}", "warn")
+                return [], []
+            lang = language3(language or self.default_language)
+            return ([{
+                "trackId": 1,
+                "type": "TEXT",
+                "trackContentId": url,
+                "trackContentType": "text/vtt",
+                "name": LANGUAGE_NAMES.get(lang, lang.upper()),
+                "language": lang,
+                "subtype": "SUBTITLES",
+            }], [1])
+
+        if not tracks:
             return [], []
-        url = self.media_server.url_for(subtitle_path)
-        lang = language3(language or self.default_language)
-        return ([{
-            "trackId": 1,
+
+        caf_tracks = []
+        active_track_ids: list[int] = []
+        default_active_id = None
+
+        for t in tracks:
+            track_id = t["track_id"]
+            lang = t.get("language") or "und"
+            vtt_path = t.get("vtt_path")
+            if vtt_path:
+                try:
+                    url = self.media_server.url_for(vtt_path)
+                except ValueError as exc:
+                    self.log(f"skipping subtitle track {track_id} ({vtt_path}) due to url error: {exc}", "warn")
+                    continue
+            else:
+                url = t.get("trackContentId", "")
+
+            caf_tracks.append({
+                "trackId": track_id,
+                "type": "TEXT",
+                "trackContentId": url,
+                "trackContentType": "text/vtt",
+                "name": t.get("label") or LANGUAGE_NAMES.get(lang, lang.upper()),
+                "language": lang,
+                "subtype": "SUBTITLES",
+            })
+            if lang == "eng" and default_active_id is None:
+                default_active_id = track_id
+
+        if default_active_id is not None:
+            active_track_ids = [default_active_id]
+
+        return caf_tracks, active_track_ids
+
+    def select_subtitle_track(self, track_id: Optional[int]) -> dict:
+        self.log(f"DEBUG-ONLY: selecting subtitle track {track_id}", "debug")
+        if not self.supervisor:
+            return {"error": "not connected to a device"}
+
+        if isinstance(track_id, bool):
+            return {"error": f"invalid track_id: {track_id}"}
+
+        if track_id is None:
+            self.supervisor.set_active_tracks([])
+            return {"active_track_ids": []}
+
+        try:
+            tid = int(track_id)
+        except (ValueError, TypeError):
+            return {"error": f"invalid track_id: {track_id}"}
+
+        if tid == 0:
+            self.supervisor.set_active_tracks([])
+            return {"active_track_ids": []}
+
+        valid_ids = {t["track_id"] for t in self._current_scavenged_tracks if "track_id" in t}
+        if tid not in valid_ids:
+            self.log(f"DEBUG-ONLY: subtitle track_id {tid} not found in available tracks: {valid_ids}", "warn")
+            return {"error": f"track_id {tid} not found in available tracks"}
+
+        self.supervisor.set_active_tracks([tid])
+        return {"active_track_ids": [tid]}
+
+    def get_available_subtitles(self) -> dict:
+        active_track_ids = []
+        if self.supervisor and hasattr(self.supervisor, "status"):
+            active_track_ids = getattr(self.supervisor.status, "active_track_ids", []) or []
+        with self._lock:
+            tracks_copy = list(self._current_scavenged_tracks)
+        return {
+            "source_type": self._current_source_type,
+            "active_track_ids": active_track_ids,
+            "tracks": tracks_copy,
+            "remote_supported": self._current_source_type in ("local", "youtube"),
+        }
+
+    def list_remote_subtitles(self, query: str = "", imdb_id: str = "", languages: list[str] | None = None) -> list[dict]:
+        self.log(f"DEBUG-ONLY: list_remote_subtitles source_type={self._current_source_type}", "debug")
+        if self._current_source_type == "youtube":
+            info = getattr(self, "_current_youtube_info", None)
+            if not info and getattr(self, "_current_media_path", ""):
+                try:
+                    cmd = ["yt-dlp", "--dump-json", "--skip-download", self._current_media_path]
+                    self.log(f"DEBUG-ONLY: extracting youtube subtitles info with yt-dlp: {self._current_media_path}", "debug")
+                    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                    if proc.returncode == 0 and proc.stdout:
+                        import json
+                        self._current_youtube_info = json.loads(proc.stdout)
+                        info = self._current_youtube_info
+                except Exception as exc:
+                    self.log(f"DEBUG-ONLY: failed to extract youtube info via yt-dlp: {exc}", "debug")
+            return parse_youtube_subtitles(info or {})
+
+        elif self._current_source_type == "local":
+            q = query
+            if not q and not imdb_id and getattr(self, "_current_media_path", ""):
+                parsed = parse_filename(os.path.basename(self._current_media_path))
+                q = parsed.get("title") or resolve_title(self._current_media_path)
+            client = SubDLClient(
+                api_key=getattr(self, "subdl_api_key", ""),
+                opensubtitles_api_key=getattr(self, "opensubtitles_api_key", ""),
+                opensubtitles_token=getattr(self, "opensubtitles_token", ""),
+            )
+            langs = languages or ([self.default_language] if getattr(self, "default_language", None) else None)
+            return client.search(imdb_id=imdb_id, query=q, languages=langs)
+
+        return []
+
+    def fetch_and_activate_remote_subtitle(self, language: str, track_type: str, url: str) -> dict:
+        self.log(f"DEBUG-ONLY: fetch_and_activate_remote_subtitle lang={language} type={track_type} url={url}", "debug")
+        if not self.supervisor:
+            return {"error": "not connected to a device"}
+
+        # Idempotency check: if track already fetched, activate existing track immediately
+        with self._lock:
+            for existing in self._current_scavenged_tracks:
+                if existing.get("url") == url or existing.get("download_url") == url:
+                    tid = existing.get("track_id")
+                    if tid is not None:
+                        self.log(f"DEBUG-ONLY: activating already-fetched remote subtitle track {tid}", "debug")
+                        self.supervisor.set_active_tracks([tid])
+                        return {
+                            "track_id": tid,
+                            "active_track_ids": [tid],
+                            "track": existing,
+                        }
+
+            existing_ids = [t["track_id"] for t in self._current_scavenged_tracks if "track_id" in t]
+            new_track_id = max(existing_ids, default=0) + 1
+
+        lang3 = language3(language or self.default_language)
+        lang_name = LANGUAGE_NAMES.get(lang3, lang3.upper())
+
+        filename_hint = f"remote_{lang3}_{new_track_id}.vtt"
+        try:
+            vtt_path = download_subtitle_to_vtt(
+                url=url,
+                work_dir=self.work_dir,
+                filename_hint=filename_hint,
+                opensubtitles_api_key=getattr(self, "opensubtitles_api_key", ""),
+                opensubtitles_token=getattr(self, "opensubtitles_token", ""),
+            )
+        except Exception as exc:
+            self.log(f"DEBUG-ONLY: failed to download remote subtitle {url}: {exc}", "warn")
+            return {"error": f"Failed to download remote subtitle: {exc}"}
+
+        if track_type == "autogenerated":
+            label = f"{lang_name} (autogenerated)"
+        elif track_type == "translated":
+            label = f"{lang_name} (translated)"
+        else:
+            label = f"{lang_name} [Remote]"
+
+        try:
+            media_url = self.media_server.url_for(vtt_path)
+        except Exception as exc:
+            self.log(f"DEBUG-ONLY: url_for failed for {vtt_path}: {exc}", "warn")
+            media_url = ""
+
+        new_track = {
+            "track_id": new_track_id,
+            "language": lang3,
+            "label": label,
+            "vtt_path": vtt_path,
+            "source": "remote",
+            "type": track_type,
+            "url": url,
+        }
+
+        caf_track = {
+            "trackId": new_track_id,
             "type": "TEXT",
-            "trackContentId": url,
+            "trackContentId": media_url,
             "trackContentType": "text/vtt",
-            "name": lang.upper(),
-            "language": lang,
+            "name": label,
+            "language": lang3,
             "subtype": "SUBTITLES",
-        }], [1])
+        }
+
+        with self._lock:
+            self._current_scavenged_tracks.append(new_track)
+            if hasattr(self.supervisor, "_session") and self.supervisor._session:
+                session = self.supervisor._session
+                if hasattr(session, "tracks") and isinstance(session.tracks, list):
+                    if not any(isinstance(t, dict) and t.get("trackId") == new_track_id for t in session.tracks):
+                        session.tracks.append(caf_track)
+
+        self.supervisor.set_active_tracks([new_track_id])
+        return {
+            "track_id": new_track_id,
+            "active_track_ids": [new_track_id],
+            "track": new_track,
+        }
 
     # -- transport passthrough --------------------------------------------
 
