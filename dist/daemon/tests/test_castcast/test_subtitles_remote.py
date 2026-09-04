@@ -337,6 +337,7 @@ class TestRemoteSubtitlesServiceAndApi(unittest.TestCase):
 
         self.svc = CastService({"media_roots": [self.media_dir], "work_dir": self.work_dir})
         self.svc.supervisor = MagicMock(spec=Supervisor)
+        self.svc.supervisor.is_active = MagicMock(return_value=False)
         self.svc.supervisor.status = MagicMock()
         self.svc.supervisor.status.active_track_ids = []
         self.svc.supervisor._session = MagicMock()
@@ -423,6 +424,13 @@ class TestRemoteSubtitlesServiceAndApi(unittest.TestCase):
         self.svc.supervisor._session.content_id = "http://fake/video.mp4"
         self.svc.supervisor._session.content_type = "video/mp4"
         self.svc.supervisor._session.title = "Test Movie"
+        self.svc.supervisor._session.subtitle = "Test Subtitle"
+        self.svc.supervisor._session.poster_url = "http://fake/poster.jpg"
+        self.svc.supervisor._session.backdrop_url = "http://fake/backdrop.jpg"
+        self.svc.supervisor._session.duration = 120.0
+        self.svc.supervisor._session.source_path = "/media/test.mp4"
+        self.svc.supervisor._session.autoplay = True
+        self.svc.supervisor._session.license_url = "http://fake/license"
 
         res = self.svc.fetch_and_activate_remote_subtitle("deu", "manual", "http://example.com/de.vtt")
         self.assertEqual(res["track_id"], 2)
@@ -431,10 +439,18 @@ class TestRemoteSubtitlesServiceAndApi(unittest.TestCase):
             "http://fake/video.mp4",
             content_type="video/mp4",
             title="Test Movie",
+            subtitle="Test Subtitle",
+            poster_url="http://fake/poster.jpg",
+            backdrop_url="http://fake/backdrop.jpg",
+            duration=120.0,
+            source_path="/media/test.mp4",
+            autoplay=True,
+            license_url="http://fake/license",
             tracks=caf_tracks,
             active_track_ids=[2],
             position=42.5,
         )
+        self.svc.supervisor.set_active_tracks.assert_not_called()
 
     def test_fetch_and_activate_remote_subtitle_disconnected(self):
         self.svc.supervisor = None

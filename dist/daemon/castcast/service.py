@@ -646,6 +646,7 @@ class CastService:
             self._current_scavenged_tracks = []
             self._current_media_path = path
             self._current_youtube_info = {}
+            self._queue_item_scavenged = {}
 
         clean_path = path
         url_match = re.search(r'(https?://[^\s]+)', path)
@@ -1748,12 +1749,21 @@ class CastService:
                     session.content_id,
                     content_type=getattr(session, "content_type", "video/mp4"),
                     title=getattr(session, "title", ""),
+                    subtitle=getattr(session, "subtitle", ""),
+                    poster_url=getattr(session, "poster_url", ""),
+                    backdrop_url=getattr(session, "backdrop_url", ""),
+                    duration=getattr(session, "duration", 0.0),
+                    source_path=getattr(session, "source_path", self._current_media_path),
+                    autoplay=getattr(session, "autoplay", True),
+                    license_url=getattr(session, "license_url", ""),
                     tracks=caf_tracks,
                     active_track_ids=[new_track_id],
                     position=current_pos,
                 )
-
-        self.supervisor.set_active_tracks([new_track_id])
+            else:
+                self.supervisor.set_active_tracks([new_track_id])
+        else:
+            self.supervisor.set_active_tracks([new_track_id])
         return {
             "track_id": new_track_id,
             "active_track_ids": [new_track_id],
