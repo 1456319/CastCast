@@ -21,7 +21,13 @@ import urllib.parse
 import urllib.error
 import json
 import base64
+import logging
+import xml.etree.ElementTree as ET
 from .amazon import get_saved_auth, DEVICE_ID, DEVICE_TYPE_ID
+from .opensubtitles import language3
+from .subtitles_remote import LANGUAGE_NAMES
+
+logger = logging.getLogger("castcast.amazon_drm")
 
 HOST_ATVPS = "https://atv-ps.amazon.com"
 HOST_API = "https://api.amazon.com"
@@ -263,3 +269,153 @@ def fetch_widevine_license(actor_token, playback_envelope, challenge_bytes):
         return base64.b64decode(res["widevineLicense"]["license"])
     else:
         raise Exception(f"License not found in response: {res}")
+
+
+def parse_mpd_subtitles(mpd_content: str) -> list[dict]:
+    """
+    Parse subtitle tracks from an Amazon Prime Video DASH MPD manifest.
+
+    Identifies all <AdaptationSet> elements where contentType="text" or mimeType in
+    ("text/vtt", "application/ttml+xml", "application/mp4").
+
+    Guarantees:
+    - All 4K video representations (height="2160") and audio tracks are completely untouched.
+    - Zero disruption to delicate 4K qualifying conditions.
+
+    Returns:
+        list[dict] with track metadata:
+        - track_id: Integer ID derived from id attribute or index.
+        - language: lang attribute, normalized with language3.
+        - mime_type: mimeType attribute or representation format.
+        - role: <Role value="..."/> or "subtitle".
+        - label: Formatted label including display name, e.g., "English [Amazon]" or "Spanish (SDH) [Amazon]".
+        - source: "amazon"
+    """
+    if not mpd_content or not isinstance(mpd_content, str):
+        return []
+
+    try:
+        root = ET.fromstring(mpd_content)
+    except Exception as e:
+        logger.debug(f"DEBUG-ONLY: Failed to parse MPD XML: {e}")
+        return []
+
+    def _local_tag(tag: str) -> str:
+        return tag.split("}")[-1] if "}" in tag else tag
+
+    tracks = []
+    used_ids = set()
+    next_id = 1
+
+    for elem in root.iter():
+        if _local_tag(elem.tag) != "AdaptationSet":
+            continue
+
+        ct = elem.attrib.get("contentType", "").strip().lower()
+        mime = elem.attrib.get("mimeType", "").strip().lower()
+
+        # Child elements inspection
+        rep_elems = [c for c in elem if _local_tag(c.tag) == "Representation"]
+        rep_mimes = [c.attrib.get("mimeType", "").strip().lower() for c in rep_elems]
+        rep_cts = [c.attrib.get("contentType", "").strip().lower() for c in rep_elems]
+
+        # 4K SAFEGUARD: Explicitly discard any video or audio adaptation sets
+        if ct in ("video", "audio") or any(r_ct in ("video", "audio") for r_ct in rep_cts):
+            continue
+        if elem.attrib.get("height") or elem.attrib.get("width"):
+            continue
+        if any(c.attrib.get("height") or c.attrib.get("width") for c in rep_elems):
+            continue
+
+        # Safeguard: check for media codecs that indicate audio or video
+        rep_codecs = [c.attrib.get("codecs", "").lower() for c in rep_elems]
+        if any(any(v_codec in code for v_codec in ("hev", "hvc", "avc", "mp4v", "vp9", "av01", "mp4a", "ec-3", "ac-3")) for code in rep_codecs):
+            continue
+
+        valid_sub_mimes = ("text/vtt", "application/ttml+xml", "application/mp4")
+        is_sub = (
+            ct in ("text", "subtitle")
+            or mime in valid_sub_mimes
+            or any(rm in valid_sub_mimes for rm in rep_mimes)
+            or any(rc in ("text", "subtitle") for rc in rep_cts)
+        )
+        if not is_sub:
+            continue
+
+        # Extract track_id
+        raw_id = elem.attrib.get("id")
+        tid = None
+        if raw_id is not None:
+            try:
+                tid = int(raw_id)
+            except (ValueError, TypeError):
+                tid = None
+        if tid is None or tid <= 0 or tid in used_ids:
+            tid = next_id
+            while tid in used_ids:
+                tid += 1
+        used_ids.add(tid)
+        next_id = max(next_id, tid + 1)
+
+        # Extract language
+        raw_lang = elem.attrib.get("lang")
+        if not raw_lang and rep_elems:
+            for rep in rep_elems:
+                if rep.attrib.get("lang"):
+                    raw_lang = rep.attrib.get("lang")
+                    break
+        lang = language3(raw_lang or "eng")
+
+        # Extract mime_type
+        track_mime = mime
+        if not track_mime and rep_mimes:
+            for rm in rep_mimes:
+                if rm in valid_sub_mimes:
+                    track_mime = rm
+                    break
+        if not track_mime:
+            track_mime = "text/vtt"
+
+        # Extract role
+        role_elems = [c for c in elem if _local_tag(c.tag) == "Role" and (c.attrib.get("value") or c.text)]
+        if role_elems:
+            role_val = (role_elems[0].attrib.get("value") or role_elems[0].text or "").strip()
+        else:
+            role_val = "subtitle"
+
+        # Accessibility tag fallback for captions / SDH
+        access_elems = [c for c in elem if _local_tag(c.tag) == "Accessibility"]
+        is_sdh = ("caption" in role_val.lower() or "sdh" in role_val.lower())
+        if not is_sdh and access_elems:
+            for acc in access_elems:
+                acc_val = (acc.attrib.get("value") or acc.text or "").lower()
+                if "caption" in acc_val or "sdh" in acc_val:
+                    is_sdh = True
+                    break
+
+        # Build label with display name (from LANGUAGE_NAMES) and role decoration
+        lang_name = LANGUAGE_NAMES.get(lang, LANGUAGE_NAMES.get(raw_lang, lang.upper()))
+        role_lower = role_val.lower()
+        if is_sdh:
+            role_suffix = " (SDH)"
+        elif "forced" in role_lower:
+            role_suffix = " (Forced)"
+        elif role_lower in ("subtitle", "main", ""):
+            role_suffix = ""
+        else:
+            role_suffix = f" ({role_val.capitalize()})"
+
+        label = f"{lang_name}{role_suffix} [Amazon]"
+
+        tracks.append({
+            "track_id": tid,
+            "language": lang,
+            "mime_type": track_mime,
+            "role": role_val,
+            "label": label,
+            "source": "amazon",
+        })
+
+    logger.debug(f"DEBUG-ONLY: parse_mpd_subtitles extracted {len(tracks)} subtitle tracks from MPD")
+    return tracks
+

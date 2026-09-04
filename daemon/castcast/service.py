@@ -687,39 +687,8 @@ class CastService:
         #          amazon_drm.py. This will cause Amazon to return a mixed-codec manifest that may
         #          include lower-quality streams. The Chromecast Ultra natively supports H.265/HEVC
         #          at 4K — requesting only H.265 ensures we get the highest quality stream.
-        # ========================================================================================
-        if "amazon.com" in path or "primevideo.com" in path or "gti=" in path:
-            import urllib.parse
-            from . import amazon_drm
-            parsed = urllib.parse.urlparse(path)
-            qs = urllib.parse.parse_qs(parsed.query)
-            title_id = qs.get("gti", [""])[0]
-            if not title_id:
-                m = re.search(r'/detail/([a-zA-Z0-9]+)', parsed.path)
-                if m:
-                    title_id = m.group(1)
-            if not title_id:
-                return {"error": "Could not extract Amazon title ID from URL"}
-                
-            self.log(f"Detected Amazon Title ID: {title_id}")
-            amazon_data = amazon_drm.fetch_amazon_4k_manifest(title_id)
-            
-            import base64
-            encoded_url = base64.b64encode(amazon_data["mpd_url"].encode("utf-8")).decode("utf-8")
-            path = f"http://{self.media_server.lan_ip}:{self.media_server.port}/proxy/?url={encoded_url}"
-            self.log(f"Amazon 4K Manifest (Proxied): {path}")
-            
-            self.media_server.drm_tokens[f"amazon_{title_id}"] = {
-                "actor_token": amazon_data["actor_token"],
-                "playback_envelope": amazon_data["playback_envelope"]
-            }
-            if hasattr(self.media_server, "public_url") and self.media_server.public_url:
-                license_url = f"{self.media_server.public_url}/amazon/license?title_id={title_id}"
-                self.log(f"Using public HTTPS proxy for DRM: {license_url}")
-            else:
-                license_url = f"http://{self.media_server.lan_ip}:{self.media_server.port}/amazon/license?title_id={title_id}"
-                self.log("Warning: Using local HTTP proxy for DRM. This may fail due to Chromecast Mixed Content restrictions.", "warn")
-            
+        if is_url and ("amazon.com" in path_lower or "primevideo.com" in path_lower or "gti=" in path_lower):
+            return self._cast_amazon(path, title=title)
         if not path:
             return {"error": "Media path is empty or could not be resolved"}
             
@@ -958,6 +927,83 @@ class CastService:
         device_name = self.device.friendly_name if self.device else "?"
         self.log(f"casting {title} [{resolution}] -> {device_name}")
         return {**report, "casting": True, "url": url}
+
+    def _cast_amazon(self, path: str, title: Optional[str] = None, resume_pos: Optional[float] = None, manifest_text: Optional[str] = None) -> dict:
+        import urllib.parse
+        import urllib.request
+        import base64
+        from . import amazon_drm
+
+        self.log(f"DEBUG-ONLY: _cast_amazon processing path: {path}", "debug")
+        self._current_source_type = "amazon"
+        self._current_media_path = path
+
+        parsed = urllib.parse.urlparse(path)
+        qs = urllib.parse.parse_qs(parsed.query)
+        title_id = qs.get("gti", [""])[0]
+        if not title_id:
+            m = re.search(r'/detail/([a-zA-Z0-9]+)', parsed.path)
+            if m:
+                title_id = m.group(1)
+        if not title_id:
+            self.log("DEBUG-ONLY: Could not extract Amazon title ID from URL", "warn")
+            return {"error": "Could not extract Amazon title ID from URL"}
+
+        self.log(f"Detected Amazon Title ID: {title_id}")
+        amazon_data = amazon_drm.fetch_amazon_4k_manifest(title_id)
+
+        encoded_url = base64.b64encode(amazon_data["mpd_url"].encode("utf-8")).decode("utf-8")
+        proxied_path = f"http://{self.media_server.lan_ip}:{self.media_server.port}/proxy/?url={encoded_url}"
+        self.log(f"Amazon 4K Manifest (Proxied): {proxied_path}")
+
+        self.media_server.drm_tokens[f"amazon_{title_id}"] = {
+            "actor_token": amazon_data["actor_token"],
+            "playback_envelope": amazon_data["playback_envelope"]
+        }
+        if hasattr(self.media_server, "public_url") and self.media_server.public_url:
+            license_url = f"{self.media_server.public_url}/amazon/license?title_id={title_id}"
+            self.log(f"Using public HTTPS proxy for DRM: {license_url}")
+        else:
+            license_url = f"http://{self.media_server.lan_ip}:{self.media_server.port}/amazon/license?title_id={title_id}"
+            self.log("Warning: Using local HTTP proxy for DRM. This may fail due to Chromecast Mixed Content restrictions.", "warn")
+
+        # Fetch and parse manifest subtitles
+        if not manifest_text:
+            manifest_text = amazon_data.get("manifest_text")
+        if not manifest_text and amazon_data.get("mpd_url"):
+            try:
+                self.log(f"DEBUG-ONLY: Fetching Amazon MPD manifest for subtitle parsing: {amazon_data['mpd_url']}", "debug")
+                req = urllib.request.Request(amazon_data["mpd_url"], headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    manifest_text = resp.read().decode("utf-8", "replace")
+            except Exception as exc:
+                self.log(f"DEBUG-ONLY: Failed to fetch Amazon MPD manifest for subtitles: {exc}", "warn")
+                manifest_text = ""
+
+        if manifest_text:
+            try:
+                self.log("DEBUG-ONLY: Parsing MPD subtitles from Amazon manifest", "debug")
+                tracks = amazon_drm.parse_mpd_subtitles(manifest_text)
+                with self._lock:
+                    self._current_scavenged_tracks = tracks
+                self.log(f"DEBUG-ONLY: Populated {len(tracks)} Amazon subtitle tracks into _current_scavenged_tracks", "debug")
+            except Exception as exc:
+                self.log(f"DEBUG-ONLY: Error parsing MPD subtitles: {exc}", "warn")
+
+        content_type = "application/dash+xml"
+        if resume_pos is None:
+            raw_pos = max(self.resume_state.get(proxied_path, 0.0), self.resume_state.get(path, 0.0))
+            resume_pos = max(0.0, raw_pos - 10.0)
+
+        self.supervisor.load(
+            proxied_path,
+            content_type=content_type,
+            title=title or resolve_title(path),
+            source_path=path,
+            license_url=license_url,
+            position=resume_pos
+        )
+        return {"casting": True, "url": proxied_path, "drm": True}
 
     def queue(self, paths: list[str]) -> dict:
         """Queue multiple items for playback. Pre-flights each and only queues castable ones."""
