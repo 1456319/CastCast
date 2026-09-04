@@ -688,7 +688,7 @@ class CastService:
         #          include lower-quality streams. The Chromecast Ultra natively supports H.265/HEVC
         #          at 4K — requesting only H.265 ensures we get the highest quality stream.
         if is_url and ("amazon.com" in path_lower or "primevideo.com" in path_lower or "gti=" in path_lower):
-            return self._cast_amazon(path, title=title)
+            return self._cast_amazon(clean_path, title=title)
         if not path:
             return {"error": "Media path is empty or could not be resolved"}
             
@@ -935,6 +935,8 @@ class CastService:
         from . import amazon_drm
 
         self.log(f"DEBUG-ONLY: _cast_amazon processing path: {path}", "debug")
+        with self._lock:
+            self._current_scavenged_tracks = []
         self._current_source_type = "amazon"
         self._current_media_path = path
 

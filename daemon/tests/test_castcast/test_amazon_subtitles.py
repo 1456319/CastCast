@@ -129,6 +129,71 @@ class TestAmazonSubtitles(unittest.TestCase):
         </MPD>"""
         self.assertEqual(parse_mpd_subtitles(no_subs_mpd), [])
 
+    def test_parse_mpd_subtitles_bytes_input(self):
+        subs = parse_mpd_subtitles(SAMPLE_MPD.encode("utf-8"))
+        self.assertEqual(len(subs), 2)
+        self.assertEqual(subs[0]["language"], "eng")
+
+    def test_parse_mpd_subtitles_track_id_collision_prevention(self):
+        mpd_with_existing_ids = """<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011">
+  <Period id="0">
+    <AdaptationSet id="1" contentType="video" width="3840" height="2160">
+      <Representation id="v4k" bandwidth="15000000"/>
+    </AdaptationSet>
+    <AdaptationSet id="2" contentType="audio" mimeType="audio/mp4" lang="en">
+      <Representation id="a1" bandwidth="128000"/>
+    </AdaptationSet>
+    <AdaptationSet contentType="text" mimeType="text/vtt" lang="es">
+      <Representation id="s1" bandwidth="1000"/>
+    </AdaptationSet>
+  </Period>
+</MPD>"""
+        subs = parse_mpd_subtitles(mpd_with_existing_ids)
+        self.assertEqual(len(subs), 1)
+        # Next ID must be > max(used_ids) which is 2 -> track_id must be 3
+        self.assertEqual(subs[0]["track_id"], 3)
+
+    def test_parse_mpd_subtitles_multiple_role_elements(self):
+        mpd_multi_role = """<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011">
+  <Period id="0">
+    <AdaptationSet contentType="text" mimeType="text/vtt" lang="en">
+      <Role value="main"/>
+      <Role value="caption"/>
+      <Representation id="s1" bandwidth="1000"/>
+    </AdaptationSet>
+  </Period>
+</MPD>"""
+        subs = parse_mpd_subtitles(mpd_multi_role)
+        self.assertEqual(len(subs), 1)
+        self.assertIn("(SDH)", subs[0]["label"])
+
+    def test_parse_mpd_subtitles_strict_application_mp4_detection(self):
+        # application/mp4 without text ct and without stpp/wvtt codec must be ignored
+        mpd_non_text_mp4 = """<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011">
+  <Period id="0">
+    <AdaptationSet mimeType="application/mp4" lang="en">
+      <Representation id="rep1" codecs="mp4a.40.2"/>
+    </AdaptationSet>
+  </Period>
+</MPD>"""
+        self.assertEqual(parse_mpd_subtitles(mpd_non_text_mp4), [])
+
+        # application/mp4 with stpp codec must be accepted as subtitle
+        mpd_stpp_mp4 = """<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011">
+  <Period id="0">
+    <AdaptationSet mimeType="application/mp4" lang="es">
+      <Representation id="rep_sub" codecs="stpp"/>
+    </AdaptationSet>
+  </Period>
+</MPD>"""
+        subs = parse_mpd_subtitles(mpd_stpp_mp4)
+        self.assertEqual(len(subs), 1)
+        self.assertEqual(subs[0]["language"], "spa")
+
     def test_4k_representations_untouched_and_excluded_from_subtitles(self):
         subs = parse_mpd_subtitles(SAMPLE_MPD_RICH)
         # Ensure 4K video adaptation set id=10 is NOT included in subtitles
@@ -140,6 +205,58 @@ class TestAmazonSubtitles(unittest.TestCase):
         self.assertIn('height="2160"', SAMPLE_MPD_RICH)
         self.assertIn('width="3840"', SAMPLE_MPD_RICH)
         self.assertIn('codecs="hev1.2.4.L153.B0"', SAMPLE_MPD_RICH)
+
+    def test_mediaserver_proxy_preserves_4k_and_multilingual_subtitles(self):
+        from castcast.mediaserver import transform_dash_manifest
+
+        mpd_input = """<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011">
+  <Period id="0">
+    <AdaptationSet id="1" contentType="video" width="3840" height="2160">
+      <Representation id="v4k" bandwidth="15000000" codecs="hev1.2.4.L153.B0" height="2160" width="3840"/>
+    </AdaptationSet>
+    <AdaptationSet id="2" contentType="audio" mimeType="audio/mp4" lang="en">
+      <Representation id="a_en" bandwidth="128000"/>
+    </AdaptationSet>
+    <AdaptationSet id="3" contentType="audio" mimeType="audio/mp4" lang="es">
+      <Representation id="a_es" bandwidth="128000"/>
+    </AdaptationSet>
+    <AdaptationSet id="4" contentType="text" mimeType="text/vtt" lang="en">
+      <Role value="main"/>
+      <Representation id="sub_en" bandwidth="1000"/>
+    </AdaptationSet>
+    <AdaptationSet id="5" contentType="text" mimeType="application/ttml+xml" lang="es">
+      <Role value="subtitle"/>
+      <Representation id="sub_es" bandwidth="1000"/>
+    </AdaptationSet>
+    <AdaptationSet id="6" contentType="text" mimeType="application/mp4" lang="fr">
+      <Role value="subtitle"/>
+      <Representation id="sub_fr" bandwidth="1000"/>
+    </AdaptationSet>
+  </Period>
+</MPD>"""
+
+        transformed = transform_dash_manifest(mpd_input, "https://cf.amazon.com/dash/manifest.mpd")
+
+        # 4K representation must be completely untouched
+        self.assertIn('height="2160"', transformed)
+        self.assertIn('width="3840"', transformed)
+        self.assertIn('codecs="hev1.2.4.L153.B0"', transformed)
+        self.assertIn('<AdaptationSet id="1" contentType="video"', transformed)
+
+        # BaseURL must be injected
+        self.assertIn('<BaseURL>https://cf.amazon.com/dash/</BaseURL>', transformed)
+
+        # English audio must be preserved
+        self.assertIn('<AdaptationSet id="2" contentType="audio" mimeType="audio/mp4" lang="en">', transformed)
+
+        # Non-English audio (es) must be stripped
+        self.assertNotIn('<AdaptationSet id="3"', transformed)
+
+        # Multi-language subtitle tracks (en, es, fr) MUST be completely preserved!
+        self.assertIn('<AdaptationSet id="4" contentType="text" mimeType="text/vtt" lang="en">', transformed)
+        self.assertIn('<AdaptationSet id="5" contentType="text" mimeType="application/ttml+xml" lang="es">', transformed)
+        self.assertIn('<AdaptationSet id="6" contentType="text" mimeType="application/mp4" lang="fr">', transformed)
 
 
 class TestAmazonSubtitlesServiceIntegration(unittest.TestCase):
@@ -192,3 +309,9 @@ class TestAmazonSubtitlesServiceIntegration(unittest.TestCase):
             self.assertEqual(self.svc._current_source_type, "amazon")
             self.assertEqual(len(self.svc._current_scavenged_tracks), 4)
             self.assertEqual(self.svc._current_scavenged_tracks[1]["label"], "Spanish (SDH) [Amazon]")
+
+    def test_cast_amazon_uses_clean_path(self):
+        with patch.object(self.svc, "_cast_amazon", return_value={"casting": True}) as mock_cast_amz:
+            raw_url = "https://www.amazon.com/gp/video/detail/B0CLEAN123?ref_=atv_dp_season_select_s1"
+            self.svc.cast(raw_url)
+            mock_cast_amz.assert_called_once_with(raw_url, title=None)

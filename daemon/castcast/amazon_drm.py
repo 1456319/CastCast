@@ -271,7 +271,7 @@ def fetch_widevine_license(actor_token, playback_envelope, challenge_bytes):
         raise Exception(f"License not found in response: {res}")
 
 
-def parse_mpd_subtitles(mpd_content: str) -> list[dict]:
+def parse_mpd_subtitles(mpd_content: str | bytes) -> list[dict]:
     """
     Parse subtitle tracks from an Amazon Prime Video DASH MPD manifest.
 
@@ -291,6 +291,12 @@ def parse_mpd_subtitles(mpd_content: str) -> list[dict]:
         - label: Formatted label including display name, e.g., "English [Amazon]" or "Spanish (SDH) [Amazon]".
         - source: "amazon"
     """
+    if isinstance(mpd_content, bytes):
+        try:
+            mpd_content = mpd_content.decode("utf-8", "replace")
+        except Exception:
+            return []
+
     if not mpd_content or not isinstance(mpd_content, str):
         return []
 
@@ -303,9 +309,22 @@ def parse_mpd_subtitles(mpd_content: str) -> list[dict]:
     def _local_tag(tag: str) -> str:
         return tag.split("}")[-1] if "}" in tag else tag
 
-    tracks = []
+    # Pre-scan all AdaptationSets (video, audio, text) to collect all used integer IDs
     used_ids = set()
-    next_id = 1
+    for elem in root.iter():
+        if _local_tag(elem.tag) == "AdaptationSet":
+            raw_id = elem.attrib.get("id")
+            if raw_id is not None:
+                try:
+                    int_id = int(raw_id)
+                    if int_id > 0:
+                        used_ids.add(int_id)
+                except (ValueError, TypeError):
+                    pass
+
+    next_id = max(used_ids) + 1 if used_ids else 1
+    assigned_track_ids = set()
+    tracks = []
 
     for elem in root.iter():
         if _local_tag(elem.tag) != "AdaptationSet":
@@ -332,17 +351,17 @@ def parse_mpd_subtitles(mpd_content: str) -> list[dict]:
         if any(any(v_codec in code for v_codec in ("hev", "hvc", "avc", "mp4v", "vp9", "av01", "mp4a", "ec-3", "ac-3")) for code in rep_codecs):
             continue
 
-        valid_sub_mimes = ("text/vtt", "application/ttml+xml", "application/mp4")
-        is_sub = (
-            ct in ("text", "subtitle")
-            or mime in valid_sub_mimes
-            or any(rm in valid_sub_mimes for rm in rep_mimes)
-            or any(rc in ("text", "subtitle") for rc in rep_cts)
-        )
+        # Stricter subtitle detection: for application/mp4 require text ct or stpp/wvtt text codecs
+        has_text_ct = ct in ("text", "subtitle") or any(rc in ("text", "subtitle") for rc in rep_cts)
+        has_text_codec = any(any(c_name in c for c_name in ("stpp", "wvtt")) for c in rep_codecs)
+        is_vtt_or_ttml = mime in ("text/vtt", "application/ttml+xml") or any(rm in ("text/vtt", "application/ttml+xml") for rm in rep_mimes)
+        is_mp4_sub = (mime == "application/mp4" or any(rm == "application/mp4" for rm in rep_mimes)) and (has_text_ct or has_text_codec)
+
+        is_sub = has_text_ct or is_vtt_or_ttml or is_mp4_sub
         if not is_sub:
             continue
 
-        # Extract track_id
+        # Extract track_id with collision prevention
         raw_id = elem.attrib.get("id")
         tid = None
         if raw_id is not None:
@@ -350,10 +369,12 @@ def parse_mpd_subtitles(mpd_content: str) -> list[dict]:
                 tid = int(raw_id)
             except (ValueError, TypeError):
                 tid = None
-        if tid is None or tid <= 0 or tid in used_ids:
+        if tid is None or tid <= 0 or tid in assigned_track_ids:
             tid = next_id
-            while tid in used_ids:
+            while tid in used_ids or tid in assigned_track_ids:
                 tid += 1
+
+        assigned_track_ids.add(tid)
         used_ids.add(tid)
         next_id = max(next_id, tid + 1)
 
@@ -367,6 +388,7 @@ def parse_mpd_subtitles(mpd_content: str) -> list[dict]:
         lang = language3(raw_lang or "eng")
 
         # Extract mime_type
+        valid_sub_mimes = ("text/vtt", "application/ttml+xml", "application/mp4")
         track_mime = mime
         if not track_mime and rep_mimes:
             for rm in rep_mimes:
@@ -376,17 +398,14 @@ def parse_mpd_subtitles(mpd_content: str) -> list[dict]:
         if not track_mime:
             track_mime = "text/vtt"
 
-        # Extract role
+        # Extract all roles and check for caption/sdh across all Role elements
         role_elems = [c for c in elem if _local_tag(c.tag) == "Role" and (c.attrib.get("value") or c.text)]
-        if role_elems:
-            role_val = (role_elems[0].attrib.get("value") or role_elems[0].text or "").strip()
-        else:
-            role_val = "subtitle"
+        all_role_values = [(c.attrib.get("value") or c.text or "").strip() for c in role_elems]
+        role_val = all_role_values[0] if all_role_values else "subtitle"
 
-        # Accessibility tag fallback for captions / SDH
-        access_elems = [c for c in elem if _local_tag(c.tag) == "Accessibility"]
-        is_sdh = ("caption" in role_val.lower() or "sdh" in role_val.lower())
-        if not is_sdh and access_elems:
+        is_sdh = any("caption" in r.lower() or "sdh" in r.lower() for r in all_role_values)
+        if not is_sdh:
+            access_elems = [c for c in elem if _local_tag(c.tag) == "Accessibility"]
             for acc in access_elems:
                 acc_val = (acc.attrib.get("value") or acc.text or "").lower()
                 if "caption" in acc_val or "sdh" in acc_val:
