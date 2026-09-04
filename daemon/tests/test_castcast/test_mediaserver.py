@@ -84,6 +84,33 @@ class TestTransformDashManifest(unittest.TestCase):
         self.assertIn('id="4"', result)
         self.assertIn('lang="es"', result)
 
+    def test_dash_subtitle_segment_durations_normalization(self):
+        manifest = """<MPD>
+  <Period>
+    <AdaptationSet contentType="text" lang="en-us" mimeType="application/mp4">
+      <Representation id="text_en" codecs="stpp.ttml.im1t">
+        <SegmentList duration="241936" timescale="1000">
+          <Initialization range="0-751"/>
+          <SegmentURL mediaRange="868-9405"/>
+          <SegmentURL mediaRange="9406-22341"/>
+        </SegmentList>
+      </Representation>
+      <SegmentDurations timescale="1000">
+        <S d="219844"/>
+        <S d="300000"/>
+      </SegmentDurations>
+    </AdaptationSet>
+  </Period>
+</MPD>"""
+        result = transform_dash_manifest(manifest, "http://cdn.example.com/manifest.mpd")
+        self.assertNotIn("SegmentDurations", result)
+        self.assertNotIn('duration="241936"', result)
+        self.assertIn("<SegmentTimeline>", result)
+        self.assertIn('<S d="219844"/>', result)
+        self.assertIn('<S d="300000"/>', result)
+        self.assertIn("</SegmentTimeline>", result)
+
+
 
 if __name__ == '__main__':
     unittest.main()

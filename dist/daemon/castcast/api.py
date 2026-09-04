@@ -339,6 +339,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._write_event("status", self.service.status())
             for entry in self.service.log_buffer.recent():
                 self._write_event("log", entry)
+            if hasattr(self.service, "amazon_queue"):
+                self._write_event("amazon_queue", {"items": self.service.amazon_queue})
 
             while True:
                 try:

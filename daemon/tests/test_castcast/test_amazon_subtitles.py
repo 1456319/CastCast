@@ -332,3 +332,10 @@ class TestAmazonSubtitlesServiceIntegration(unittest.TestCase):
             self.assertEqual(res, {"casting": True})
             mock_cast_amz.assert_called_once_with(expected_url, title=None)
 
+    def test_amazon_drm_logging_callback(self):
+        from castcast import amazon_drm
+        logs = []
+        amazon_drm.set_log_callback(lambda msg, level: logs.append((msg, level)))
+        amazon_drm._log("Test message", "info")
+        self.assertEqual(logs, [("Test message", "info")])
+

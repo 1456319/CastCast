@@ -238,5 +238,18 @@ class TestSubtitlesApiHttp(unittest.TestCase):
         self.svc.select_subtitle_track.assert_called_once_with(0)
 
 
+    def test_sse_primes_amazon_queue(self):
+        from castcast.api import _Handler
+        handler = MagicMock(spec=_Handler)
+        handler.service = MagicMock()
+        handler.service.amazon_queue = [{"url": "http://example.com/watch", "title": "Prime Show"}]
+        handler.service.status.return_value = {"online": True}
+        handler.service.log_buffer.recent.return_value = []
+        handler._write_event = MagicMock()
+        with patch('queue.Queue.get', side_effect=BrokenPipeError):
+            _Handler._sse(handler)
+        handler._write_event.assert_any_call("amazon_queue", {"items": [{"url": "http://example.com/watch", "title": "Prime Show"}]})
+
+
 if __name__ == "__main__":
     unittest.main()

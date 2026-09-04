@@ -109,11 +109,14 @@ class CastService:
 
         self.rules = RuleManager(self.work_dir)
 
+        from . import amazon_drm
+        amazon_drm.set_log_callback(lambda msg, level="info": self.log(msg, level))
+
         self.media_server = MediaServer(
             roots=self.media_roots + [self.work_dir],
             port=int(config.get("media_port") or 0),
             bind=config.get("bind") or "0.0.0.0",
-            logger=lambda msg: self.log(msg, "debug"),
+            logger=lambda msg, level="info": self.log(msg, level),
             on_telemetry=lambda data: self._emit("telemetry_anomaly", data)
         )
 
@@ -1013,19 +1016,30 @@ class CastService:
                 tracks = amazon_drm.parse_mpd_subtitles(manifest_text)
                 with self._lock:
                     self._current_scavenged_tracks = tracks
-                self.log(f"DEBUG-ONLY: Populated {len(tracks)} Amazon subtitle tracks into _current_scavenged_tracks", "debug")
+                self.log(f"Discovered {len(tracks)} Amazon subtitle tracks from manifest", "info")
             except Exception as exc:
-                self.log(f"DEBUG-ONLY: Error parsing MPD subtitles: {exc}", "warn")
+                self.log(f"Error parsing MPD subtitles: {exc}", "warn")
 
         content_type = "application/dash+xml"
         if resume_pos is None:
             raw_pos = max(self.resume_state.get(proxied_path, 0.0), self.resume_state.get(path, 0.0))
             resume_pos = max(0.0, raw_pos - 10.0)
 
+        if not title or title in ("Fetching title...", "Unknown title"):
+            title = resolve_title(path)
+            with self._lock:
+                changed = False
+                for item in self.amazon_queue:
+                    if item.get("url") == path and item.get("title") in ("Fetching title...", "Unknown title"):
+                        item["title"] = title
+                        changed = True
+                if changed:
+                    self.save_amazon_queue()
+
         self.supervisor.load(
             proxied_path,
             content_type=content_type,
-            title=title or resolve_title(path),
+            title=title,
             source_path=path,
             license_url=license_url,
             position=resume_pos

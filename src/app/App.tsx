@@ -96,6 +96,14 @@ export default function App() {
   const refreshStatus = useCallback(async () => {
     try {
       setStatus(await daemon.status());
+      try {
+        const q = await daemon.getAmazonQueue();
+        if (q && Array.isArray(q.items)) {
+          setAmazonQueue(q.items);
+        }
+      } catch {
+        // daemon may not support or request may fail, ignore
+      }
       setOnline(true);
       setNotice((prev) => (prev === 'Daemon process found, but unresponsive. You may need to Force Stop Termux.' ? null : prev));
     } catch (err: any) {

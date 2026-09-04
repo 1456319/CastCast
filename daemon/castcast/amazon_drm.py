@@ -29,6 +29,21 @@ from .subtitles_remote import LANGUAGE_NAMES
 
 logger = logging.getLogger("castcast.amazon_drm")
 
+_log_callback = None
+
+def set_log_callback(cb):
+    global _log_callback
+    _log_callback = cb
+
+def _log(msg: str, level: str = "info"):
+    py_level = logging.INFO if level == "info" else logging.WARNING if level == "warn" else logging.DEBUG
+    logger.log(py_level, msg)
+    if _log_callback:
+        try:
+            _log_callback(msg, level)
+        except Exception:
+            pass
+
 HOST_ATVPS = "https://atv-ps.amazon.com"
 HOST_API = "https://api.amazon.com"
 
@@ -38,7 +53,7 @@ def _do_get(url, headers):
         with urllib.request.urlopen(req) as response:
             return json.loads(response.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
-        print(f"GET {url} failed: {e.code}")
+        _log(f"GET {url} failed: HTTP {e.code}", "warn")
         raise
 
 def _do_post(url, payload, headers):
@@ -49,7 +64,7 @@ def _do_post(url, payload, headers):
         with urllib.request.urlopen(req) as response:
             return json.loads(response.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
-        print(f"POST {url} failed: {e.code}")
+        _log(f"POST {url} failed: HTTP {e.code}", "warn")
         raise
 
 def get_primary_profile(access_token):
@@ -159,8 +174,10 @@ def get_vod_playback_resources(actor_token, playback_envelope, title_id):
     
     try:
         mpd_url = res["vodPlaylistedPlaybackUrls"]["result"]["playbackUrls"]["intraTitlePlaylist"][-1]["urls"][0]["url"]
+        _log("Amazon 4K manifest URL successfully retrieved", "info")
         return mpd_url
     except KeyError:
+        _log(f"Amazon API did not return a manifest URL. Response: {res.get('errors', res)}", "warn")
         raise Exception(f"Amazon API did not return a manifest URL. Response: {res.get('errors', res)}")
 
 def fetch_amazon_4k_manifest(title_id):
@@ -182,26 +199,31 @@ def fetch_amazon_4k_manifest(title_id):
     are required for successful playback.
     """
     from .amazon import refresh_access_token
+    _log(f"Fetching Amazon 4K playback resources for {title_id}...", "info")
     auth = get_saved_auth()
     if not auth or "tokens" not in auth or "bearer" not in auth["tokens"]:
+        _log("Not authenticated with Amazon", "warn")
         raise Exception("Not authenticated with Amazon")
         
     access_token = auth["tokens"]["bearer"].get("access_token")
     refresh_token = auth["tokens"]["bearer"].get("refresh_token")
     
     if not access_token or not refresh_token:
+        _log("Amazon token data is corrupted", "warn")
         raise Exception("Amazon token data is corrupted")
         
     try:
         profile_id = get_primary_profile(access_token)
     except Exception as e:
         if "401" in str(e) or "400" in str(e) or "403" in str(e):
-            print("Access token expired, refreshing...")
+            _log("Amazon access token expired, refreshing via refresh_token...", "info")
             new_access_token = refresh_access_token(refresh_token)
             if new_access_token:
                 access_token = new_access_token
                 profile_id = get_primary_profile(access_token)
+                _log("Amazon access token refreshed successfully", "info")
             else:
+                _log("Failed to refresh Amazon access token", "warn")
                 raise Exception("Failed to refresh access token")
         else:
             raise
@@ -209,6 +231,7 @@ def fetch_amazon_4k_manifest(title_id):
     actor_token = get_actor_token(refresh_token, profile_id)
     envelope = get_item_details(actor_token, title_id)
     if not envelope:
+        _log("Failed to get Amazon playback envelope", "warn")
         raise Exception("Failed to get playback envelope")
         
     mpd_url = get_vod_playback_resources(actor_token, envelope, title_id)
@@ -259,15 +282,24 @@ def fetch_widevine_license(actor_token, playback_envelope, challenge_bytes):
         with urllib.request.urlopen(req) as response:
             res = json.loads(response.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
-        raise Exception(f"Amazon DRM Error {e.code}: {e.read().decode('utf-8')}")
+        err_body = e.read().decode('utf-8', 'ignore')
+        _log(f"Amazon Widevine DRM Error HTTP {e.code}: {err_body}", "warn")
+        raise Exception(f"Amazon DRM Error {e.code}: {err_body}")
         
     if "license" in res:
-        return base64.b64decode(res["license"])
+        raw = base64.b64decode(res["license"])
+        _log(f"Amazon Widevine DRM license acquired successfully ({len(raw)} bytes)", "info")
+        return raw
     elif "drmLicense" in res and "license" in res["drmLicense"]:
-        return base64.b64decode(res["drmLicense"]["license"])
+        raw = base64.b64decode(res["drmLicense"]["license"])
+        _log(f"Amazon Widevine DRM license acquired successfully ({len(raw)} bytes)", "info")
+        return raw
     elif "widevineLicense" in res and "license" in res["widevineLicense"]:
-        return base64.b64decode(res["widevineLicense"]["license"])
+        raw = base64.b64decode(res["widevineLicense"]["license"])
+        _log(f"Amazon Widevine DRM license acquired successfully ({len(raw)} bytes)", "info")
+        return raw
     else:
+        _log(f"Amazon Widevine license not found in response: {res}", "warn")
         raise Exception(f"License not found in response: {res}")
 
 
@@ -435,6 +467,6 @@ def parse_mpd_subtitles(mpd_content: str | bytes) -> list[dict]:
             "source": "amazon",
         })
 
-    logger.debug(f"DEBUG-ONLY: parse_mpd_subtitles extracted {len(tracks)} subtitle tracks from MPD")
+    _log(f"Parsed {len(tracks)} subtitle tracks from Amazon MPD manifest", "info")
     return tracks
 

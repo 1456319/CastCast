@@ -99,8 +99,7 @@ def transform_dash_manifest(body_content: str, target_url: str) -> str:
     body_content = re.sub(r'(<MPD[^>]*>)', r'\1\n  <BaseURL>' + base_url + r'</BaseURL>', body_content, count=1)
 
     # 2. Filter non-English audio tracks ONLY (leave all subtitle and video tracks intact)
-    def filter_english_audio(match):
-        tag = match.group(0)
+    def filter_english_audio(tag: str) -> str:
         lang_match = re.search(r'lang="([^"]+)"', tag)
         if lang_match:
             lang = lang_match.group(1).lower()
@@ -110,13 +109,44 @@ def transform_dash_manifest(body_content: str, target_url: str) -> str:
 
     def is_audio_adaptation_set(tag: str) -> bool:
         has_audio = 'contentType="audio"' in tag or 'mimeType="audio/' in tag or 'mimeType="audio"' in tag
-        has_text = any(t in tag for t in ['contentType="text"', 'contentType="subtitle"', 'mimeType="text"', 'text/vtt', 'application/ttml+xml'])
+        has_text = any(t in tag for t in ['contentType="text"', 'contentType="subtitle"', 'mimeType="text"', 'text/vtt', 'application/ttml+xml', 'codecs="stpp'])
         has_video = 'contentType="video"' in tag or 'height=' in tag
         return has_audio and not has_text and not has_video
 
+    def is_text_adaptation_set(tag: str) -> bool:
+        return any(t in tag for t in ['contentType="text"', 'contentType="subtitle"', 'mimeType="text"', 'text/vtt', 'application/ttml+xml', 'codecs="stpp'])
+
+    def normalize_text_segment_durations(adapt_str: str) -> str:
+        if "SegmentDurations" not in adapt_str or "SegmentList" not in adapt_str:
+            return adapt_str
+
+        dur_match = re.search(r"<(?:\w+:)?SegmentDurations[^>]*>(.*?)</(?:\w+:)?SegmentDurations>", adapt_str, re.DOTALL)
+        if not dur_match:
+            return adapt_str
+
+        s_elements = dur_match.group(1).strip()
+        adapt_clean = re.sub(r"\s*<(?:\w+:)?SegmentDurations[^>]*>.*?</(?:\w+:)?SegmentDurations>", "", adapt_str, flags=re.DOTALL)
+
+        def fix_seg_list(m):
+            prefix = m.group(1) or ""
+            attrs = m.group(3)
+            clean_attrs = re.sub(r"""\s*duration=["\x27][^"\x27]*["\x27]""", "", attrs)
+            timeline_tag = f"<{prefix}SegmentTimeline>\n        {s_elements}\n      </{prefix}SegmentTimeline>"
+            return f"<{prefix}SegmentList{clean_attrs}>\n      {timeline_tag}"
+
+        return re.sub(r"<((?:\w+:)?)(SegmentList)([^>]*)>", fix_seg_list, adapt_clean)
+
+    def process_adaptation_set(match):
+        tag = match.group(0)
+        if is_audio_adaptation_set(tag):
+            return filter_english_audio(tag)
+        if is_text_adaptation_set(tag):
+            return normalize_text_segment_durations(tag)
+        return tag
+
     body_content = re.sub(
         r'<AdaptationSet[^>]*>.*?</AdaptationSet>',
-        lambda m: filter_english_audio(m) if is_audio_adaptation_set(m.group(0)) else m.group(0),
+        process_adaptation_set,
         body_content,
         flags=re.DOTALL
     )
@@ -157,7 +187,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):  # noqa: A003
         server: "MediaServer" = self.server.media_server  # type: ignore[attr-defined]
-        server.log(f"http {self.address_string()} {fmt % args}")
+        server.log(f"http {self.address_string()} {fmt % args}", "debug")
 
     def _resolve(self) -> Optional[str]:
         server: "MediaServer" = self.server.media_server  # type: ignore[attr-defined]
@@ -238,13 +268,14 @@ class _Handler(BaseHTTPRequestHandler):
             content_length = int(self.headers.get('Content-Length', 0))
             challenge_bytes = self.rfile.read(content_length)
             
-            self.server.media_server._logger(f"Proxying Amazon Widevine License for {title_id}")
+            self.server.media_server.log(f"Proxying Amazon Widevine License for {title_id}", "info")
             try:
                 license_bytes = amazon_drm.fetch_widevine_license(
                     amazon_data["actor_token"],
                     amazon_data["playback_envelope"],
                     challenge_bytes
                 )
+                self.server.media_server.log(f"Amazon Widevine License served successfully ({len(license_bytes)} bytes)", "info")
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(license_bytes)))
                 self.send_header("Content-Type", "application/octet-stream")
@@ -252,7 +283,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(license_bytes)
             except Exception as e:
-                self.server.media_server._logger(f"Amazon License Proxy Error: {e}")
+                self.server.media_server.log(f"Amazon License Proxy Error: {e}", "warn")
                 self.send_response(500)
                 self.end_headers()
             return
@@ -546,9 +577,12 @@ class MediaServer:
             if self._logger: self._logger(f"Could not create telemetry dir: {e}")
         self.telemetry_log = os.path.join(telemetry_dir, "failed_manifests.jsonl")
 
-    def log(self, message: str) -> None:
+    def log(self, message: str, level: str = "info") -> None:
         if self._logger:
-            self._logger(message)
+            try:
+                self._logger(message, level)
+            except TypeError:
+                self._logger(message)
 
     @property
     def port(self) -> int:

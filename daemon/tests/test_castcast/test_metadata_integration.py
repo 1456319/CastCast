@@ -138,3 +138,23 @@ class TestMetadataIntegration(unittest.TestCase):
 
         # Verify that self.cast was called with the resolved title passed in kwargs
         mock_cast.assert_called_once_with(test_url, title="Fallout - Episode 1")
+
+    @patch('castcast.amazon_drm.fetch_amazon_4k_manifest')
+    @patch('castcast.service.resolve_title')
+    def test_cast_amazon_resolves_placeholder_title(self, mock_resolve, mock_manifest):
+        mock_manifest.return_value = {
+            "mpd_url": "http://cdn.example.com/manifest.mpd",
+            "actor_token": "actor",
+            "playback_envelope": "env"
+        }
+        mock_resolve.return_value = "Resolved Title"
+        self.svc.save_amazon_queue = MagicMock()
+        test_url = "https://watch.amazon.com/watch?gti=amzn1.dv.gti.2a50e5b4-edfb-47c8-9b71-72d085008f16"
+        self.svc.amazon_queue = [{"url": test_url, "title": "Fetching title..."}]
+
+        self.svc._cast_amazon(test_url, title="Fetching title...")
+
+        call_kwargs = self.svc.supervisor.load.call_args.kwargs
+        self.assertEqual(call_kwargs.get("title"), "Resolved Title")
+        self.assertEqual(self.svc.amazon_queue[0]["title"], "Resolved Title")
+        self.svc.save_amazon_queue.assert_called()
