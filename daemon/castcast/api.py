@@ -105,6 +105,15 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"items": self.service.amazon_queue})
             elif route == "/subtitles/available":
                 self._json(self.service.get_available_subtitles())
+            elif route == "/subtitles/remote":
+                query = one("query") or ""
+                imdb_id = one("imdb_id") or ""
+                lang = one("language")
+                languages = [lang] if lang else None
+                if query or imdb_id or languages:
+                    self._json({"subtitles": self.service.list_remote_subtitles(query=query, imdb_id=imdb_id, languages=languages)})
+                else:
+                    self._json({"subtitles": self.service.list_remote_subtitles()})
             elif route == "/diagnostics/logs":
                 import os
                 audit_log = ""
@@ -238,6 +247,15 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(svc.request_subtitles(path, body.get("language") or ""))
             elif route == "/subtitles/select":
                 self._json(svc.select_subtitle_track(body.get("track_id")))
+            elif route == "/subtitles/remote/fetch":
+                url = body.get("url")
+                if not url:
+                    return self._json({"error": "url is required"}, 400)
+                self._json(svc.fetch_and_activate_remote_subtitle(
+                    body.get("language") or "",
+                    body.get("type") or "manual",
+                    url,
+                ))
             elif route == "/prepare":
                 path = body.get("path")
                 if not path:
@@ -360,6 +378,7 @@ _ROUTES = {
     "GET /library?deep=1": "list media, optionally with pre-flight verdicts",
     "GET /trash": "list trashed media",
     "GET /subtitles/available": "available subtitle tracks and current active track",
+    "GET /subtitles/remote": "list remote subtitle tracks (YouTube yt-dlp or SubDL/OpenSubtitles)",
     "GET /preflight?path=": "probe + castability verdict + ffmpeg plan",
     "GET /logs?since=N": "recent log lines",
     "GET /events": "SSE stream of logs, state changes, media status",
@@ -368,6 +387,7 @@ _ROUTES = {
     "POST /cast": "{path, allow_unsafe?, auto_prepare?}",
     "POST /queue": "{paths} queue a list of castable media",
     "POST /subtitles/select": "{track_id} switch subtitle track via EDIT_TRACKS_INFO (null to disable)",
+    "POST /subtitles/remote/fetch": "{url, language?, type?} fetch remote subtitle and activate via EDIT_TRACKS_INFO",
     "POST /subtitles/opensubtitles": "{path, language?} download and sideload subtitles",
     "POST /prepare": "{path, force?}  run the remux",
     "POST /prepare/cancel": "",

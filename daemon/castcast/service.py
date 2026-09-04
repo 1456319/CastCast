@@ -23,7 +23,8 @@ from .mediaserver import MediaServer, guess_mime
 from .opensubtitles import download_best, language3
 from .probe import FFMPEG, MediaInfo, ProbeError, have_ffmpeg, have_ffprobe, probe
 from .supervisor import State, Supervisor
-from .metadata import TMDBClient, resolve_title
+from .metadata import TMDBClient, parse_filename, resolve_title
+from .subtitles_remote import parse_youtube_subtitles, SubDLClient, download_subtitle_to_vtt
 
 DEFAULT_MEDIA_ROOT = "/storage/emulated/0/Download/CastCast/Chromecast"
 
@@ -157,9 +158,15 @@ class CastService:
             "opensubtitles_token",
             "OPENSUBTITLES_TOKEN",
         )
+        self.subdl_api_key = self._config_value(
+            "subdl_api_key",
+            "SUBDL_API_KEY",
+        )
         self._queued_for_later = set()
         self._current_scavenged_tracks: List[dict] = []
         self._current_source_type: str = "local"
+        self._current_media_path: str = ""
+        self._current_youtube_info: dict = {}
         self._lock = threading.RLock()
         self._events: List[Callable[[str, dict], None]] = []
         self._watchdog: Optional[threading.Thread] = None
@@ -645,6 +652,8 @@ class CastService:
             return {"error": "not connected to a device"}
 
         self._current_scavenged_tracks = []
+        self._current_media_path = path
+        self._current_youtube_info = {}
 
         clean_path = path
         url_match = re.search(r'(https?://[^\s]+)', path)
@@ -1559,6 +1568,108 @@ class CastService:
             "active_track_ids": active_track_ids,
             "tracks": list(self._current_scavenged_tracks),
             "remote_supported": self._current_source_type in ("local", "youtube"),
+        }
+
+    def list_remote_subtitles(self, query: str = "", imdb_id: str = "", languages: list[str] | None = None) -> list[dict]:
+        self.log(f"DEBUG-ONLY: list_remote_subtitles source_type={self._current_source_type}", "debug")
+        if self._current_source_type == "youtube":
+            info = getattr(self, "_current_youtube_info", None)
+            if not info and getattr(self, "_current_media_path", ""):
+                try:
+                    cmd = ["yt-dlp", "--dump-json", "--skip-download", self._current_media_path]
+                    self.log(f"DEBUG-ONLY: extracting youtube subtitles info with yt-dlp: {self._current_media_path}", "debug")
+                    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                    if proc.returncode == 0 and proc.stdout:
+                        import json
+                        self._current_youtube_info = json.loads(proc.stdout)
+                        info = self._current_youtube_info
+                except Exception as exc:
+                    self.log(f"DEBUG-ONLY: failed to extract youtube info via yt-dlp: {exc}", "debug")
+            return parse_youtube_subtitles(info or {})
+
+        elif self._current_source_type == "local":
+            q = query
+            if not q and not imdb_id and getattr(self, "_current_media_path", ""):
+                parsed = parse_filename(os.path.basename(self._current_media_path))
+                q = parsed.get("title") or resolve_title(self._current_media_path)
+            client = SubDLClient(
+                api_key=getattr(self, "subdl_api_key", ""),
+                opensubtitles_api_key=getattr(self, "opensubtitles_api_key", ""),
+                opensubtitles_token=getattr(self, "opensubtitles_token", ""),
+            )
+            langs = languages or ([self.default_language] if getattr(self, "default_language", None) else None)
+            return client.search(imdb_id=imdb_id, query=q, languages=langs)
+
+        return []
+
+    def fetch_and_activate_remote_subtitle(self, language: str, track_type: str, url: str) -> dict:
+        self.log(f"DEBUG-ONLY: fetch_and_activate_remote_subtitle lang={language} type={track_type} url={url}", "debug")
+        if not self.supervisor:
+            return {"error": "not connected to a device"}
+
+        existing_ids = [t["track_id"] for t in self._current_scavenged_tracks if "track_id" in t]
+        new_track_id = max(existing_ids, default=0) + 1
+
+        lang3 = language3(language or self.default_language)
+        lang_name = LANGUAGE_NAMES.get(lang3, lang3.upper())
+
+        filename_hint = f"remote_{lang3}_{new_track_id}.vtt"
+        try:
+            vtt_path = download_subtitle_to_vtt(
+                url=url,
+                work_dir=self.work_dir,
+                filename_hint=filename_hint,
+                opensubtitles_api_key=getattr(self, "opensubtitles_api_key", ""),
+                opensubtitles_token=getattr(self, "opensubtitles_token", ""),
+            )
+        except Exception as exc:
+            self.log(f"DEBUG-ONLY: failed to download remote subtitle {url}: {exc}", "warn")
+            return {"error": f"Failed to download remote subtitle: {exc}"}
+
+        if track_type == "autogenerated":
+            label = f"{lang_name} (autogenerated)"
+        elif track_type == "translated":
+            label = f"{lang_name} (translated)"
+        else:
+            label = f"{lang_name} [Remote]"
+
+        try:
+            media_url = self.media_server.url_for(vtt_path)
+        except Exception as exc:
+            self.log(f"DEBUG-ONLY: url_for failed for {vtt_path}: {exc}", "warn")
+            media_url = ""
+
+        new_track = {
+            "track_id": new_track_id,
+            "language": lang3,
+            "label": label,
+            "vtt_path": vtt_path,
+            "source": "remote",
+            "type": track_type,
+            "url": url,
+        }
+        self._current_scavenged_tracks.append(new_track)
+
+        caf_track = {
+            "trackId": new_track_id,
+            "type": "TEXT",
+            "trackContentId": media_url,
+            "trackContentType": "text/vtt",
+            "name": label,
+            "language": lang3,
+            "subtype": "SUBTITLES",
+        }
+        if hasattr(self.supervisor, "_session") and self.supervisor._session:
+            session = self.supervisor._session
+            if hasattr(session, "tracks") and isinstance(session.tracks, list):
+                if not any(isinstance(t, dict) and t.get("trackId") == new_track_id for t in session.tracks):
+                    session.tracks.append(caf_track)
+
+        self.supervisor.set_active_tracks([new_track_id])
+        return {
+            "track_id": new_track_id,
+            "active_track_ids": [new_track_id],
+            "track": new_track,
         }
 
     # -- transport passthrough --------------------------------------------
