@@ -93,8 +93,9 @@ def parse_youtube_subtitles(info_dict: dict) -> list[dict]:
             if not best or not best.get("url"):
                 continue
 
-            lang3 = language3(lang_code)
-            lang_name = LANGUAGE_NAMES.get(lang3, LANGUAGE_NAMES.get(lang_code, lang_code.upper()))
+            base_lang = lang_code.split("-")[0].split("_")[0].lower()
+            lang3 = language3(base_lang)
+            lang_name = LANGUAGE_NAMES.get(lang3, LANGUAGE_NAMES.get(base_lang, LANGUAGE_NAMES.get(lang_code, lang_code.upper())))
             name = (best.get("name") or "").strip()
             display_name = name or lang_name
             url = best["url"]
@@ -120,22 +121,23 @@ def parse_youtube_subtitles(info_dict: dict) -> list[dict]:
         if not audio_lang:
             audio_lang = next(iter(raw_auto.keys()), "").strip().lower()
 
-        audio_lang3 = language3(audio_lang) if audio_lang else ""
-        audio_base = audio_lang.split("-")[0] if audio_lang else ""
+        audio_base = audio_lang.split("-")[0].split("_")[0] if audio_lang else ""
+        audio_lang3 = language3(audio_base) if audio_base else ""
 
         for lang_code, formats in raw_auto.items():
             best = _best_format_entry(formats)
             if not best or not best.get("url"):
                 continue
 
-            lang3 = language3(lang_code)
-            lang_base = lang_code.lower().split("-")[0]
+            base_lang = lang_code.split("-")[0].split("_")[0].lower()
+            lang3 = language3(base_lang)
+            lang_base = base_lang
             is_audio = bool(
                 (audio_lang3 and lang3 == audio_lang3)
                 or (audio_base and lang_base == audio_base)
             )
 
-            lang_name = LANGUAGE_NAMES.get(lang3, LANGUAGE_NAMES.get(lang_code, lang_code.upper()))
+            lang_name = LANGUAGE_NAMES.get(lang3, LANGUAGE_NAMES.get(base_lang, LANGUAGE_NAMES.get(lang_code, lang_code.upper())))
             name = (best.get("name") or "").strip()
             display_name = name or lang_name
             url = best["url"]
@@ -189,8 +191,13 @@ class SubDLClient:
         languages: list[str] | None = None,
     ) -> list[dict]:
         """Search subtitles via SubDL API, falling back to OpenSubtitles if needed."""
-        results: list[dict] = []
+        if not self.api_key:
+            logger.debug("DEBUG-ONLY: SubDL api_key not set, skipping SubDL and falling back to OpenSubtitles")
+            if self.opensubtitles_api_key and (imdb_id or query):
+                return self._search_opensubtitles(imdb_id=imdb_id, query=query, languages=languages)
+            return []
 
+        results: list[dict] = []
         params: dict[str, str] = {}
         if self.api_key:
             params["api_key"] = self.api_key
@@ -335,11 +342,18 @@ def download_subtitle_to_vtt(
         safe_hint = safe_hint[:-4]
     out_path = os.path.join(work_dir, f"{safe_hint}.{stem}.vtt")
 
+    # 0. Check cache hit
+    if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+        logger.debug("DEBUG-ONLY: cache hit for remote subtitle %s -> %s", url, out_path)
+        return os.path.abspath(out_path)
+
     logger.debug("DEBUG-ONLY: downloading subtitle from %s -> %s", url, out_path)
 
     # 1. Fetch raw payload
     payload: bytes
-    filename = filename_hint or os.path.basename(urllib.parse.urlsplit(url).path) or "subtitle.vtt"
+    url_path = urllib.parse.urlsplit(url).path
+    actual_filename = os.path.basename(url_path) if url_path else ""
+    actual_ext = os.path.splitext(actual_filename)[1].lower() if actual_filename else ""
 
     if os.path.isfile(url):
         with open(url, "rb") as f:
@@ -359,7 +373,8 @@ def download_subtitle_to_vtt(
         dl_link = dl.get("link")
         if not dl_link:
             raise RuntimeError("OpenSubtitles download response did not contain link")
-        filename = dl.get("file_name") or filename
+        actual_filename = dl.get("file_name") or actual_filename
+        actual_ext = os.path.splitext(actual_filename)[1].lower()
         req = urllib.request.Request(
             dl_link,
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) CastCast/1.0"},
@@ -378,16 +393,15 @@ def download_subtitle_to_vtt(
         raise RuntimeError(f"Downloaded 0 bytes from {url}")
 
     # 2. Decompress if gzip
-    lower = filename.lower()
-    if lower.endswith(".gz") or payload.startswith(b"\x1f\x8b"):
+    if actual_ext == ".gz" or actual_filename.lower().endswith(".gz") or payload.startswith(b"\x1f\x8b"):
         logger.debug("DEBUG-ONLY: decompressing gzip subtitle payload")
         payload = gzip.decompress(payload)
-        if lower.endswith(".gz"):
-            filename = filename[:-3]
-            lower = filename.lower()
+        if actual_filename.lower().endswith(".gz"):
+            actual_filename = actual_filename[:-3]
+            actual_ext = os.path.splitext(actual_filename)[1].lower()
 
     # 3. Extract if zip
-    if lower.endswith(".zip") or payload.startswith(b"PK\x03\x04") or zipfile.is_zipfile(io.BytesIO(payload)):
+    if actual_ext == ".zip" or actual_filename.lower().endswith(".zip") or payload.startswith(b"PK\x03\x04") or zipfile.is_zipfile(io.BytesIO(payload)):
         logger.debug("DEBUG-ONLY: extracting zip subtitle archive")
         with zipfile.ZipFile(io.BytesIO(payload)) as zf:
             candidates = [
@@ -403,8 +417,8 @@ def download_subtitle_to_vtt(
             srt_candidates = [n for n in candidates if n.lower().endswith(".srt")]
             chosen = vtt_candidates[0] if vtt_candidates else (srt_candidates[0] if srt_candidates else candidates[0])
             payload = zf.read(chosen)
-            filename = chosen
-            lower = filename.lower()
+            actual_filename = chosen
+            actual_ext = os.path.splitext(chosen)[1].lower()
 
     # 4. Convert to WebVTT
     # Decode text
@@ -417,19 +431,23 @@ def download_subtitle_to_vtt(
             text = payload.decode("utf-8", errors="replace")
 
     normalized_stripped = text.lstrip("\ufeff\r\n ")
-    if normalized_stripped.startswith("WEBVTT") or lower.endswith(".vtt"):
-        # Already WebVTT format
+    is_vtt = normalized_stripped.startswith("WEBVTT")
+    is_srt = (
+        actual_ext == ".srt"
+        or bool(re.search(r"\d\d:\d\d:\d\d,\d\d\d", normalized_stripped))
+        or bool(re.search(r"^\d+\s*[\r\n]+\d\d:\d\d:\d\d", normalized_stripped))
+    )
+
+    if is_vtt:
         vtt_output = text
-        if not normalized_stripped.startswith("WEBVTT"):
-            vtt_output = "WEBVTT\n\n" + normalized_stripped
-    elif lower.endswith(".srt") or re.search(r"^\d+\s*[\r\n]+\d\d:\d\d:\d\d", normalized_stripped):
-        # SRT format conversion
+    elif is_srt:
+        # Transform SRT to WebVTT (converts comma timestamps to period timestamps)
         vtt_output = srt_to_vtt(text)
     else:
         # Check if ffmpeg is available for other formats (.ass, .ssa, .sub)
         ffmpeg_bin = shutil.which("ffmpeg")
         if ffmpeg_bin:
-            temp_in = os.path.join(work_dir, f"temp_{stem}{os.path.splitext(filename)[1] or '.sub'}")
+            temp_in = os.path.join(work_dir, f"temp_{stem}{actual_ext or '.sub'}")
             try:
                 with open(temp_in, "wb") as f:
                     f.write(payload)
@@ -438,6 +456,19 @@ def download_subtitle_to_vtt(
                 proc = subprocess.run(cmd, capture_output=True, timeout=60, check=False)
                 if proc.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
                     return os.path.abspath(out_path)
+                else:
+                    if os.path.exists(out_path):
+                        try:
+                            os.unlink(out_path)
+                        except OSError:
+                            pass
+            except Exception as exc:
+                if os.path.exists(out_path):
+                    try:
+                        os.unlink(out_path)
+                    except OSError:
+                        pass
+                logger.debug("DEBUG-ONLY: ffmpeg conversion failed or timed out: %s", exc)
             finally:
                 if os.path.exists(temp_in):
                     try:

@@ -1,5 +1,6 @@
 import io
 import gzip
+import hashlib
 import json
 import os
 import tempfile
@@ -85,6 +86,24 @@ class TestRemoteSubtitlesUnit(unittest.TestCase):
         }
         self.assertEqual(parse_youtube_subtitles(info_dict), [])
 
+    def test_parse_youtube_subtitles_hyphenated_language_codes(self):
+        info_dict = {
+            "subtitles": {
+                "en-US": [{"ext": "vtt", "url": "http://yt/en-us.vtt", "name": "English (US)"}],
+                "pt-BR": [{"ext": "vtt", "url": "http://yt/pt-br.vtt", "name": "Portuguese (Brazil)"}],
+                "es-419": [{"ext": "vtt", "url": "http://yt/es-419.vtt", "name": "Spanish (Latin America)"}],
+            },
+        }
+        tracks = parse_youtube_subtitles(info_dict)
+        self.assertEqual(len(tracks), 3)
+        by_lang = {t["language"]: t for t in tracks}
+        self.assertIn("eng", by_lang)
+        self.assertIn("por", by_lang)
+        self.assertIn("spa", by_lang)
+        self.assertNotIn("en-", by_lang)
+        self.assertNotIn("pt-", by_lang)
+        self.assertNotIn("es-", by_lang)
+
     @patch("urllib.request.urlopen")
     def test_subdl_query_by_imdb(self, mock_urlopen):
         mock_res = MagicMock()
@@ -94,7 +113,7 @@ class TestRemoteSubtitlesUnit(unittest.TestCase):
         mock_res.__enter__.return_value = mock_res
         mock_urlopen.return_value = mock_res
 
-        client = SubDLClient()
+        client = SubDLClient(api_key="test-subdl-key")
         results = client.search(imdb_id="tt1234567", languages=["en"])
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["language"], "eng")
@@ -109,11 +128,35 @@ class TestRemoteSubtitlesUnit(unittest.TestCase):
         mock_res.__enter__.return_value = mock_res
         mock_urlopen.return_value = mock_res
 
-        client = SubDLClient()
+        client = SubDLClient(api_key="test-subdl-key")
         results = client.search(query="Inception 2010", languages=["spa"])
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["language"], "spa")
         self.assertEqual(results[0]["download_url"], "https://custom.com/es.srt")
+
+    @patch("urllib.request.urlopen")
+    def test_subdl_no_api_key_skips_subdl_url(self, mock_urlopen):
+        os_res = MagicMock()
+        os_res.read.return_value = json.dumps({
+            "data": [{
+                "attributes": {
+                    "language": "en",
+                    "release": "YTS.MX",
+                    "files": [{"file_id": 1122}],
+                }
+            }]
+        }).encode("utf-8")
+        os_res.__enter__.return_value = os_res
+        mock_urlopen.return_value = os_res
+
+        client = SubDLClient(api_key="", opensubtitles_api_key="os-key")
+        results = client.search(imdb_id="tt9999999")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["source"], "opensubtitles")
+        self.assertEqual(mock_urlopen.call_count, 1)
+        req = mock_urlopen.call_args[0][0]
+        self.assertIn("api.opensubtitles.com", req.full_url)
+        self.assertNotIn("subdl.com", req.full_url)
 
     @patch("urllib.request.urlopen")
     def test_subdl_fallback_to_opensubtitles(self, mock_urlopen):
@@ -136,7 +179,7 @@ class TestRemoteSubtitlesUnit(unittest.TestCase):
 
         mock_urlopen.side_effect = [subdl_res, os_res]
 
-        client = SubDLClient(opensubtitles_api_key="test-os-key")
+        client = SubDLClient(api_key="test-subdl-key", opensubtitles_api_key="test-os-key")
         results = client.search(imdb_id="tt1234567")
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["source"], "opensubtitles")
@@ -253,6 +296,36 @@ class TestRemoteSubtitlesUnit(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             download_subtitle_to_vtt("http://example.com/empty.vtt", self.work_dir)
 
+    @patch("urllib.request.urlopen")
+    def test_download_subtitle_to_vtt_srt_with_vtt_hint(self, mock_urlopen):
+        srt_content = b"1\r\n00:00:01,000 --> 00:00:04,500\r\nHello SRT Comma\r\n"
+        mock_res = MagicMock()
+        mock_res.read.return_value = srt_content
+        mock_res.__enter__.return_value = mock_res
+        mock_urlopen.return_value = mock_res
+
+        out_path = download_subtitle_to_vtt("http://example.com/sub.srt", self.work_dir, "remote_eng_1.vtt")
+        self.assertTrue(os.path.isfile(out_path))
+        with open(out_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertTrue(content.startswith("WEBVTT"))
+        self.assertIn("00:00:01.000 --> 00:00:04.500", content)
+        self.assertNotIn("00:00:01,000", content)
+        self.assertIn("Hello SRT Comma", content)
+
+    @patch("urllib.request.urlopen")
+    def test_download_subtitle_to_vtt_cache_hit(self, mock_urlopen):
+        url = "http://example.com/cached.vtt"
+        hint = "my_hint"
+        stem = hashlib.sha1((url + hint).encode("utf-8")).hexdigest()[:12]
+        cached_file = os.path.join(self.work_dir, f"{hint}.{stem}.vtt")
+        with open(cached_file, "w", encoding="utf-8") as f:
+            f.write("WEBVTT\n\nCached content\n")
+
+        out_path = download_subtitle_to_vtt(url, self.work_dir, filename_hint=hint)
+        self.assertEqual(out_path, os.path.abspath(cached_file))
+        mock_urlopen.assert_not_called()
+
 
 class TestRemoteSubtitlesServiceAndApi(unittest.TestCase):
     def setUp(self):
@@ -363,6 +436,27 @@ class TestRemoteSubtitlesServiceAndApi(unittest.TestCase):
         result = self.svc.fetch_and_activate_remote_subtitle(language="eng", track_type="manual", url="http://bad.url")
         self.assertIn("error", result)
         self.assertIn("Failed to download remote subtitle", result["error"])
+
+    @patch("castcast.service.download_subtitle_to_vtt")
+    def test_fetch_and_activate_remote_subtitle_idempotent(self, mock_download):
+        dummy_vtt = os.path.join(self.work_dir, "remote.vtt")
+        with open(dummy_vtt, "w") as f:
+            f.write("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello")
+        mock_download.return_value = dummy_vtt
+
+        url = "http://example.com/sub.vtt"
+        # First call downloads and registers
+        res1 = self.svc.fetch_and_activate_remote_subtitle(language="eng", track_type="manual", url=url)
+        self.assertEqual(mock_download.call_count, 1)
+        self.assertEqual(len(self.svc._current_scavenged_tracks), 1)
+        self.assertEqual(res1["track_id"], 1)
+
+        # Second call with identical URL returns existing track without re-downloading
+        res2 = self.svc.fetch_and_activate_remote_subtitle(language="eng", track_type="manual", url=url)
+        self.assertEqual(mock_download.call_count, 1)  # not called again!
+        self.assertEqual(len(self.svc._current_scavenged_tracks), 1)  # not duplicated!
+        self.assertEqual(res2["track_id"], 1)
+        self.assertEqual(self.svc.supervisor.set_active_tracks.call_count, 2)
 
 
 class TestRemoteSubtitlesApiHttp(unittest.TestCase):

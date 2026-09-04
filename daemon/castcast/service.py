@@ -24,42 +24,16 @@ from .opensubtitles import download_best, language3
 from .probe import FFMPEG, MediaInfo, ProbeError, have_ffmpeg, have_ffprobe, probe
 from .supervisor import State, Supervisor
 from .metadata import TMDBClient, parse_filename, resolve_title
-from .subtitles_remote import parse_youtube_subtitles, SubDLClient, download_subtitle_to_vtt
+from .subtitles_remote import (
+    LANGUAGE_NAMES,
+    parse_youtube_subtitles,
+    SubDLClient,
+    download_subtitle_to_vtt,
+)
 
 DEFAULT_MEDIA_ROOT = "/storage/emulated/0/Download/CastCast/Chromecast"
 
 SUBTITLE_EXTENSIONS = {".vtt", ".srt", ".ass", ".ssa", ".sub"}
-
-LANGUAGE_NAMES = {
-    "eng": "English", "en": "English",
-    "spa": "Spanish", "es": "Spanish",
-    "fre": "French", "fra": "French", "fr": "French",
-    "ger": "German", "deu": "German", "de": "German",
-    "ita": "Italian", "it": "Italian",
-    "jpn": "Japanese", "ja": "Japanese",
-    "zho": "Chinese", "chi": "Chinese", "zh": "Chinese",
-    "kor": "Korean", "ko": "Korean",
-    "rus": "Russian", "ru": "Russian",
-    "por": "Portuguese", "pt": "Portuguese",
-    "hin": "Hindi", "hi": "Hindi",
-    "ara": "Arabic", "ar": "Arabic",
-    "pol": "Polish", "pl": "Polish",
-    "nld": "Dutch", "dut": "Dutch", "nl": "Dutch",
-    "swe": "Swedish", "sv": "Swedish",
-    "nor": "Norwegian", "no": "Norwegian",
-    "dan": "Danish", "da": "Danish",
-    "fin": "Finnish", "fi": "Finnish",
-    "ell": "Greek", "gre": "Greek", "el": "Greek",
-    "tur": "Turkish", "tr": "Turkish",
-    "heb": "Hebrew", "he": "Hebrew",
-    "tha": "Thai", "th": "Thai",
-    "vie": "Vietnamese", "vi": "Vietnamese",
-    "ind": "Indonesian", "id": "Indonesian",
-    "ces": "Czech", "cze": "Czech", "cs": "Czech",
-    "hun": "Hungarian", "hu": "Hungarian",
-    "ukr": "Ukrainian", "uk": "Ukrainian",
-    "und": "Undetermined",
-}
 
 VIDEO_EXTENSIONS = {
     ".avi",
@@ -1563,10 +1537,12 @@ class CastService:
         active_track_ids = []
         if self.supervisor and hasattr(self.supervisor, "status"):
             active_track_ids = getattr(self.supervisor.status, "active_track_ids", []) or []
+        with self._lock:
+            tracks_copy = list(self._current_scavenged_tracks)
         return {
             "source_type": self._current_source_type,
             "active_track_ids": active_track_ids,
-            "tracks": list(self._current_scavenged_tracks),
+            "tracks": tracks_copy,
             "remote_supported": self._current_source_type in ("local", "youtube"),
         }
 
@@ -1607,8 +1583,22 @@ class CastService:
         if not self.supervisor:
             return {"error": "not connected to a device"}
 
-        existing_ids = [t["track_id"] for t in self._current_scavenged_tracks if "track_id" in t]
-        new_track_id = max(existing_ids, default=0) + 1
+        # Idempotency check: if track already fetched, activate existing track immediately
+        with self._lock:
+            for existing in self._current_scavenged_tracks:
+                if existing.get("url") == url or existing.get("download_url") == url:
+                    tid = existing.get("track_id")
+                    if tid is not None:
+                        self.log(f"DEBUG-ONLY: activating already-fetched remote subtitle track {tid}", "debug")
+                        self.supervisor.set_active_tracks([tid])
+                        return {
+                            "track_id": tid,
+                            "active_track_ids": [tid],
+                            "track": existing,
+                        }
+
+            existing_ids = [t["track_id"] for t in self._current_scavenged_tracks if "track_id" in t]
+            new_track_id = max(existing_ids, default=0) + 1
 
         lang3 = language3(language or self.default_language)
         lang_name = LANGUAGE_NAMES.get(lang3, lang3.upper())
@@ -1648,7 +1638,6 @@ class CastService:
             "type": track_type,
             "url": url,
         }
-        self._current_scavenged_tracks.append(new_track)
 
         caf_track = {
             "trackId": new_track_id,
@@ -1659,11 +1648,14 @@ class CastService:
             "language": lang3,
             "subtype": "SUBTITLES",
         }
-        if hasattr(self.supervisor, "_session") and self.supervisor._session:
-            session = self.supervisor._session
-            if hasattr(session, "tracks") and isinstance(session.tracks, list):
-                if not any(isinstance(t, dict) and t.get("trackId") == new_track_id for t in session.tracks):
-                    session.tracks.append(caf_track)
+
+        with self._lock:
+            self._current_scavenged_tracks.append(new_track)
+            if hasattr(self.supervisor, "_session") and self.supervisor._session:
+                session = self.supervisor._session
+                if hasattr(session, "tracks") and isinstance(session.tracks, list):
+                    if not any(isinstance(t, dict) and t.get("trackId") == new_track_id for t in session.tracks):
+                        session.tracks.append(caf_track)
 
         self.supervisor.set_active_tracks([new_track_id])
         return {

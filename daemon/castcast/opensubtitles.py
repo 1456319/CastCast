@@ -31,8 +31,25 @@ class SubtitleResult:
 
 def language3(value: str | None, default: str = "eng") -> str:
     value = (value or default).strip().lower()
-    aliases = {"en": "eng", "english": "eng", "es": "spa", "spanish": "spa", "fr": "fre",
-               "fra": "fre", "french": "fre", "de": "ger", "deu": "ger", "german": "ger"}
+    base = value.split("-")[0].split("_")[0]
+    aliases = {
+        "en": "eng", "english": "eng",
+        "es": "spa", "spanish": "spa",
+        "fr": "fre", "fra": "fre", "french": "fre",
+        "de": "ger", "deu": "ger", "german": "ger",
+        "pt": "por", "portuguese": "por",
+        "it": "ita", "italian": "ita",
+        "ja": "jpn", "japanese": "jpn",
+        "zh": "zho", "chinese": "zho",
+        "ko": "kor", "korean": "kor",
+        "ru": "rus", "russian": "rus",
+    }
+    if value in aliases:
+        return aliases[value]
+    if base in aliases:
+        return aliases[base]
+    if len(base) >= 3:
+        return base[:3]
     return aliases.get(value, value[:3] or default)
 
 
