@@ -405,13 +405,15 @@ def _extract_amazon_share_info(raw_text):
     """
     Extracts the actual URL and a formatted title from Amazon share text.
     Handles formats like: "Watch Hazbin Hotel - Season 1, Episode 1 - Overture on Prime Video! https://..."
+    Also handles Android intent:// URIs.
     """
-    extracted_url = raw_text
+    from .metadata import parse_intent_url
+    extracted_url = parse_intent_url(raw_text) if isinstance(raw_text, str) and raw_text.startswith("intent://") else raw_text
     extracted_title = ""
 
-    url_match = re.search(r'(https?://[^\s]+)', raw_text)
+    url_match = re.search(r'((?:https?|intent)://[^\s]+)', raw_text)
     if url_match:
-        extracted_url = url_match.group(1)
+        extracted_url = parse_intent_url(url_match.group(1))
         text_before = raw_text[:url_match.start()].strip()
 
         if text_before:

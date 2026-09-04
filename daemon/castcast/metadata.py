@@ -118,9 +118,47 @@ def _clean_title(raw_title: str) -> str:
     clean = re.sub(r'^[._\s]+|[._\s]+$', '', clean)
     return clean
 
+def parse_intent_url(raw_url: str) -> str:
+    """
+    Parses an Android intent:// or intent: URI and converts it to a standard http/https URL.
+    Format: intent://[host][path]?[query]#Intent;scheme=[scheme];package=...;end
+            intent:#Intent;...;S.browser_fallback_url=[url];end
+    """
+    if not isinstance(raw_url, str) or not raw_url.startswith(("intent://", "intent:")):
+        return raw_url
+
+    if raw_url.startswith("intent://"):
+        rest = raw_url[len("intent://"):]
+    else:
+        rest = raw_url[len("intent:"):]
+    body = rest
+    fragment = ""
+    if "#" in rest:
+        body, fragment = rest.split("#", 1)
+
+    scheme = "https"
+    if fragment:
+        m = re.search(r';scheme=([a-zA-Z0-9+.-]+)', fragment)
+        if m:
+            scheme = m.group(1)
+
+    if body:
+        return f"{scheme}://{body}"
+
+    if fragment:
+        m = re.search(r'[;?&]S\.browser_fallback_url=([^;]+)', fragment)
+        if m:
+            return urllib.parse.unquote(m.group(1))
+
+    return raw_url
+
+
 def resolve_title(raw_url: str, provider: str = None) -> str:
     if not isinstance(raw_url, str) or not raw_url.strip():
         return "Unknown title"
+
+    if raw_url.startswith("intent://"):
+        raw_url = parse_intent_url(raw_url)
 
     if "proxy/?url=" in raw_url:
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(raw_url).query)
@@ -135,16 +173,15 @@ def resolve_title(raw_url: str, provider: str = None) -> str:
             except Exception:
                 pass
 
-    is_amazon = provider == "amazon" or "primevideo.com" in raw_url or "amzn1.dv.gti" in raw_url
+    is_amazon = provider == "amazon" or "amazon.com" in raw_url or "primevideo.com" in raw_url or "amzn1.dv.gti" in raw_url
     if is_amazon:
         req_url = raw_url
-        if "amzn1.dv.gti" in raw_url and "http" not in raw_url:
-            req_url = f"https://www.primevideo.com/region/na/detail/{raw_url}"
-        elif "intent://" in raw_url:
-            qs = urllib.parse.parse_qs(urllib.parse.urlparse(raw_url).query)
-            gti = qs.get("gti", [""])[0]
-            if gti:
-                req_url = f"https://www.primevideo.com/region/na/detail/{gti}"
+        if "amzn1.dv.gti" in raw_url:
+            gti_match = re.search(r'(amzn1\.dv\.gti\.[a-f0-9-]+)', raw_url)
+            if gti_match:
+                req_url = f"https://www.primevideo.com/region/na/detail/{gti_match.group(1)}"
+            elif "http" not in raw_url:
+                req_url = f"https://www.primevideo.com/region/na/detail/{raw_url}"
 
         if req_url.startswith("http"):
             try:

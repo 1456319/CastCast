@@ -23,7 +23,7 @@ from .mediaserver import MediaServer, guess_mime
 from .opensubtitles import download_best, language3
 from .probe import FFMPEG, MediaInfo, ProbeError, have_ffmpeg, have_ffprobe, probe
 from .supervisor import State, Supervisor
-from .metadata import TMDBClient, parse_filename, resolve_title
+from .metadata import TMDBClient, parse_filename, resolve_title, parse_intent_url
 from .subtitles_remote import (
     LANGUAGE_NAMES,
     parse_youtube_subtitles,
@@ -649,11 +649,12 @@ class CastService:
             self._queue_item_scavenged = {}
 
         clean_path = path
-        url_match = re.search(r'(https?://[^\s]+)', path)
+        url_match = re.search(r'((?:https?|intent)://[^\s]+)', path)
         if url_match:
-            clean_path = url_match.group(1)
+            clean_path = parse_intent_url(url_match.group(1))
+            path = clean_path
 
-        is_url = bool(url_match or clean_path.startswith(("http://", "https://")))
+        is_url = bool(clean_path.startswith(("http://", "https://")))
         if is_url:
             path_lower = clean_path.lower()
             if "amazon.com" in path_lower or "primevideo.com" in path_lower or "gti=" in path_lower:
@@ -711,9 +712,9 @@ class CastService:
         if not path:
             return {"error": "Media path is empty or could not be resolved"}
             
-        url_match = re.search(r'(https?://[^\s]+)', path)
+        url_match = re.search(r'((?:https?|intent)://[^\s]+)', path)
         if url_match:
-            path = url_match.group(1)
+            path = parse_intent_url(url_match.group(1))
 
         if path.startswith(("http://", "https://")):
 
@@ -964,7 +965,11 @@ class CastService:
         qs = urllib.parse.parse_qs(parsed.query)
         title_id = qs.get("gti", [""])[0]
         if not title_id:
-            m = re.search(r'/detail/([a-zA-Z0-9]+)', parsed.path)
+            m_gti = re.search(r'(amzn1\.dv\.gti\.[a-f0-9-]+)', path)
+            if m_gti:
+                title_id = m_gti.group(1)
+        if not title_id:
+            m = re.search(r'/detail/([a-zA-Z0-9_.-]+)', parsed.path)
             if m:
                 title_id = m.group(1)
         if not title_id:

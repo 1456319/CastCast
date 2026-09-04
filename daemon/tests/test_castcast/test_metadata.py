@@ -101,3 +101,41 @@ class TestMetadataRobustness:
 
         title = resolve_title("https://www.primevideo.com/detail/5678", provider="amazon")
         assert title == "Amazon Video"
+
+
+class TestParseIntentUrl:
+    def test_parse_intent_url_amazon_watch(self):
+        from castcast.metadata import parse_intent_url
+        intent_url = (
+            "intent://watch.amazon.com/watch?gti=amzn1.dv.gti.2a50e5b4-edfb-47c8-9b71-72d085008f16"
+            "&time=0&territory=US&ref_=atv_dp_btf_el_prime_hd_tv_resume_t1ADAAAAAA0wr0&r=app"
+            "#Intent;scheme=https;package=com.amazon.avod.thirdpartyclient;"
+            "S.browser_fallback_url=https%3A%2F%2Fplay.google.com%2Fstore%2Fapps%2Fdetails%3Fid%3Dcom.amazon.avod.thirdpartyclient;end"
+        )
+        expected = (
+            "https://watch.amazon.com/watch?gti=amzn1.dv.gti.2a50e5b4-edfb-47c8-9b71-72d085008f16"
+            "&time=0&territory=US&ref_=atv_dp_btf_el_prime_hd_tv_resume_t1ADAAAAAA0wr0&r=app"
+        )
+        assert parse_intent_url(intent_url) == expected
+
+    def test_parse_intent_url_custom_scheme(self):
+        from castcast.metadata import parse_intent_url
+        intent_url = "intent://my.host/path?arg=1#Intent;scheme=http;package=com.example;end"
+        assert parse_intent_url(intent_url) == "http://my.host/path?arg=1"
+
+    def test_parse_intent_url_default_scheme(self):
+        from castcast.metadata import parse_intent_url
+        intent_url = "intent://my.host/path?arg=1#Intent;package=com.example;end"
+        assert parse_intent_url(intent_url) == "https://my.host/path?arg=1"
+
+    def test_parse_intent_url_fallback(self):
+        from castcast.metadata import parse_intent_url
+        intent_url = "intent:#Intent;S.browser_fallback_url=https%3A%2F%2Fexample.com%2Fvideo;end"
+        assert parse_intent_url(intent_url) == "https://example.com/video"
+
+    def test_parse_intent_url_passthrough(self):
+        from castcast.metadata import parse_intent_url
+        assert parse_intent_url("https://example.com/video.mp4") == "https://example.com/video.mp4"
+        assert parse_intent_url("/media/local.mp4") == "/media/local.mp4"
+        assert parse_intent_url(None) is None
+

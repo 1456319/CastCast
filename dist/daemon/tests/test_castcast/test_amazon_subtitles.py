@@ -315,3 +315,20 @@ class TestAmazonSubtitlesServiceIntegration(unittest.TestCase):
             raw_url = "https://www.amazon.com/gp/video/detail/B0CLEAN123?ref_=atv_dp_season_select_s1"
             self.svc.cast(raw_url)
             mock_cast_amz.assert_called_once_with(raw_url, title=None)
+
+    def test_cast_amazon_normalizes_intent_uri(self):
+        with patch.object(self.svc, "_cast_amazon", return_value={"casting": True}) as mock_cast_amz:
+            intent_url = (
+                "intent://watch.amazon.com/watch?gti=amzn1.dv.gti.2a50e5b4-edfb-47c8-9b71-72d085008f16"
+                "&time=0&territory=US&ref_=atv_dp_btf_el_prime_hd_tv_resume_t1ADAAAAAA0wr0&r=app"
+                "#Intent;scheme=https;package=com.amazon.avod.thirdpartyclient;"
+                "S.browser_fallback_url=https%3A%2F%2Fplay.google.com%2Fstore%2Fapps%2Fdetails%3Fid%3Dcom.amazon.avod.thirdpartyclient;end"
+            )
+            expected_url = (
+                "https://watch.amazon.com/watch?gti=amzn1.dv.gti.2a50e5b4-edfb-47c8-9b71-72d085008f16"
+                "&time=0&territory=US&ref_=atv_dp_btf_el_prime_hd_tv_resume_t1ADAAAAAA0wr0&r=app"
+            )
+            res = self.svc.cast(intent_url, allow_unsafe=True)
+            self.assertEqual(res, {"casting": True})
+            mock_cast_amz.assert_called_once_with(expected_url, title=None)
+

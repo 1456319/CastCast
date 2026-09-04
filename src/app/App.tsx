@@ -178,7 +178,22 @@ export default function App() {
     try {
       const result = await getSharedUrl();
       if (result.url) {
-        const urlStr = result.url as string;
+        let urlStr = result.url as string;
+        if (urlStr.startsWith("intent://") || urlStr.startsWith("intent:")) {
+          const schemeMatch = urlStr.match(/;scheme=([a-zA-Z0-9+.-]+)/);
+          const scheme = schemeMatch ? schemeMatch[1] : "https";
+          const prefix = urlStr.startsWith("intent://") ? "intent://" : "intent:";
+          const bodyAndFragment = urlStr.slice(prefix.length);
+          const body = bodyAndFragment.split("#")[0];
+          if (body) {
+            urlStr = `${scheme}://${body}`;
+          } else {
+            const fallbackMatch = urlStr.match(/[;?&]S\.browser_fallback_url=([^;]+)/);
+            if (fallbackMatch) {
+              urlStr = decodeURIComponent(fallbackMatch[1]);
+            }
+          }
+        }
         const isAmazon = urlStr.includes("amazon.com") || urlStr.includes("primevideo.com") || urlStr.includes("gti=");
         const isPlaying = statusRef.current?.cast?.state && statusRef.current.cast.state !== "idle" && statusRef.current.cast.state !== "IDLE" && statusRef.current.cast.state !== "unknown" && statusRef.current.cast.state !== "dead" && statusRef.current.cast.state !== "disconnected";
         
@@ -194,7 +209,7 @@ export default function App() {
         } else {
           setNotice(`Extracting streams, please wait...`);
           try {
-            await daemon.cast(urlStr, true, undefined, undefined, "Amazon Video");
+            await daemon.cast(urlStr, true);
             setNotice(`Success! Sending stream to TV...`);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
