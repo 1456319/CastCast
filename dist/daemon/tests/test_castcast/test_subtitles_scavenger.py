@@ -324,6 +324,29 @@ class TestSubtitleScavenger(unittest.TestCase):
         self.assertEqual(len(caf_tracks), 2)
         self.assertEqual(active_ids, [tracks[0]["track_id"]])
 
+    @patch('castcast.service.have_ffmpeg', return_value=True)
+    @patch('subprocess.run')
+    def test_sidecar_media_tags_not_misclassified_as_languages(self, mock_run, mock_ffmpeg):
+        mock_run.return_value = MagicMock(returncode=0)
+        video_path = os.path.join(self.media_dir, "RipMovie.mkv")
+        with open(video_path, "w") as f:
+            f.write("dummy")
+
+        sidecar_rip = os.path.join(self.media_dir, "RipMovie.rip.srt")
+        sidecar_dvd = os.path.join(self.media_dir, "RipMovie.dvd.srt")
+        sidecar_web = os.path.join(self.media_dir, "RipMovie.web.srt")
+        sidecar_aac = os.path.join(self.media_dir, "RipMovie.aac.srt")
+        for sc in (sidecar_rip, sidecar_dvd, sidecar_web, sidecar_aac):
+            with open(sc, "w") as f:
+                f.write("1\n00:00:01,000 --> 00:00:02,000\nSub")
+
+        tracks = self.svc._scavenge_all_local_subtitles(video_path, {"subtitles": []})
+        self.assertEqual(len(tracks), 4)
+        for t in tracks:
+            # Must not be misclassified as language codes "rip", "dvd", "web", "aac"
+            self.assertEqual(t["language"], "eng")
+            self.assertIn("English", t["label"])
+
     def test_tracks_for_load_skips_unserved_paths_on_value_error(self):
         tracks = [
             {"track_id": 1, "language": "eng", "label": "Good", "vtt_path": "/valid/good.vtt"},

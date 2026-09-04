@@ -109,7 +109,7 @@ def transform_dash_manifest(body_content: str, target_url: str) -> str:
         return tag
 
     def is_audio_adaptation_set(tag: str) -> bool:
-        has_audio = 'contentType="audio"' in tag or 'mimeType="audio"' in tag
+        has_audio = 'contentType="audio"' in tag or 'mimeType="audio/' in tag or 'mimeType="audio"' in tag
         has_text = any(t in tag for t in ['contentType="text"', 'contentType="subtitle"', 'mimeType="text"', 'text/vtt', 'application/ttml+xml'])
         has_video = 'contentType="video"' in tag or 'height=' in tag
         return has_audio and not has_text and not has_video

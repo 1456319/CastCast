@@ -408,6 +408,34 @@ class TestRemoteSubtitlesServiceAndApi(unittest.TestCase):
         self.assertEqual(self.svc._current_scavenged_tracks[1]["language"], "fre")
         self.svc.supervisor.set_active_tracks.assert_called_once_with([2])
 
+    @patch("castcast.service.download_subtitle_to_vtt")
+    def test_fetch_and_activate_remote_subtitle_reloads_active_session(self, mock_download):
+        dummy_vtt = os.path.join(self.work_dir, "remote_de.vtt")
+        with open(dummy_vtt, "w") as f:
+            f.write("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHallo")
+        mock_download.return_value = dummy_vtt
+
+        self.svc._current_scavenged_tracks = [
+            {"track_id": 1, "language": "eng", "label": "English", "vtt_path": "/fake/1.vtt"}
+        ]
+        self.svc.supervisor.is_active.return_value = True
+        self.svc.supervisor.snapshot.return_value = {"position": 42.5}
+        self.svc.supervisor._session.content_id = "http://fake/video.mp4"
+        self.svc.supervisor._session.content_type = "video/mp4"
+        self.svc.supervisor._session.title = "Test Movie"
+
+        res = self.svc.fetch_and_activate_remote_subtitle("deu", "manual", "http://example.com/de.vtt")
+        self.assertEqual(res["track_id"], 2)
+        caf_tracks, _ = self.svc._tracks_for_load(self.svc._current_scavenged_tracks)
+        self.svc.supervisor.load.assert_called_once_with(
+            "http://fake/video.mp4",
+            content_type="video/mp4",
+            title="Test Movie",
+            tracks=caf_tracks,
+            active_track_ids=[2],
+            position=42.5,
+        )
+
     def test_fetch_and_activate_remote_subtitle_disconnected(self):
         self.svc.supervisor = None
         result = self.svc.fetch_and_activate_remote_subtitle("eng", "manual", "http://example.com")

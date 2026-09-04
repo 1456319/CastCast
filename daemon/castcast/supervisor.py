@@ -94,6 +94,14 @@ class MediaSession:
     # Chromecast receiver via customData.asset.licenseServers.
     license_url: str = ""
 
+    @property
+    def content_id(self) -> str:
+        return self.url
+
+    @content_id.setter
+    def content_id(self, val: str) -> None:
+        self.url = val
+
 
 @dataclass
 class Status:
@@ -305,6 +313,11 @@ class Supervisor:
             data["state"] = self._state.value
             data["position"] = self._extrapolated_position()
             return data
+
+    def is_active(self) -> bool:
+        """Return True if the supervisor has an active session and is connected."""
+        with self._lock:
+            return self._state not in (State.DISCONNECTED, State.DEAD, State.LOAD_FAILED) and self._session is not None
 
     # -- state helpers -----------------------------------------------------
 

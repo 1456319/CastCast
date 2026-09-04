@@ -148,5 +148,30 @@ class TestServiceQueue(unittest.TestCase):
             self.assertEqual(self.svc.delete(str(trash)), {"deleted": str(trash)})
             self.assertFalse(trash.exists())
 
+    @patch('castcast.service.CastService._scavenge_all_local_subtitles')
+    @patch('castcast.service.CastService.preflight')
+    @patch('castcast.service.guess_mime')
+    def test_queue_initializes_and_advances_subtitle_state(self, mock_guess_mime, mock_preflight, mock_scavenge):
+        mock_guess_mime.return_value = "video/mp4"
+        mock_preflight.side_effect = [
+            {"verdict": {"needs_processing": False}, "media": {"duration_s": 100}, "prepared_path": None},
+            {"verdict": {"needs_processing": False}, "media": {"duration_s": 200}, "prepared_path": None},
+        ]
+        tracks_item1 = [{"track_id": 1, "language": "eng", "label": "English 1", "vtt_path": "/sub1.vtt"}]
+        tracks_item2 = [{"track_id": 1, "language": "spa", "label": "Spanish 2", "vtt_path": "/sub2.vtt"}]
+        mock_scavenge.side_effect = [tracks_item1, tracks_item2]
+
+        self.svc.queue(["/media/item1.mp4", "/media/item2.mp4"])
+
+        # Check queue initialization of subtitle state
+        self.assertEqual(self.svc._current_source_type, "local")
+        self.assertEqual(self.svc._current_media_path, "/media/item1.mp4")
+        self.assertEqual(self.svc._current_scavenged_tracks, tracks_item1)
+
+        # Simulate MEDIA_STATUS advancing to item 2
+        self.svc._emit("media", {"source_path": "/media/item2.mp4", "position": 0.0})
+        self.assertEqual(self.svc._current_media_path, "/media/item2.mp4")
+        self.assertEqual(self.svc._current_scavenged_tracks, tracks_item2)
+
 if __name__ == '__main__':
     unittest.main()

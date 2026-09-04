@@ -34,6 +34,7 @@ export const SubtitlesDrawer: React.FC<SubtitlesDrawerProps> = ({
   // Local search state
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [searchLang, setSearchLang] = useState<string>("");
+  const [hasSearched, setHasSearched] = useState<boolean>(false);
 
   const fetchAvailableSubtitles = useCallback(async () => {
     setLoading(true);
@@ -72,6 +73,7 @@ export const SubtitlesDrawer: React.FC<SubtitlesDrawerProps> = ({
       setRemoteSubtitles([]);
       setRemoteError(null);
       setError(null);
+      setHasSearched(false);
       return;
     }
 
@@ -178,6 +180,7 @@ export const SubtitlesDrawer: React.FC<SubtitlesDrawerProps> = ({
 
   const handleLocalSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    setHasSearched(true);
     loadRemoteSubtitles(searchQuery, searchLang);
   };
 
@@ -456,6 +459,10 @@ export const SubtitlesDrawer: React.FC<SubtitlesDrawerProps> = ({
                           </button>
                         );
                       })}
+                    </div>
+                  ) : hasSearched ? (
+                    <div className="rounded border border-dashed border-emerald-500/20 p-4 text-center text-xs text-emerald-500/70">
+                      No subtitles found for this search.
                     </div>
                   ) : null}
                 </div>

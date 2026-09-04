@@ -1080,7 +1080,7 @@ export default function App() {
         sourceType={
           cast?.source_path?.includes("/youtube/")
             ? "youtube"
-            : cast?.source_path?.includes("amazon")
+            : cast?.source_path?.includes("amazon") || cast?.source_path?.includes("primevideo")
             ? "amazon"
             : "local"
         }

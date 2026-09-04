@@ -138,6 +138,7 @@ class CastService:
         )
         self._queued_for_later = set()
         self._current_scavenged_tracks: List[dict] = []
+        self._queue_item_scavenged: dict[str, list[dict]] = {}
         self._current_source_type: str = "local"
         self._current_media_path: str = ""
         self._current_youtube_info: dict = {}
@@ -234,7 +235,23 @@ class CastService:
         if listener in self._events:
             self._events.remove(listener)
 
+    def _on_media_status(self, payload: dict) -> None:
+        source_path = payload.get("source_path")
+        if not source_path:
+            return
+        with self._lock:
+            if source_path != self._current_media_path:
+                self._current_media_path = source_path
+                if hasattr(self, "_queue_item_scavenged") and source_path in self._queue_item_scavenged:
+                    self._current_scavenged_tracks = self._queue_item_scavenged[source_path]
+                    self._current_source_type = "local"
+                elif os.path.isfile(source_path):
+                    self._current_scavenged_tracks = self._scavenge_all_local_subtitles(source_path)
+                    self._current_source_type = "local"
+
     def _emit(self, kind: str, payload: dict) -> None:
+        if kind == "media" and isinstance(payload, dict):
+            self._on_media_status(payload)
         for listener in list(self._events):
             try:
                 listener(kind, payload)
@@ -625,9 +642,10 @@ class CastService:
         if not self.supervisor:
             return {"error": "not connected to a device"}
 
-        self._current_scavenged_tracks = []
-        self._current_media_path = path
-        self._current_youtube_info = {}
+        with self._lock:
+            self._current_scavenged_tracks = []
+            self._current_media_path = path
+            self._current_youtube_info = {}
 
         clean_path = path
         url_match = re.search(r'(https?://[^\s]+)', path)
@@ -875,7 +893,8 @@ class CastService:
         else:
             tracks, active_track_ids = self._tracks_for_load(scavenged_tracks)
 
-        self._current_scavenged_tracks = scavenged_tracks
+        with self._lock:
+            self._current_scavenged_tracks = scavenged_tracks
 
         try:
             url = self.media_server.url_for(target)
@@ -1013,6 +1032,7 @@ class CastService:
             return {"error": "not connected to a device"}
 
         items = []
+        item_scavenged = []
         skipped = 0
         preparing = 0
 
@@ -1076,9 +1096,20 @@ class CastService:
                 item["activeTrackIds"] = active_track_ids
 
             items.append(item)
+            item_scavenged.append(scavenged)
 
         if not items:
             return {"error": "no castable items found in the provided paths"}
+
+        first_path = items[0].get("media", {}).get("customData", {}).get("sourcePath", "")
+        with self._lock:
+            self._current_scavenged_tracks = item_scavenged[0]
+            self._current_source_type = "local"
+            self._current_media_path = first_path
+            self._queue_item_scavenged = {
+                it.get("media", {}).get("customData", {}).get("sourcePath", ""): sc
+                for it, sc in zip(items, item_scavenged)
+            }
 
         self.supervisor.queue_load(items)
         return {"queued": len(items), "skipped": skipped, "preparing": preparing}
@@ -1416,7 +1447,7 @@ class CastService:
                             continue
                         parsed_lang = language3(t_lower)
                         if not extracted_lang and parsed_lang and (
-                            t_lower in LANGUAGE_NAMES or (len(t_lower) in (2, 3) and t_lower.isalpha()) or t_lower in {"english", "spanish", "french", "german"}
+                            t_lower in LANGUAGE_NAMES or t_lower in {"english", "spanish", "french", "german"}
                         ):
                             extracted_lang = parsed_lang
                         else:
@@ -1573,7 +1604,8 @@ class CastService:
             self.supervisor.set_active_tracks([])
             return {"active_track_ids": []}
 
-        valid_ids = {t["track_id"] for t in self._current_scavenged_tracks if "track_id" in t}
+        with self._lock:
+            valid_ids = {t["track_id"] for t in self._current_scavenged_tracks if "track_id" in t}
         if tid not in valid_ids:
             self.log(f"DEBUG-ONLY: subtitle track_id {tid} not found in available tracks: {valid_ids}", "warn")
             return {"error": f"track_id {tid} not found in available tracks"}
@@ -1699,11 +1731,27 @@ class CastService:
 
         with self._lock:
             self._current_scavenged_tracks.append(new_track)
+            tracks_copy = list(self._current_scavenged_tracks)
             if hasattr(self.supervisor, "_session") and self.supervisor._session:
                 session = self.supervisor._session
                 if hasattr(session, "tracks") and isinstance(session.tracks, list):
                     if not any(isinstance(t, dict) and t.get("trackId") == new_track_id for t in session.tracks):
                         session.tracks.append(caf_track)
+
+        caf_tracks, _ = self._tracks_for_load(tracks_copy)
+        current_pos = self.supervisor.snapshot().get("position", 0.0) if hasattr(self.supervisor, "snapshot") else 0.0
+        # Reload media with the updated tracks array at the current position, preserving the active stream
+        if hasattr(self.supervisor, "is_active") and self.supervisor.is_active():
+            session = self.supervisor._session
+            if session and getattr(session, "content_id", None):
+                self.supervisor.load(
+                    session.content_id,
+                    content_type=getattr(session, "content_type", "video/mp4"),
+                    title=getattr(session, "title", ""),
+                    tracks=caf_tracks,
+                    active_track_ids=[new_track_id],
+                    position=current_pos,
+                )
 
         self.supervisor.set_active_tracks([new_track_id])
         return {

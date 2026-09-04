@@ -1,7 +1,7 @@
 import unittest
 import base64
 import urllib.parse
-from castcast.mediaserver import guess_mime
+from castcast.mediaserver import guess_mime, transform_dash_manifest
 
 class TestGuessMime(unittest.TestCase):
     """
@@ -54,6 +54,36 @@ class TestGuessMime(unittest.TestCase):
         proxy_path = "/proxy/?other_param=value.mp3"
         # In this case it falls back to the extension of the main path which is empty/unknown
         self.assertEqual(guess_mime(proxy_path), "video/mp4")
+
+
+class TestTransformDashManifest(unittest.TestCase):
+    def test_dash_audio_adaptation_set_mime_matching(self):
+        manifest = """<MPD>
+  <Period>
+    <AdaptationSet id="1" mimeType="audio/mp4" lang="es">
+      <Representation id="a_es" bandwidth="128000"/>
+    </AdaptationSet>
+    <AdaptationSet id="2" mimeType="audio/webm" lang="fr">
+      <Representation id="a_fr" bandwidth="128000"/>
+    </AdaptationSet>
+    <AdaptationSet id="3" mimeType="audio/mp4" lang="en">
+      <Representation id="a_en" bandwidth="128000"/>
+    </AdaptationSet>
+    <AdaptationSet id="4" mimeType="text/vtt" lang="es">
+      <Representation id="sub_es" bandwidth="1000"/>
+    </AdaptationSet>
+  </Period>
+</MPD>"""
+        result = transform_dash_manifest(manifest, "http://cdn.example.com/manifest.mpd")
+        # Non-English audio sets should be filtered out
+        self.assertNotIn('id="1"', result)
+        self.assertNotIn('id="2"', result)
+        # English audio should remain
+        self.assertIn('id="3"', result)
+        # Spanish subtitle text should remain
+        self.assertIn('id="4"', result)
+        self.assertIn('lang="es"', result)
+
 
 if __name__ == '__main__':
     unittest.main()
