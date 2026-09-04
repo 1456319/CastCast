@@ -34,6 +34,7 @@ import {
   type Status,
 } from "./lib/daemon";
 import { PreflightPanel } from "./components/preflight-panel";
+import SubtitlesDrawer from "./components/SubtitlesDrawer";
 import { TERMUX_MANUAL_COMMAND, launchTermuxDaemon, getSharedUrl } from "./lib/termux-daemon";
 import { DiscoveryBrowser } from "./lib/discovery-browser";
 import {
@@ -78,6 +79,8 @@ export default function App() {
   const [missingDep, setMissingDep] = useState<string | null>(null);
   const [selectedAudioId, setSelectedAudioId] = useState<number | null>(null);
   const [selectedSubtitleId, setSelectedSubtitleId] = useState<number | null>(null);
+  const [subtitlesDrawerOpen, setSubtitlesDrawerOpen] = useState(false);
+  const [activeSubtitleLang, setActiveSubtitleLang] = useState<string | null>(null);
 
   const logRef = useRef<HTMLDivElement>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
@@ -387,6 +390,32 @@ export default function App() {
   const live = cast ? LIVE_STATES.has(cast.state) : false;
   const remux = status?.remux;
 
+  useEffect(() => {
+    if (!live || !cast?.active_track_ids?.length) {
+      if (!cast?.active_track_ids?.length) {
+        setActiveSubtitleLang(null);
+      }
+      return;
+    }
+    let active = true;
+    daemon
+      .getAvailableSubtitles()
+      .then((res) => {
+        if (!active || !res?.tracks) return;
+        const activeId = res.active_track_ids?.[0];
+        const activeTrack = res.tracks.find((t) => t.track_id === activeId);
+        if (activeTrack?.language) {
+          setActiveSubtitleLang(activeTrack.language);
+        } else {
+          setActiveSubtitleLang("EN");
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [live, cast?.active_track_ids]);
+
   // ---- daemon offline ------------------------------------------------
   if (!online) {
     return (
@@ -596,30 +625,22 @@ export default function App() {
                 )}
               </button>
               {(() => {
-                const hasEmbeddedSubs = (cast.active_track_ids?.length || 0) > 0;
-                const isSubtitlesOn = cast.has_text_tracks || hasEmbeddedSubs;
-                const isYouTube = cast.source_path?.includes("/youtube/") ?? false;
-                const tooltipTitle = cast.has_text_tracks
-                  ? "External English subtitles are attached to this cast"
-                  : hasEmbeddedSubs
-                  ? "Embedded subtitles are active"
-                  : isYouTube
-                  ? "No subtitles embedded by yt-dlp"
-                  : "Download English subtitles from OpenSubtitles";
+                const hasActiveSubs = (cast.active_track_ids?.length || 0) > 0;
+                const isSubtitlesOn = Boolean(cast.has_text_tracks || hasActiveSubs);
+                const displayLang = (activeSubtitleLang || "EN").toUpperCase();
 
                 return (
                   <button
-                    onClick={requestSubtitles}
-                    disabled={!cast.source_path || busy === "subtitles" || isSubtitlesOn || isYouTube}
-                    className={`flex items-center gap-1.5 rounded border px-4 py-2 hover:bg-emerald-500/10 disabled:opacity-40 ${
+                    onClick={() => setSubtitlesDrawerOpen(true)}
+                    className={`flex items-center gap-1.5 rounded border px-4 py-2 hover:bg-emerald-500/10 ${
                       isSubtitlesOn
                         ? "border-emerald-400/60 bg-emerald-500/15 text-emerald-100"
-                        : "border-emerald-500/25"
+                        : "border-emerald-500/25 text-emerald-400/80"
                     }`}
-                    title={tooltipTitle}
+                    title="Manage subtitle tracks"
                   >
-                    {busy === "subtitles" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Subtitles className="h-3.5 w-3.5" />}
-                    {isSubtitlesOn ? "subtitles on" : "subtitles"}
+                    <Subtitles className="h-3.5 w-3.5" />
+                    {isSubtitlesOn ? `Subtitles: ${displayLang}` : "Subtitles: Off"}
                   </button>
                 );
               })()}
@@ -1058,6 +1079,25 @@ export default function App() {
           </DrawerContent>
         </Drawer>
       )}
+
+      {/* Context-Sensitive Subtitles Drawer */}
+      <SubtitlesDrawer
+        isOpen={subtitlesDrawerOpen}
+        onClose={() => setSubtitlesDrawerOpen(false)}
+        sourceType={
+          cast?.source_path?.includes("/youtube/")
+            ? "youtube"
+            : cast?.source_path?.includes("amazon")
+            ? "amazon"
+            : "local"
+        }
+        activeTrackIds={cast?.active_track_ids}
+        onSubtitlesChanged={(ids) => {
+          if (ids.length === 0) {
+            setActiveSubtitleLang(null);
+          }
+        }}
+      />
 
       {/* Gamified Telemetry Modal */}
       {anomaly && (
