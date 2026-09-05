@@ -442,10 +442,12 @@ class CastService:
         except ProbeError as exc:
             return {"error": str(exc), "media": None, "verdict": None, "plan": None}
 
-        is_ultra = False
+        is_ultra = True
         dev = getattr(self.supervisor, "device", None) or self.device
         if dev:
-            is_ultra = getattr(dev, "is_ultra", False)
+            model = (getattr(dev, "model", "") or "").lower()
+            if model and ("chromecast" in model or "eureka" in model) and "ultra" not in model and "google tv 4k" not in model:
+                is_ultra = False
 
         verdict = capability.evaluate(
             info,
@@ -1075,8 +1077,12 @@ class CastService:
                 if prepared:
                     target = prepared
                     self.log(f"queue: using previously converted file: {os.path.basename(prepared)}")
+                elif verdict.get("video_action") == "transcode":
+                    self.log(f"queue: skipping {os.path.basename(path)} - video re-encoding requires explicit confirmation", "warn")
+                    skipped += 1
+                    continue
                 else:
-                    self.log(f"queue: preparing {os.path.basename(path)} for later queueing")
+                    self.log(f"queue: preparing lossless remux for {os.path.basename(path)}")
                     self._queued_for_later.add(path)
                     self.prepare(path)
                     preparing += 1
@@ -1968,3 +1974,7 @@ def _size(path: str) -> int:
         return os.path.getsize(path)
     except OSError:
         return 0
+
+
+Service = CastService
+
