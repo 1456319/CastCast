@@ -35,7 +35,7 @@ import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from .channel import (CastChannel, ChannelClosed, DEFAULT_MEDIA_RECEIVER_APP_ID, DEFAULT_TEXT_TRACK_STYLE,
                       NS_CONNECTION, NS_HEARTBEAT, NS_MEDIA, NS_RECEIVER,

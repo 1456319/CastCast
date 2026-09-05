@@ -112,6 +112,12 @@ export default function App() {
     }
   }, []);
 
+  useEffect(() => {
+    return () => {
+      stopAmazonPolling();
+    };
+  }, [stopAmazonPolling]);
+
   const loadHealth = useCallback(async () => {
     try {
       if (typeof daemon.health === "function") {
@@ -200,13 +206,7 @@ export default function App() {
       } catch {
         // daemon may not support or request may fail, ignore
       }
-      try {
-        if (typeof daemon.health === "function") {
-          setHealth(await daemon.health());
-        }
-      } catch {
-        // ignore
-      }
+      await loadHealth();
       setOnline(true);
       setNotice((prev) => (prev === 'Daemon process found, but unresponsive. You may need to Force Stop Termux.' ? null : prev));
     } catch (err: any) {

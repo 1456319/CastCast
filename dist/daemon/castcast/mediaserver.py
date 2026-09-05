@@ -357,12 +357,11 @@ class _Handler(BaseHTTPRequestHandler):
         # Boundary Check: The public tunnel is strictly for DRM Widevine license acquisition (/amazon/license).
         # Any proxy request arriving via the public tunnel host is rejected to prevent open-proxy abuse.
         incoming_host = (self.headers.get("Host") or "").split(":")[0].strip().lower()
-        if server.public_url:
-            pub_host = urllib.parse.urlsplit(server.public_url).netloc.split(":")[0].strip().lower()
-            if incoming_host and (incoming_host == pub_host or "lhr.life" in incoming_host or "localhost.run" in incoming_host):
-                server.log(f"Blocked forbidden public tunnel access to proxy from {incoming_host}", "warn")
-                self.send_error(403, "Forbidden: Public proxying not permitted")
-                return
+        pub_host = urllib.parse.urlsplit(server.public_url).netloc.split(":")[0].strip().lower() if server.public_url else ""
+        if incoming_host and ((pub_host and incoming_host == pub_host) or "lhr.life" in incoming_host or "localhost.run" in incoming_host):
+            server.log(f"Blocked forbidden public tunnel access to proxy from {incoming_host}", "warn")
+            self.send_error(403, "Forbidden: Public proxying not permitted")
+            return
 
         path_obj = urllib.parse.urlsplit(self.path)
         query = urllib.parse.parse_qs(path_obj.query)
@@ -377,10 +376,14 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_error(400, "Invalid base64 url")
             return
 
-        # Boundary Check 3: Strictly enforce http/https URL scheme
-        target_scheme = urllib.parse.urlsplit(target_url).scheme.lower()
-        if target_scheme not in ("http", "https"):
+        # Boundary Check: Strictly enforce http/https URL scheme and prevent SSRF to loopback
+        target_parsed = urllib.parse.urlsplit(target_url)
+        if target_parsed.scheme.lower() not in ("http", "https"):
             self.send_error(400, "Unsupported URL scheme")
+            return
+        target_host = (target_parsed.hostname or "").lower()
+        if target_host in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
+            self.send_error(403, "Forbidden: Loopback target not permitted")
             return
 
         domain = urllib.parse.urlsplit(target_url).netloc

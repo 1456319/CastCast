@@ -19,7 +19,7 @@ from typing import Callable, Dict, List, Optional
 from . import capability, health, remux
 from .channel import DEFAULT_TEXT_TRACK_STYLE
 from .discovery import CastDevice, DeviceCache, resolve
-from .mediaserver import MediaServer, guess_mime
+from .mediaserver import MediaServer, guess_mime, redact_sensitive_url
 from .opensubtitles import download_best, language3
 from .probe import FFMPEG, MediaInfo, ProbeError, have_ffmpeg, have_ffprobe, probe
 from .supervisor import State, Supervisor
@@ -993,7 +993,7 @@ class CastService:
 
         encoded_url = base64.b64encode(amazon_data["mpd_url"].encode("utf-8")).decode("utf-8")
         proxied_path = f"http://{self.media_server.lan_ip}:{self.media_server.port}/proxy/?url={encoded_url}"
-        self.log(f"Amazon 4K Manifest (Proxied): {proxied_path}")
+        self.log(f"Amazon 4K Manifest (Proxied): {redact_sensitive_url(proxied_path)}")
 
         self.media_server.drm_tokens[f"amazon_{title_id}"] = {
             "actor_token": amazon_data["actor_token"],
@@ -1011,7 +1011,7 @@ class CastService:
             manifest_text = amazon_data.get("manifest_text")
         if not manifest_text and amazon_data.get("mpd_url"):
             try:
-                self.log(f"DEBUG-ONLY: Fetching Amazon MPD manifest for subtitle parsing: {amazon_data['mpd_url']}", "debug")
+                self.log(f"DEBUG-ONLY: Fetching Amazon MPD manifest for subtitle parsing: {redact_sensitive_url(amazon_data['mpd_url'])}", "debug")
                 req = urllib.request.Request(amazon_data["mpd_url"], headers={"User-Agent": "Mozilla/5.0"})
                 with urllib.request.urlopen(req, timeout=5) as resp:
                     manifest_text = resp.read().decode("utf-8", "replace")
@@ -1926,10 +1926,10 @@ class CastService:
         headers = payload.get("headers", {})
 
         if req_type == "drm":
-            self.log(f"Discovery: DRM flag detected on {url}. Playback may fail.", "warn")
+            self.log(f"Discovery: DRM flag detected on {redact_sensitive_url(url)}. Playback may fail.", "warn")
             self.rules.register_drm(url)
         elif req_type == "manifest":
-            self.log(f"Discovery: Valid stream detected ({url}) with {len(headers)} headers.", "info")
+            self.log(f"Discovery: Valid stream detected ({redact_sensitive_url(url)}) with {len(headers)} headers.", "info")
             self.rules.register_manifest(url, headers)
             # Phase 3: Register the proxy ruleset
             self.media_server.register_intercept(url, headers)

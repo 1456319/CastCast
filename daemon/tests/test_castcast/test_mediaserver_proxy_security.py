@@ -34,3 +34,19 @@ def test_proxy_boundary_security():
     handler.headers = {"Host": "192.168.1.30:38399"}
     handler._serve_proxy(body=False)
     assert any(code == 400 for code, _ in sent_errors)
+
+    # 3. SSRF loopback target (e.g. 127.0.0.1) -> 403 Forbidden
+    sent_errors.clear()
+    b64_loopback = base64.b64encode(b"http://127.0.0.1:8765/status").decode("utf-8")
+    handler.path = f"/proxy/?url={b64_loopback}"
+    handler.headers = {"Host": "192.168.1.30:38399"}
+    handler._serve_proxy(body=False)
+    assert any(code == 403 for code, _ in sent_errors)
+
+    # 4. Tunnel host blocked even if public_url is None
+    mock_server.media_server.public_url = None
+    sent_errors.clear()
+    handler.path = f"/proxy/?url={b64}"
+    handler.headers = {"Host": "other.localhost.run"}
+    handler._serve_proxy(body=False)
+    assert any(code == 403 for code, _ in sent_errors)
