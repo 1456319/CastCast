@@ -63,6 +63,32 @@ def guess_mime(path: str) -> str:
     return MIME_TYPES.get(os.path.splitext(urllib.parse.urlsplit(path).path)[1].lower(), "video/mp4")
 
 
+def redact_sensitive_url(url: str) -> str:
+    """Redacts sensitive credentials, tokens, and signatures from query parameters for safe logging."""
+    if not isinstance(url, str) or not url:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if not parsed.query:
+            return url
+        qs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        sensitive_keys = {
+            "token", "signature", "key-pair-id", "sessiontoken", "awsaccesskeyid",
+            "policy", "auth", "access_token", "api_key", "secret"
+        }
+        redacted_qs = []
+        for k, v in qs:
+            k_lower = k.lower()
+            if k_lower in sensitive_keys or k_lower.startswith("x-amz-") or "secret" in k_lower or "token" in k_lower:
+                redacted_qs.append((k, "[REDACTED]"))
+            else:
+                redacted_qs.append((k, v))
+        new_query = urllib.parse.urlencode(redacted_qs, safe="[]")
+        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment))
+    except Exception:
+        return "[REDACTED_URL]"
+
+
 def detect_lan_ip(target: str = "8.8.8.8") -> str:
     """Find the IP the kernel would use to reach the LAN.
 
@@ -458,7 +484,7 @@ class _Handler(BaseHTTPRequestHandler):
                         shutil.copyfileobj(response, self.wfile)
 
         except Exception as e:
-            server.log(f"Proxy error for {target_url}: {e}")
+            server.log(f"Proxy error for {redact_sensitive_url(target_url)}: {e}")
             if not self.wfile.closed:
                 try:
                     self.send_error(500, "Proxy error")
