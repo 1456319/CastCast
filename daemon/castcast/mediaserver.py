@@ -328,6 +328,16 @@ class _Handler(BaseHTTPRequestHandler):
         import urllib.error
         server: "MediaServer" = self.server.media_server
 
+        # Boundary Check: The public tunnel is strictly for DRM Widevine license acquisition (/amazon/license).
+        # Any proxy request arriving via the public tunnel host is rejected to prevent open-proxy abuse.
+        incoming_host = (self.headers.get("Host") or "").split(":")[0].strip().lower()
+        if server.public_url:
+            pub_host = urllib.parse.urlsplit(server.public_url).netloc.split(":")[0].strip().lower()
+            if incoming_host and (incoming_host == pub_host or "lhr.life" in incoming_host or "localhost.run" in incoming_host):
+                server.log(f"Blocked forbidden public tunnel access to proxy from {incoming_host}", "warn")
+                self.send_error(403, "Forbidden: Public proxying not permitted")
+                return
+
         path_obj = urllib.parse.urlsplit(self.path)
         query = urllib.parse.parse_qs(path_obj.query)
         encoded_url = query.get("url", [""])[0]
@@ -339,6 +349,12 @@ class _Handler(BaseHTTPRequestHandler):
             target_url = base64.b64decode(encoded_url).decode("utf-8")
         except Exception:
             self.send_error(400, "Invalid base64 url")
+            return
+
+        # Boundary Check 3: Strictly enforce http/https URL scheme
+        target_scheme = urllib.parse.urlsplit(target_url).scheme.lower()
+        if target_scheme not in ("http", "https"):
+            self.send_error(400, "Unsupported URL scheme")
             return
 
         domain = urllib.parse.urlsplit(target_url).netloc
