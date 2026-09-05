@@ -177,6 +177,11 @@ class _Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"error": "not found"}, 404)
         except Exception as exc:  # noqa: BLE001
+            tb = traceback.format_exc()
+            try:
+                self.service.log(f"[api] Error during GET {route}: {exc}\n{tb}", "error")
+            except Exception:
+                pass
             self._json({"error": str(exc)}, 500)
 
     def do_POST(self):  # noqa: N802
@@ -334,8 +339,17 @@ class _Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"error": "not found"}, 404)
         except RuntimeError as exc:
+            try:
+                self.service.log(f"[api] Conflict during POST {route}: {exc}", "warn")
+            except Exception:
+                pass
             self._json({"error": str(exc)}, 409)
         except Exception as exc:  # noqa: BLE001
+            tb = traceback.format_exc()
+            try:
+                self.service.log(f"[api] Error during POST {route}: {exc}\n{tb}", "error")
+            except Exception:
+                pass
             self._json({"error": str(exc)}, 500)
 
     # -- server-sent events -------------------------------------------------
