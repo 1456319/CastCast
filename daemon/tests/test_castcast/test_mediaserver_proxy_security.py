@@ -50,6 +50,15 @@ def test_proxy_boundary_security():
     handler._serve_proxy(body=False)
     assert any(code == 403 for code, _ in sent_errors)
 
+    # 4. Octal/hex loopback target -> 403 Forbidden
+    for alt_ip in ("0177.0.0.1", "0x7f000001", "2130706433", "0"):
+        sent_errors.clear()
+        b64_alt = base64.b64encode(f"http://{alt_ip}:8765/status".encode("utf-8")).decode("utf-8")
+        handler.path = f"/proxy/?url={b64_alt}"
+        handler.headers = {"Host": "192.168.1.30:38399"}
+        handler._serve_proxy(body=False)
+        assert any(code == 403 for code, _ in sent_errors), f"Failed to block {alt_ip}"
+
     # 4. Tunnel host blocked even if public_url is None
     mock_server.media_server.public_url = None
     sent_errors.clear()
