@@ -133,9 +133,11 @@ class Supervisor:
                  on_event: Optional[Callable[[str, dict], None]] = None,
                  logger: Optional[Callable[[str], None]] = None,
                  on_finished: Optional[Callable[[str], None]] = None,
-                 device_auth: bool = False):
+                 device_auth: bool = False,
+                 device: Optional[Any] = None):
         self.host = host
         self.port = port
+        self.device = device
         self._on_event = on_event
         self._on_finished = on_finished
         self._log = logger or (lambda m: None)

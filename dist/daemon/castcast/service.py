@@ -316,15 +316,23 @@ class CastService:
         with self._lock:
             if self.supervisor:
                 self.supervisor.stop()
-            self.device = CastDevice(host=host, port=port,
-                                     friendly_name=friendly_name or host,
-                                     source="manual")
+            cached_dev = next((d for d in self.cache.all() if d.host == host), None) if self.cache else None
+            model = cached_dev.model if cached_dev else ""
+            uuid = cached_dev.uuid if cached_dev else ""
+            fname = friendly_name or (cached_dev.friendly_name if cached_dev else host)
+            self.device = CastDevice(
+                host=host, port=port,
+                friendly_name=fname,
+                model=model, uuid=uuid,
+                source=cached_dev.source if cached_dev else "manual"
+            )
             self.supervisor = Supervisor(
                 host, port,
                 on_event=self._emit,
                 logger=lambda msg, lvl="info": self.log(msg, lvl),
                 on_finished=self.auto_advance,
                 device_auth=bool(self.config.get("device_auth")),
+                device=self.device,
             )
             self.supervisor.start()
         self.log(f"connecting to {host}:{port}")
@@ -435,8 +443,9 @@ class CastService:
             return {"error": str(exc), "media": None, "verdict": None, "plan": None}
 
         is_ultra = False
-        if self.supervisor:
-            is_ultra = getattr(self.supervisor.device, "is_ultra", False)
+        dev = getattr(self.supervisor, "device", None) or self.device
+        if dev:
+            is_ultra = getattr(dev, "is_ultra", False)
 
         verdict = capability.evaluate(
             info,

@@ -21,6 +21,11 @@ import {
   Gamepad2,
   FastForward,
   Rewind,
+  ShieldCheck,
+  Copy,
+  Check,
+  ChevronDown,
+  LogIn,
 } from "lucide-react";
 import {
   DAEMON_BASE,
@@ -32,9 +37,11 @@ import {
   type LogLine,
   type Preflight,
   type Status,
+  type HealthReport,
 } from "./lib/daemon";
 import { PreflightPanel } from "./components/preflight-panel";
 import SubtitlesDrawer from "./components/SubtitlesDrawer";
+import { LongPressHelpProvider, Explain } from "./components/long-press-help";
 import { TERMUX_MANUAL_COMMAND, launchTermuxDaemon, getSharedUrl } from "./lib/termux-daemon";
 import { DiscoveryBrowser } from "./lib/discovery-browser";
 import {
@@ -81,6 +88,95 @@ export default function App() {
   const [selectedSubtitleId, setSelectedSubtitleId] = useState<number | null>(null);
   const [subtitlesDrawerOpen, setSubtitlesDrawerOpen] = useState(false);
   const [activeSubtitleLang, setActiveSubtitleLang] = useState<string | null>(null);
+  const [health, setHealth] = useState<HealthReport | null>(null);
+  const [healthOpen, setHealthOpen] = useState(false);
+  const [amazonAuthData, setAmazonAuthData] = useState<any | null>(null);
+  const [amazonStatus, setAmazonStatus] = useState<string | null>(null);
+  const [amazonAdvancedOpen, setAmazonAdvancedOpen] = useState(false);
+  const [manualTokens, setManualTokens] = useState("");
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const amazonPollRef = useRef<number | null>(null);
+
+  const copyText = (text: string, key?: string) => {
+    navigator.clipboard.writeText(text);
+    if (key) {
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(null), 2000);
+    }
+  };
+
+  const stopAmazonPolling = useCallback(() => {
+    if (amazonPollRef.current !== null) {
+      window.clearInterval(amazonPollRef.current);
+      amazonPollRef.current = null;
+    }
+  }, []);
+
+  const loadHealth = useCallback(async () => {
+    try {
+      if (typeof daemon.health === "function") {
+        setHealth(await daemon.health());
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const startAmazonLink = async () => {
+    stopAmazonPolling();
+    setAmazonStatus("Requesting code from Amazon…");
+    try {
+      if (typeof daemon.amazonAuth !== "function") return;
+      const data = await daemon.amazonAuth();
+      const pub = data?.public_code ?? data?.code_data?.public_code;
+      const priv = data?.private_code ?? data?.code_data?.private_code;
+      if (!pub || !priv) {
+        setAmazonStatus(`Unexpected response: ${JSON.stringify(data)}`);
+        return;
+      }
+      setAmazonAuthData({ ...data, public_code: pub, private_code: priv });
+      setAmazonStatus("Go to amazon.com/code, sign in, and enter the code below.");
+
+      let tries = 0;
+      amazonPollRef.current = window.setInterval(async () => {
+        tries += 1;
+        if (tries > 30) {
+          stopAmazonPolling();
+          setAmazonStatus("Code expired. Click Link Amazon Account to try again.");
+          setAmazonAuthData(null);
+          return;
+        }
+        try {
+          if (typeof daemon.amazonPoll === "function") {
+            const res = await daemon.amazonPoll(pub, priv);
+            if (res?.response?.success || res?.success) {
+              stopAmazonPolling();
+              setAmazonStatus("Amazon account successfully linked!");
+              setAmazonAuthData(null);
+            }
+          }
+        } catch {
+          // Poll returns error until user authorizes
+        }
+      }, 4000);
+    } catch (err: any) {
+      setAmazonStatus(err?.message || String(err));
+    }
+  };
+
+  const handleInjectTokens = async () => {
+    try {
+      const parsed = JSON.parse(manualTokens);
+      if (typeof daemon.injectAmazon === "function") {
+        await daemon.injectAmazon(parsed);
+      }
+      setAmazonStatus("Tokens injected successfully.");
+      setManualTokens("");
+      setAmazonAdvancedOpen(false);
+    } catch (e: any) {
+      setAmazonStatus(`Invalid JSON: ${e?.message || e}`);
+    }
+  };
 
   const logRef = useRef<HTMLDivElement>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
@@ -103,6 +199,13 @@ export default function App() {
         }
       } catch {
         // daemon may not support or request may fail, ignore
+      }
+      try {
+        if (typeof daemon.health === "function") {
+          setHealth(await daemon.health());
+        }
+      } catch {
+        // ignore
       }
       setOnline(true);
       setNotice((prev) => (prev === 'Daemon process found, but unresponsive. You may need to Force Stop Termux.' ? null : prev));
@@ -478,10 +581,11 @@ export default function App() {
 
   // ---- main ----------------------------------------------------------
   return (
-    <div
-      className="min-h-screen bg-[#050807] text-emerald-300"
-      style={{ fontFamily: "'Exo 2', sans-serif" }}
-    >
+    <LongPressHelpProvider>
+      <div
+        className="min-h-screen bg-[#050807] text-emerald-300"
+        style={{ fontFamily: "'Exo 2', sans-serif" }}
+      >
       <div className="mx-auto max-w-2xl space-y-4 p-4 pb-24">
         {/* header */}
         <header className="flex items-center justify-between border-b border-emerald-500/20 pb-3">
@@ -490,6 +594,24 @@ export default function App() {
             <span className="tracking-wide">castcast</span>
           </div>
           <div className="flex items-center gap-2">
+            {health && (
+              <button
+                onClick={() => setHealthOpen((v) => !v)}
+                className={`flex items-center gap-1.5 rounded border px-2.5 py-1 text-xs font-mono transition-colors ${
+                  health.ready
+                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+                    : "border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
+                }`}
+                title="System readiness checklist"
+              >
+                {health.ready ? (
+                  <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+                ) : (
+                  <CircleAlert className="h-3.5 w-3.5 text-rose-400" />
+                )}
+                <span>{health.ready ? "ready" : `${health.blocking?.length ?? 0} blocking`}</span>
+              </button>
+            )}
             <button
               onClick={() => {
                 const url = prompt("Enter a URL to discover (e.g. https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8):", "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8");
@@ -505,6 +627,81 @@ export default function App() {
             </div>
           </div>
         </header>
+
+        {/* System Readiness Dashboard */}
+        {healthOpen && health && (
+          <section className="rounded border border-emerald-500/30 bg-black/60 p-3 shadow-lg">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="h-4 w-4 text-emerald-400" />
+                <span className="font-semibold text-emerald-300 text-sm">System Readiness</span>
+                <span className={`font-mono text-xs ${health.ready ? "text-emerald-400" : "text-rose-400"}`}>
+                  ({health.ready ? "Ready to Cast" : `${health.blocking?.length ?? 0} Blocking Issues`})
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={loadHealth}
+                  className="flex items-center gap-1 text-xs text-emerald-400/70 hover:text-emerald-300"
+                  title="Re-check system readiness"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  <span>re-check</span>
+                </button>
+                <button
+                  onClick={() => setHealthOpen(false)}
+                  className="text-xs text-emerald-500/50 hover:text-emerald-300 ml-2"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-1.5 mt-2">
+              {health.checks.map((check) => {
+                const tone =
+                  check.ok === true
+                    ? "text-emerald-400"
+                    : check.ok === false
+                      ? check.blocking
+                        ? "text-rose-400"
+                        : "text-amber-400"
+                      : "text-emerald-500/40";
+                const glyph = check.ok === true ? "✓" : check.ok === false ? "✕" : "?";
+                return (
+                  <div key={check.key} className="rounded border border-emerald-500/15 bg-black/40 px-2.5 py-1.5 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={`font-mono font-bold ${tone}`}>{glyph}</span>
+                      <span className="min-w-0 flex-1 truncate text-emerald-200">{check.label}</span>
+                      {!check.blocking && check.ok === false && (
+                        <span className="shrink-0 rounded border border-amber-500/30 px-1.5 text-[10px] uppercase text-amber-400/80">
+                          optional
+                        </span>
+                      )}
+                    </div>
+                    {check.detail && (
+                      <div className="mt-0.5 pl-4 text-emerald-500/60 font-mono text-[11px]">{check.detail}</div>
+                    )}
+                    {check.remedy && check.ok !== true && (
+                      <div className="mt-1 flex items-center gap-2 pl-4">
+                        <code className="min-w-0 flex-1 truncate font-mono text-amber-300 bg-black/50 px-1.5 py-0.5 rounded border border-amber-500/20">
+                          {check.remedy}
+                        </code>
+                        <button
+                          onClick={() => copyText(check.remedy, check.key)}
+                          className="shrink-0 text-emerald-400/70 hover:text-emerald-300"
+                          title="Copy remedy command"
+                        >
+                          {copiedKey === check.key ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         {notice && (
           <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3 text-amber-300">
@@ -772,18 +969,92 @@ export default function App() {
         <section className="rounded border border-emerald-500/20 bg-black/40 p-3">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-emerald-500/50 uppercase tracking-wider">Queue - Amazon</span>
-            {amazonQueue.length > 0 && (
+            <div className="flex items-center gap-2">
               <button
-                onClick={() => {
-                  setAmazonQueue([]);
-                  daemon.reorderAmazonQueue([]).catch(console.error);
-                }}
-                className="text-xs text-emerald-500/50 hover:text-red-400"
+                onClick={startAmazonLink}
+                className="flex items-center gap-1 text-xs text-amber-400 hover:text-amber-300"
+                title="Link your Amazon account via amazon.com/code"
               >
-                clear
+                <LogIn className="h-3.5 w-3.5" />
+                <span>{amazonAuthData ? "re-request code" : "link amazon"}</span>
               </button>
-            )}
+              {amazonQueue.length > 0 && (
+                <button
+                  onClick={() => {
+                    setAmazonQueue([]);
+                    daemon.reorderAmazonQueue([]).catch(console.error);
+                  }}
+                  className="text-xs text-emerald-500/50 hover:text-red-400"
+                >
+                  clear
+                </button>
+              )}
+            </div>
           </div>
+
+          {(amazonAuthData || amazonStatus || amazonAdvancedOpen) && (
+            <div className="mb-3 space-y-2 rounded border border-amber-500/30 bg-black/50 p-2.5 text-xs">
+              {amazonAuthData?.public_code && (
+                <div className="rounded border border-emerald-500/25 bg-black/40 p-2">
+                  <div className="text-emerald-500/60">1. Go to <span className="font-mono text-emerald-300">amazon.com/code</span></div>
+                  <div className="mt-1 flex items-center gap-2">
+                    <span className="text-emerald-500/60">2. Code:</span>
+                    <code className="font-mono text-base font-bold tracking-widest text-emerald-200">
+                      {amazonAuthData.public_code}
+                    </code>
+                    <button
+                      onClick={() => copyText(amazonAuthData.public_code, "amz-code")}
+                      className="text-emerald-400/70 hover:text-emerald-300"
+                      title="copy code"
+                    >
+                      {copiedKey === "amz-code" ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {amazonStatus && (
+                <div className="text-amber-300 font-mono text-[11px]">
+                  {amazonStatus}
+                </div>
+              )}
+
+              {amazonAdvancedOpen ? (
+                <div className="space-y-1.5 pt-1">
+                  <textarea
+                    value={manualTokens}
+                    onChange={(e) => setManualTokens(e.target.value)}
+                    placeholder='{ "tokens": { "bearer": { ... } } }'
+                    rows={3}
+                    className="w-full rounded border border-emerald-500/25 bg-black/60 px-2 py-1 font-mono text-[11px] text-emerald-200 outline-none focus:border-emerald-500/60"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleInjectTokens}
+                      disabled={!manualTokens.trim()}
+                      className="rounded border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-40"
+                    >
+                      Inject tokens
+                    </button>
+                    <button
+                      onClick={() => setAmazonAdvancedOpen(false)}
+                      className="text-xs text-emerald-500/60 hover:text-emerald-400"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setAmazonAdvancedOpen(true)}
+                  className="flex items-center gap-1 text-[11px] text-emerald-500/60 hover:text-emerald-300"
+                >
+                  <ChevronDown className="h-3 w-3" />
+                  Advanced: paste tokens
+                </button>
+              )}
+            </div>
+          )}
 
           {amazonQueue.length === 0 ? (
             <div className="py-4 text-center text-emerald-500/40">
@@ -807,14 +1078,23 @@ export default function App() {
                   <FileVideo className="h-3.5 w-3.5 shrink-0 text-emerald-500/50" />
                   <span className="min-w-0 flex-1 truncate text-emerald-200">{item.title || item.url}</span>
                   <button 
-                    onClick={(e) => {
+                    onClick={async (e) => {
                       e.stopPropagation();
                       const newItems = [...amazonQueue];
                       newItems.splice(idx, 1);
                       setAmazonQueue(newItems);
-                      daemon.reorderAmazonQueue(newItems).catch(console.error);
+                      try {
+                        if (typeof daemon.removeAmazonQueue === "function") {
+                          await daemon.removeAmazonQueue(idx);
+                        } else {
+                          await daemon.reorderAmazonQueue(newItems);
+                        }
+                      } catch (err) {
+                        console.error(err);
+                      }
                     }}
                     className="p-1 hover:bg-emerald-500/20 rounded"
+                    title="Remove from queue"
                   >
                     <Trash2 className="h-3.5 w-3.5 text-emerald-500/50 hover:text-red-400" />
                   </button>
@@ -1173,5 +1453,6 @@ export default function App() {
         </div>
       )}
     </div>
-  );
+  </LongPressHelpProvider>
+);
 }

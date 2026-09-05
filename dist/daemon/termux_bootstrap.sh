@@ -27,6 +27,9 @@ mkdir -p "$AUDIT_DIR"
 
 log_action() {
     local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+    if [ -f "$AUDIT_LOG" ] && [ $(wc -c < "$AUDIT_LOG" 2>/dev/null || echo 0) -gt 2097152 ]; then
+        mv -f "$AUDIT_LOG" "$AUDIT_LOG.1" 2>/dev/null || true
+    fi
     echo "[$timestamp] $1" | tee -a "$AUDIT_LOG"
 }
 

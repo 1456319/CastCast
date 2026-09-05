@@ -50,6 +50,15 @@ export interface AudioStream {
   bitrate_kbps: number | null;
 }
 
+export interface SubtitleStream {
+  index: number;
+  codec: string;
+  language: string;
+  title: string;
+  forced?: boolean;
+  default?: boolean;
+}
+
 export interface MediaInfo {
   path: string;
   container: string;
@@ -59,6 +68,7 @@ export interface MediaInfo {
   bitrate_kbps: number | null;
   video: VideoStream[];
   audio: AudioStream[];
+  subtitles: SubtitleStream[];
   is_4k: boolean;
 }
 
@@ -137,6 +147,30 @@ export interface Status {
   cast: CastState;
 }
 
+export interface HealthCheck {
+  key: string;
+  label: string;
+  ok: boolean | null;
+  detail: string;
+  remedy: string;
+  blocking: boolean;
+}
+
+export interface HealthReport {
+  ready: boolean;
+  version: string;
+  python: string;
+  serve_command: string;
+  checks: HealthCheck[];
+  blocking: HealthCheck[];
+}
+
+export interface CastOptions {
+  licenseUrl?: string | null;
+  offlineDrmToken?: string | null;
+  autoPrepare?: boolean;
+}
+
 export interface LogLine {
   seq: number;
   ts: number;
@@ -167,6 +201,7 @@ const post = <T,>(path: string, payload?: unknown) =>
   request<T>(path, { method: "POST", body: JSON.stringify(payload ?? {}) });
 
 export const daemon = {
+  health: () => request<HealthReport>("/health"),
   status: () => request<Status>("/status"),
   devices: () => request<{ devices: any[] }>("/devices"),
   library: (deep = false) => request<{ items: LibraryItem[] }>(`/library${deep ? "?deep=1" : ""}`),
@@ -179,11 +214,21 @@ export const daemon = {
     allowUnsafe = false,
     audioIndex?: number | null,
     subtitleIndex?: number | null,
-    title?: string
+    title?: string,
+    options?: CastOptions,
   ) =>
     post<Preflight & { casting?: boolean; url?: string; converting?: boolean; requires_confirmation?: boolean }>(
       "/cast",
-      { path, allow_unsafe: allowUnsafe, audio_index: audioIndex, subtitle_index: subtitleIndex, title },
+      {
+        path,
+        allow_unsafe: allowUnsafe,
+        audio_index: audioIndex,
+        subtitle_index: subtitleIndex,
+        title,
+        auto_prepare: options?.autoPrepare,
+        license_url: options?.licenseUrl || undefined,
+        offline_drm_token: options?.offlineDrmToken || undefined,
+      },
     ),
   queue: (paths: string[]) =>
     post<{ queued?: number; skipped?: number; preparing?: number; error?: string }>("/queue", { paths }),
@@ -225,8 +270,14 @@ export const daemon = {
     }),
   getAmazonQueue: () => request<{ items: any[] }>("/amazon/queue"),
   reorderAmazonQueue: (items: any[]) => post<any>("/amazon/queue/reorder", { items }),
+  removeAmazonQueue: (index: number) => post<any>("/amazon/queue/remove", { index }),
   addAmazonQueue: (url: string) => post<any>("/amazon/queue/add", { url }),
-  reorderLibrary: (items: any[]) => post<any>("/library/reorder", { items }),
+  amazonAuth: () => request<any>("/amazon/auth"),
+  amazonPoll: (publicCode: string, privateCode: string) =>
+    request<any>(
+      `/amazon/poll?public_code=${encodeURIComponent(publicCode)}&private_code=${encodeURIComponent(privateCode)}`,
+    ),
+  injectAmazon: (tokens: unknown) => post<any>("/amazon/inject", tokens),
   getDiagnosticsLogs: async () => {
     const res = await fetch(`${DAEMON_BASE}/diagnostics/logs`);
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);

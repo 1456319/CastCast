@@ -46,9 +46,13 @@ class CastDevice:
     port: int = 8009
     source: str = "mdns"      # mdns | avahi | static | cache
 
+    @property
+    def is_ultra(self) -> bool:
+        return "ultra" in (self.model or "").lower()
+
     def to_dict(self) -> dict:
         d = asdict(self)
-        d["is_ultra"] = "ultra" in self.model.lower()
+        d["is_ultra"] = self.is_ultra
         return d
 
 

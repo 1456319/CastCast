@@ -8,6 +8,8 @@ Binds to 127.0.0.1 by default so nothing off-device can drive your TV.  The UI
 
 from __future__ import annotations
 
+import os
+import traceback
 import json
 import re
 import urllib.parse
@@ -21,6 +23,13 @@ from .service import CastService
 from .metadata import resolve_title
 
 API_PORT = 8765
+
+AUDIT_LOG_CANDIDATES = [
+    "/storage/emulated/0/Download/CastCast/Chromecast/.castcast/audit.log",
+    os.path.expanduser("~/.config/castcast/audit.log"),
+    "/tmp/castcast.log",
+    "/var/log/audit/audit.log",
+]
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -115,29 +124,44 @@ class _Handler(BaseHTTPRequestHandler):
                 else:
                     self._json({"subtitles": self.service.list_remote_subtitles()})
             elif route == "/diagnostics/logs":
-                import os
                 audit_log = ""
-                if os.path.exists("/var/log/audit/audit.log"):
-                    try:
-                        with open("/var/log/audit/audit.log", "r") as f:
-                            audit_log = f.read()
-                    except Exception:
-                        pass
-                elif os.path.exists("/tmp/castcast.log"):
-                    try:
-                        with open("/tmp/castcast.log", "r") as f:
-                            audit_log = f.read()
-                    except Exception:
-                        pass
+                for candidate in AUDIT_LOG_CANDIDATES:
+                    if os.path.exists(candidate):
+                        try:
+                            with open(candidate, "r", encoding="utf-8", errors="replace") as f:
+                                f.seek(0, os.SEEK_END)
+                                size = f.tell()
+                                f.seek(max(0, size - 65536))
+                                audit_log = f.read()
+                                if audit_log:
+                                    break
+                        except Exception:
+                            pass
                 
                 last_error = ""
                 if self.service.supervisor:
-                    last_error = self.service.supervisor.status.last_error
+                    last_error = self.service.supervisor.status.last_error or ""
+
+                recent_logs = self.service.log_buffer.recent()
+                formatted_lines = []
+                for entry in recent_logs:
+                    if isinstance(entry, dict):
+                        lvl = str(entry.get("level", "info")).upper()
+                        msg = entry.get("msg", "")
+                        formatted_lines.append(f"[{lvl}] {msg}")
+                    else:
+                        formatted_lines.append(str(entry))
+                formatted_logs = "\n".join(formatted_lines)
+
+                combined = f"=== RECENT DAEMON LOGS ===\n{formatted_logs}"
+                if audit_log:
+                    combined += f"\n\n=== AUDIT LOG ===\n{audit_log}"
 
                 self._json({
-                    "log_buffer": self.service.log_buffer.recent(),
+                    "logs": combined,
+                    "log_buffer": recent_logs,
                     "last_error": last_error,
-                    "audit_log": audit_log
+                    "audit_log": audit_log,
                 })
             elif route == "/preflight":
                 path = one("path")
@@ -153,6 +177,11 @@ class _Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"error": "not found"}, 404)
         except Exception as exc:  # noqa: BLE001
+            tb = traceback.format_exc()
+            try:
+                self.service.log(f"[api] Error during GET {route}: {exc}\n{tb}", "error")
+            except Exception:
+                pass
             self._json({"error": str(exc)}, 500)
 
     def do_POST(self):  # noqa: N802
@@ -310,8 +339,17 @@ class _Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"error": "not found"}, 404)
         except RuntimeError as exc:
+            try:
+                self.service.log(f"[api] Conflict during POST {route}: {exc}", "warn")
+            except Exception:
+                pass
             self._json({"error": str(exc)}, 409)
         except Exception as exc:  # noqa: BLE001
+            tb = traceback.format_exc()
+            try:
+                self.service.log(f"[api] Error during POST {route}: {exc}\n{tb}", "error")
+            except Exception:
+                pass
             self._json({"error": str(exc)}, 500)
 
     # -- server-sent events -------------------------------------------------

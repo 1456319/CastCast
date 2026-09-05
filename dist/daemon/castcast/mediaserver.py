@@ -63,6 +63,32 @@ def guess_mime(path: str) -> str:
     return MIME_TYPES.get(os.path.splitext(urllib.parse.urlsplit(path).path)[1].lower(), "video/mp4")
 
 
+def redact_sensitive_url(url: str) -> str:
+    """Redacts sensitive credentials, tokens, and signatures from query parameters for safe logging."""
+    if not isinstance(url, str) or not url:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if not parsed.query:
+            return url
+        qs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        sensitive_keys = {
+            "token", "signature", "key-pair-id", "sessiontoken", "awsaccesskeyid",
+            "policy", "auth", "access_token", "api_key", "secret"
+        }
+        redacted_qs = []
+        for k, v in qs:
+            k_lower = k.lower()
+            if k_lower in sensitive_keys or k_lower.startswith("x-amz-") or "secret" in k_lower or "token" in k_lower:
+                redacted_qs.append((k, "[REDACTED]"))
+            else:
+                redacted_qs.append((k, v))
+        new_query = urllib.parse.urlencode(redacted_qs, safe="[]")
+        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment))
+    except Exception:
+        return "[REDACTED_URL]"
+
+
 def detect_lan_ip(target: str = "8.8.8.8") -> str:
     """Find the IP the kernel would use to reach the LAN.
 
@@ -328,6 +354,16 @@ class _Handler(BaseHTTPRequestHandler):
         import urllib.error
         server: "MediaServer" = self.server.media_server
 
+        # Boundary Check: The public tunnel is strictly for DRM Widevine license acquisition (/amazon/license).
+        # Any proxy request arriving via the public tunnel host is rejected to prevent open-proxy abuse.
+        incoming_host = (self.headers.get("Host") or "").split(":")[0].strip().lower()
+        if server.public_url:
+            pub_host = urllib.parse.urlsplit(server.public_url).netloc.split(":")[0].strip().lower()
+            if incoming_host and (incoming_host == pub_host or "lhr.life" in incoming_host or "localhost.run" in incoming_host):
+                server.log(f"Blocked forbidden public tunnel access to proxy from {incoming_host}", "warn")
+                self.send_error(403, "Forbidden: Public proxying not permitted")
+                return
+
         path_obj = urllib.parse.urlsplit(self.path)
         query = urllib.parse.parse_qs(path_obj.query)
         encoded_url = query.get("url", [""])[0]
@@ -339,6 +375,12 @@ class _Handler(BaseHTTPRequestHandler):
             target_url = base64.b64decode(encoded_url).decode("utf-8")
         except Exception:
             self.send_error(400, "Invalid base64 url")
+            return
+
+        # Boundary Check 3: Strictly enforce http/https URL scheme
+        target_scheme = urllib.parse.urlsplit(target_url).scheme.lower()
+        if target_scheme not in ("http", "https"):
+            self.send_error(400, "Unsupported URL scheme")
             return
 
         domain = urllib.parse.urlsplit(target_url).netloc
@@ -442,7 +484,7 @@ class _Handler(BaseHTTPRequestHandler):
                         shutil.copyfileobj(response, self.wfile)
 
         except Exception as e:
-            server.log(f"Proxy error for {target_url}: {e}")
+            server.log(f"Proxy error for {redact_sensitive_url(target_url)}: {e}")
             if not self.wfile.closed:
                 try:
                     self.send_error(500, "Proxy error")
