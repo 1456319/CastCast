@@ -231,7 +231,10 @@ export const daemon = {
     const res = await fetch(`${DAEMON_BASE}/diagnostics/logs`);
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
     const data = await res.json();
-    return `LAST ERROR:\n${data.last_error || "None"}\n\nLOGS:\n${data.logs || ""}`;
+    const logsText = data.logs || (Array.isArray(data.log_buffer)
+      ? data.log_buffer.map((l: any) => typeof l === "string" ? l : `[${(l.level || "info").toUpperCase()}] ${l.msg || ""}`).join("\n")
+      : "") + (data.audit_log ? `\n\n=== AUDIT LOG ===\n${data.audit_log}` : "");
+    return `LAST ERROR:\n${data.last_error || "None"}\n\nLOGS:\n${logsText}`;
   },
 };
 
