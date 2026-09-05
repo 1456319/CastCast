@@ -19,6 +19,7 @@ seek, and large files stall.
 from __future__ import annotations
 
 import os
+import ipaddress
 import posixpath
 import re
 import secrets
@@ -65,26 +66,40 @@ def guess_mime(path: str) -> str:
 
 def redact_sensitive_url(url: str) -> str:
     """Redacts sensitive credentials, tokens, and signatures from query parameters for safe logging."""
-    if not isinstance(url, str) or not url:
+    if not url:
         return ""
     try:
         parsed = urllib.parse.urlsplit(url)
-        if not parsed.query:
-            return url
-        qs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        # Redact userinfo
+        netloc = parsed.netloc
+        if "@" in netloc:
+            userinfo, host = netloc.rsplit("@", 1)
+            user = userinfo.split(":", 1)[0]
+            netloc = f"{user}:[REDACTED]@{host}"
+        
+        query_dict = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
         sensitive_keys = {
-            "token", "signature", "key-pair-id", "sessiontoken", "awsaccesskeyid",
-            "policy", "auth", "access_token", "api_key", "secret"
+            "signature", "sig", "token", "key-pair-id", "expires",
+            "x-amz-signature", "x-amz-security-token", "x-amz-credential",
+            "api_key", "secret"
         }
-        redacted_qs = []
-        for k, v in qs:
-            k_lower = k.lower()
-            if k_lower in sensitive_keys or k_lower.startswith("x-amz-") or "secret" in k_lower or "token" in k_lower:
-                redacted_qs.append((k, "[REDACTED]"))
-            else:
-                redacted_qs.append((k, v))
-        new_query = urllib.parse.urlencode(redacted_qs, safe="[]")
-        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment))
+        for k in list(query_dict.keys()):
+            if k.lower() in sensitive_keys or k.lower().startswith("x-amz-"):
+                query_dict[k] = ["[REDACTED]"]
+            elif k.lower() == "url":
+                # Check for nested base64 url
+                val = query_dict[k][0]
+                try:
+                    import base64
+                    decoded = base64.b64decode(val).decode("utf-8")
+                    if decoded.startswith("http://") or decoded.startswith("https://"):
+                        redacted_inner = redact_sensitive_url(decoded)
+                        query_dict[k] = [base64.b64encode(redacted_inner.encode("utf-8")).decode("utf-8")]
+                except Exception:
+                    pass
+
+        new_query = urllib.parse.urlencode(query_dict, doseq=True, safe="[]")
+        return urllib.parse.urlunsplit((parsed.scheme, netloc, parsed.path, new_query, parsed.fragment))
     except Exception:
         return "[REDACTED_URL]"
 
@@ -382,7 +397,24 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_error(400, "Unsupported URL scheme")
             return
         target_host = (target_parsed.hostname or "").lower()
-        if target_host in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
+        is_loopback = False
+        if target_host in ("localhost", "localhost.localdomain"):
+            is_loopback = True
+        else:
+            try:
+                ip = ipaddress.ip_address(target_host)
+                if ip.is_loopback or ip.is_unspecified:
+                    is_loopback = True
+            except ValueError:
+                import socket
+                try:
+                    ip = ipaddress.ip_address(socket.gethostbyname(target_host))
+                    if ip.is_loopback or ip.is_unspecified:
+                        is_loopback = True
+                except Exception:
+                    pass
+
+        if is_loopback:
             self.send_error(403, "Forbidden: Loopback target not permitted")
             return
 
