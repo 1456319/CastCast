@@ -32,3 +32,23 @@ def test_diagnostics_logs_returns_logs_field_and_finds_audit_log(tmp_path, monke
     assert "TERMUX_BOOTSTRAP_SUCCESS" in captured["data"]["audit_log"]
     assert "Daemon listening" in captured["data"]["logs"]
     assert "TERMUX_BOOTSTRAP_SUCCESS" in captured["data"]["logs"]
+
+from unittest.mock import patch
+
+def test_diagnostics_api_real_log_buffer():
+    # Verify that actual entries emitted with `message` (from LogBuffer.add) are formatted
+    handler = _Handler.__new__(_Handler)
+    mock_service = MagicMock()
+    mock_service.supervisor = None
+    mock_service.log_buffer.recent.return_value = [
+        {"seq": 1, "ts": 123456789.0, "level": "info", "message": "media server listening on port 38399"}
+    ]
+    handler.server = MagicMock(service=mock_service)
+    handler.path = "/diagnostics/logs"
+    sent_json = []
+    handler._json = lambda payload, status=200: sent_json.append(payload)
+    with patch("os.path.exists", return_value=False):
+        handler.do_GET()
+    
+    assert len(sent_json) == 1
+    assert "[INFO] media server listening on port 38399" in sent_json[0]["logs"]

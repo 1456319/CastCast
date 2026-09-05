@@ -147,7 +147,7 @@ class _Handler(BaseHTTPRequestHandler):
                 for entry in recent_logs:
                     if isinstance(entry, dict):
                         lvl = str(entry.get("level", "info")).upper()
-                        msg = entry.get("msg", "")
+                        msg = entry.get("message") or entry.get("msg") or ""
                         formatted_lines.append(f"[{lvl}] {msg}")
                     else:
                         formatted_lines.append(str(entry))
