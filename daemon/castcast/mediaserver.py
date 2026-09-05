@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import ipaddress
+import base64
 import posixpath
 import re
 import secrets
@@ -90,7 +91,6 @@ def redact_sensitive_url(url: str) -> str:
                 # Check for nested base64 url
                 val = query_dict[k][0]
                 try:
-                    import base64
                     decoded = base64.b64decode(val).decode("utf-8")
                     if decoded.startswith("http://") or decoded.startswith("https://"):
                         redacted_inner = redact_sensitive_url(decoded)
@@ -406,13 +406,12 @@ class _Handler(BaseHTTPRequestHandler):
                 if ip.is_loopback or ip.is_unspecified:
                     is_loopback = True
             except ValueError:
-                import socket
-                try:
-                    ip = ipaddress.ip_address(socket.gethostbyname(target_host))
-                    if ip.is_loopback or ip.is_unspecified:
-                        is_loopback = True
-                except Exception:
-                    pass
+                # To support legacy short formats like 127.1 without DNS lookup DoS,
+                # we parse basic ipv4 string patterns.
+                if re.match(r"^127(?:\.[0-9]+){1,3}$", target_host):
+                    is_loopback = True
+                elif target_host == "0.0.0.0":
+                    is_loopback = True
 
         if is_loopback:
             self.send_error(403, "Forbidden: Loopback target not permitted")
