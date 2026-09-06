@@ -1,4 +1,5 @@
 import unittest
+import unittest.mock
 import base64
 import urllib.parse
 from castcast.mediaserver import guess_mime, transform_dash_manifest
@@ -151,5 +152,52 @@ class TestTransformDashManifest(unittest.TestCase):
         self.assertIn('<S d="144144"/>', result)
 
 
+class TestTunnelSupervisor(unittest.TestCase):
+    @unittest.mock.patch("shutil.which", return_value="/usr/bin/ssh")
+    @unittest.mock.patch("subprocess.Popen")
+    def test_tunnel_keepalive_options_and_reconnect(self, mock_popen, mock_which):
+        from castcast.mediaserver import MediaServer
+        import time
+
+        proc1 = unittest.mock.MagicMock()
+        proc1.stdout = iter([
+            "Connecting to localhost.run...\n",
+            "https://first.lhr.life tunnel open\n"
+        ])
+        proc1.wait.return_value = 0
+
+        proc2 = unittest.mock.MagicMock()
+        proc2.stdout = iter([
+            "Reconnecting to localhost.run...\n",
+            "https://second.lhr.life tunnel open\n"
+        ])
+        proc2.wait.return_value = 0
+
+        mock_popen.side_effect = [proc1, proc2]
+
+        server = MediaServer(roots=["/tmp"], port=0)
+        server._httpd = unittest.mock.MagicMock()
+        server.lan_ip = "127.0.0.1"
+
+        server._start_tunnel()
+
+        for _ in range(50):
+            if server.public_url == "https://second.lhr.life":
+                break
+            time.sleep(0.05)
+
+        self.assertEqual(server.public_url, "https://second.lhr.life")
+        self.assertGreaterEqual(mock_popen.call_count, 2)
+        first_call_cmd = mock_popen.call_args_list[0][0][0]
+        self.assertIn("-o", first_call_cmd)
+        self.assertIn("ServerAliveInterval=15", first_call_cmd)
+        self.assertIn("ServerAliveCountMax=3", first_call_cmd)
+        self.assertIn("ExitOnForwardFailure=yes", first_call_cmd)
+
+        server.stop()
+        self.assertTrue(server._tunnel_stop.is_set())
+
+
 if __name__ == '__main__':
     unittest.main()
+

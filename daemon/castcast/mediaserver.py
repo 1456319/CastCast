@@ -568,6 +568,11 @@ class MediaServer:
         self.lan_ip = detect_lan_ip()
         self.live_streams: dict[str, dict] = {}
         self.intercept_rules: dict[str, dict] = {}
+        self.public_url: Optional[str] = None
+        self._ssh_process: Optional[subprocess.Popen] = None
+        self._tunnel_stop = threading.Event()
+        self._tunnel_lock = threading.Lock()
+        self._tunnel_thread: Optional[threading.Thread] = None
 
         telemetry_dir = "/storage/emulated/0/Download/CastCast/Chromecast/.castcast/telemetry"
         try:
@@ -651,55 +656,73 @@ class MediaServer:
                                         name="castcast-http", daemon=True)
         self._thread.start()
         self._logger(f"media server listening on {self.base_url}")
-        
-        # ====================================================================
-        # [SSH TUNNEL SETUP]
-        # The Chromecast requires HTTPS for license server URLs (mixed content 
-        # policy). Our local HTTP server can't serve HTTPS without certificates.
-        #
-        # We establish an SSH reverse tunnel to localhost.run which provides a 
-        # free HTTPS endpoint. The public URL (e.g. `https://xxxxx.lhr.life`) 
-        # is stored as `self.public_url` and used as the DRM license server 
-        # URL passed to the Chromecast.
-        #
-        # If SSH is not available, we fall back to plain HTTP (which may fail 
-        # on newer Chromecast firmware due to mixed content blocking).
-        # ====================================================================
-        # Start SSH tunnel for HTTPS DRM proxy
-        import subprocess
+        self._start_tunnel()
 
-        import time
+    def _start_tunnel(self) -> None:
+        if not shutil.which("ssh"):
+            self.log("ssh is not installed, cannot start public HTTPS tunnel for DRM", "warning")
+            return
 
-        
-        self.public_url = None
-        self._ssh_process = None
-        
-        def start_tunnel():
-            try:
-                self._ssh_process = subprocess.Popen(
-                    ["ssh", "-o", "StrictHostKeyChecking=no", "-R", f"80:localhost:{self.port}", "nokey@localhost.run"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True
-                )
-                for line in self._ssh_process.stdout:
-                    if "http" in line and "lhr.life" in line:
-                        urls = [word for word in line.split() if word.startswith("https://")]
-                        for u in urls:
-                            self.public_url = u
-                            break
-                        if self.public_url:
-                            self._logger(f"Established public HTTPS tunnel for DRM: {self.public_url}")
-                            break
-                        if self.public_url:
-                            break
-            except Exception as e:
-                self._logger(f"Failed to start SSH tunnel: {e}")
-                
-        if shutil.which("ssh"):
-            threading.Thread(target=start_tunnel, daemon=True).start()
-        else:
-            self._logger("ssh is not installed, cannot start public HTTPS tunnel for DRM")
+        self._tunnel_stop.clear()
+
+        def tunnel_supervisor():
+            while not self._tunnel_stop.is_set():
+                proc = None
+                try:
+                    cmd = [
+                        "ssh",
+                        "-o", "StrictHostKeyChecking=no",
+                        "-o", "ServerAliveInterval=15",
+                        "-o", "ServerAliveCountMax=3",
+                        "-o", "ExitOnForwardFailure=yes",
+                        "-R", f"80:localhost:{self.port}",
+                        "nokey@localhost.run",
+                    ]
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1,
+                    )
+                    with self._tunnel_lock:
+                        self._ssh_process = proc
+
+                    if proc.stdout:
+                        for line in proc.stdout:
+                            if self._tunnel_stop.is_set():
+                                break
+                            if "http" in line and "lhr.life" in line:
+                                urls = [word for word in line.split() if word.startswith("https://")]
+                                for u in urls:
+                                    with self._tunnel_lock:
+                                        if self.public_url != u:
+                                            self.public_url = u
+                                            self.log(f"Established public HTTPS tunnel for DRM: {self.public_url}")
+                                    break
+                    proc.wait()
+                except Exception as e:
+                    if not self._tunnel_stop.is_set():
+                        self.log(f"SSH tunnel error: {e}", "warning")
+                finally:
+                    with self._tunnel_lock:
+                        if self._ssh_process == proc:
+                            self._ssh_process = None
+                    if proc:
+                        try:
+                            proc.terminate()
+                            proc.wait(timeout=1.0)
+                        except Exception:
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+
+                if not self._tunnel_stop.is_set():
+                    self._tunnel_stop.wait(2.0)
+
+        self._tunnel_thread = threading.Thread(target=tunnel_supervisor, daemon=True, name="castcast-tunnel")
+        self._tunnel_thread.start()
 
     def stop(self) -> None:
         if self._httpd:
@@ -707,12 +730,17 @@ class MediaServer:
             self._httpd.server_close()
             self._httpd = None
         self._thread = None
-        if hasattr(self, '_ssh_process') and self._ssh_process:
-            try:
-                self._ssh_process.terminate()
-            except Exception:
-                pass
-            self._ssh_process = None
+        self._tunnel_stop.set()
+        with self._tunnel_lock:
+            if self._ssh_process:
+                try:
+                    self._ssh_process.terminate()
+                except Exception:
+                    pass
+                self._ssh_process = None
+        if self._tunnel_thread and self._tunnel_thread.is_alive():
+            self._tunnel_thread.join(timeout=1.0)
+        self._tunnel_thread = None
 
     def rotate_token(self) -> None:
         """Invalidate every previously issued URL."""

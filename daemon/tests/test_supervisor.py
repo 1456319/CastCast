@@ -50,5 +50,33 @@ class TestSupervisor(unittest.TestCase):
         self.assertEqual(supervisor.status.state, "load_failed")
         self.assertIn(("load_failed", {"reason": "INVALID_MEDIA_SESSION_ID", "request": "LOAD"}), events)
 
+    def test_seek_sends_playback_start_and_clamps_duration(self):
+        supervisor = Supervisor("127.0.0.1")
+        supervisor._media_command = MagicMock()
+        supervisor.status.duration = 100.0
+
+        supervisor.seek(50.0)
+        supervisor._media_command.assert_called_with({
+            "type": "SEEK",
+            "currentTime": 50.0,
+            "resumeState": "PLAYBACK_START",
+        })
+
+        # Clamping to duration - 2.0s
+        supervisor.seek(99.5)
+        supervisor._media_command.assert_called_with({
+            "type": "SEEK",
+            "currentTime": 98.0,
+            "resumeState": "PLAYBACK_START",
+        })
+
+        # Clamping negative to 0.0
+        supervisor.seek(-10.0)
+        supervisor._media_command.assert_called_with({
+            "type": "SEEK",
+            "currentTime": 0.0,
+            "resumeState": "PLAYBACK_START",
+        })
+
 if __name__ == '__main__':
     unittest.main()

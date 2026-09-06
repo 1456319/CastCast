@@ -139,6 +139,11 @@ files:
     role: termux-client
     boundaries:
     - android-bridge
+  src/app/lib/seek-controller.ts:
+    section: web-client
+    role: seek-controller
+    boundaries:
+    - api-contract
   android/app/src/main/java/app/videoqualitychecker/castcast/DiscoveryBrowserPlugin.java:
     section: android-bridge
     role: mdns-plugin

@@ -274,7 +274,16 @@ class Supervisor:
         return self._media_command({"type": "PAUSE"})
 
     def seek(self, position: float) -> Optional[int]:
-        return self._media_command({"type": "SEEK", "currentTime": max(position, 0.0)})
+        with self._lock:
+            duration = self.status.duration
+        target = max(position, 0.0)
+        if duration and duration > 2.0:
+            target = min(target, duration - 2.0)
+        return self._media_command({
+            "type": "SEEK",
+            "currentTime": target,
+            "resumeState": "PLAYBACK_START",
+        })
 
     def queue_remove(self, item_ids: list[int]) -> Optional[int]:
         return self._media_command({"type": "QUEUE_REMOVE", "itemIds": item_ids})

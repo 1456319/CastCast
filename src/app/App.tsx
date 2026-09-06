@@ -37,6 +37,7 @@ import { PreflightPanel } from "./components/preflight-panel";
 import SubtitlesDrawer from "./components/SubtitlesDrawer";
 import { TERMUX_MANUAL_COMMAND, launchTermuxDaemon, getSharedUrl } from "./lib/termux-daemon";
 import { DiscoveryBrowser } from "./lib/discovery-browser";
+import { SeekController } from "./lib/seek-controller";
 import {
   Drawer,
   DrawerContent,
@@ -115,6 +116,29 @@ export default function App() {
       }
     }
   }, []);
+
+  const [optimisticPos, setOptimisticPos] = useState<number | null>(null);
+  const seekControllerRef = useRef<SeekController | null>(null);
+
+  useEffect(() => {
+    seekControllerRef.current = new SeekController({
+      getPosition: () => statusRef.current?.cast?.position ?? 0,
+      getDuration: () => statusRef.current?.cast?.duration ?? 0,
+      onOptimisticChange: (pos) => setOptimisticPos(pos),
+      sendSeek: async (target) => {
+        try {
+          await daemon.seek(target);
+          await refreshStatus();
+        } finally {
+          setOptimisticPos(null);
+        }
+      },
+      debounceMs: 250,
+    });
+    return () => {
+      seekControllerRef.current?.cancel();
+    };
+  }, [refreshStatus]);
 
   // Live stream from the daemon, plus a slow poll as a safety net.
   useEffect(() => {
@@ -405,6 +429,7 @@ export default function App() {
   const live = cast ? LIVE_STATES.has(cast.state) : false;
   const remux = status?.remux;
   const activeTrackKey = cast?.active_track_ids?.join(",") || "";
+  const displayPosition = optimisticPos !== null ? optimisticPos : (cast?.position ?? 0);
 
   useEffect(() => {
     if (!live || !cast?.active_track_ids?.length) {
@@ -613,18 +638,18 @@ export default function App() {
                 if (!cast || !cast.duration) return;
                 const rect = e.currentTarget.getBoundingClientRect();
                 const percent = (e.clientX - rect.left) / rect.width;
-                run("seek", () => daemon.seek(percent * cast.duration!));
+                seekControllerRef.current?.seekTo(percent * cast.duration);
               }}
             >
               <div
                 className="h-full bg-emerald-400 transition-all pointer-events-none"
                 style={{
-                  width: `${cast.duration ? Math.min((cast.position / cast.duration) * 100, 100) : 0}%`,
+                  width: `${cast.duration ? Math.min((displayPosition / cast.duration) * 100, 100) : 0}%`,
                 }}
               />
             </div>
             <div className="mb-3 flex justify-between font-mono text-emerald-500/60">
-              <span>{formatDuration(cast.position)}</span>
+              <span>{formatDuration(displayPosition)}</span>
               <span>{formatDuration(cast.duration)}</span>
             </div>
             <div className="flex gap-2">
@@ -1024,18 +1049,18 @@ export default function App() {
                     if (!cast || !cast.duration) return;
                     const rect = e.currentTarget.getBoundingClientRect();
                     const percent = (e.clientX - rect.left) / rect.width;
-                    run("seek", () => daemon.seek(percent * cast.duration!));
+                    seekControllerRef.current?.seekTo(percent * cast.duration);
                   }}
                 >
                   <div
                     className="h-full bg-emerald-400 transition-all pointer-events-none"
                     style={{
-                      width: `${cast.duration ? Math.min((cast.position / cast.duration) * 100, 100) : 0}%`,
+                      width: `${cast.duration ? Math.min((displayPosition / cast.duration) * 100, 100) : 0}%`,
                     }}
                   />
                 </div>
                 <div className="flex justify-between font-mono text-sm text-emerald-500/60">
-                  <span>{formatDuration(cast.position)}</span>
+                  <span>{formatDuration(displayPosition)}</span>
                   <span>{formatDuration(cast.duration)}</span>
                 </div>
               </div>
@@ -1043,7 +1068,7 @@ export default function App() {
               {/* Transport Controls */}
               <div className="flex items-center justify-center gap-8">
                 <button
-                  onClick={() => run("seek-back", () => daemon.seek(Math.max(0, cast.position - 10)))}
+                  onClick={() => seekControllerRef.current?.step(-10)}
                   className="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 active:scale-95"
                 >
                   <Rewind className="h-6 w-6" />
@@ -1061,7 +1086,7 @@ export default function App() {
                 </button>
 
                 <button
-                  onClick={() => run("seek-forward", () => daemon.seek(Math.min(cast.duration || 0, cast.position + 10)))}
+                  onClick={() => seekControllerRef.current?.step(10)}
                   className="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 active:scale-95"
                 >
                   <FastForward className="h-6 w-6" />
