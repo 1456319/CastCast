@@ -13,6 +13,11 @@
 # arbitrary destructive actions.
 # =======================================================================
 
+export HOME="${HOME:-/data/data/com.termux/files/home}"
+export PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+export PATH="$PREFIX/bin:$PREFIX/bin/applets:$PATH"
+export LD_LIBRARY_PATH="$PREFIX/lib:$LD_LIBRARY_PATH"
+
 # Canonical user-visible queue; /sdcard/Download/Chromecast is its Android
 # alias. Keep this case synchronized with CastService.DEFAULT_MEDIA_ROOT.
 CHROMECAST_DIR="/storage/emulated/0/Download/CastCast/Chromecast"

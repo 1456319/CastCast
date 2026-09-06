@@ -8,22 +8,41 @@ import os
 HOST_API = "https://api.amazon.com"
 DEVICE_TYPE_ID = "A3REWRVYBYPKUM"  
 
-DEVICE_ID_FILE = os.path.expanduser("~/.config/castcast/amazon_device_id")
+
+def get_config_path(filename: str) -> str:
+    """Resolves config path, prioritizing Termux home on Android if present."""
+    termux_candidate = os.path.join("/data/data/com.termux/files/home/.config/castcast", filename)
+    if os.path.exists(termux_candidate):
+        return termux_candidate
+    home_dir = os.environ.get("HOME")
+    if home_dir and home_dir != "/data":
+        user_candidate = os.path.join(home_dir, ".config/castcast", filename)
+        if os.path.exists(user_candidate):
+            return user_candidate
+    if os.path.isdir("/data/data/com.termux/files/home"):
+        return termux_candidate
+    return os.path.expanduser(f"~/.config/castcast/{filename}")
+
+
+DEVICE_ID_FILE = get_config_path("amazon_device_id")
+
+
 def get_device_id():
-    if os.path.exists(DEVICE_ID_FILE):
-        with open(DEVICE_ID_FILE, 'r') as f:
+    device_file = get_config_path("amazon_device_id")
+    if os.path.exists(device_file):
+        with open(device_file, 'r') as f:
             return f.read().strip()
     import uuid
     new_id = str(uuid.uuid4()).replace('-', '')[:16]
-    os.makedirs(os.path.dirname(DEVICE_ID_FILE), exist_ok=True)
-    with open(DEVICE_ID_FILE, 'w') as f:
+    os.makedirs(os.path.dirname(device_file), exist_ok=True)
+    with open(device_file, 'w') as f:
         f.write(new_id)
     return new_id
 
 DEVICE_ID = get_device_id()
   
 
-AUTH_FILE = os.path.expanduser("~/.config/castcast/amazon_auth.json")
+AUTH_FILE = get_config_path("amazon_auth.json")
 
 def _do_post(url, payload):
     data = json.dumps(payload).encode('utf-8')
