@@ -219,6 +219,86 @@ def transform_dash_manifest(body_content: str, target_url: str) -> str:
     return body_content
 
 
+def _handle_amazon_license(handler: BaseHTTPRequestHandler) -> None:
+    # ====================================================================
+    # [AMAZON LICENSE PROXY ENDPOINT]
+    # This endpoint (/amazon/license?title_id=...) acts as a Widevine 
+    # license proxy between the Chromecast and Amazon's DRM servers.
+    #
+    # Flow: Chromecast CDM -> HTTPS tunnel -> this proxy -> Amazon API
+    #       -> raw license bytes -> back to CDM
+    #
+    # 1. The Chromecast sends the Widevine challenge as the raw POST body.
+    # 2. We forward it to Amazon's GetWidevineLicense endpoint using the
+    #    stored actor_token and playback_envelope.
+    # 3. We return the raw license bytes with Content-Type: application/octet-stream.
+    #
+    # CRITICAL: The Content-Length header MUST be set on the response. 
+    # Without it, Shaka Player (the Chromecast receiver) cannot determine
+    # when the license download is complete on a keep-alive connection.
+    # It will time out after ~10 seconds, retry, get another valid license,
+    # time out again, and loop forever. The Chromecast will appear stuck
+    # in `buffering` state with position 0.0. This bug took many hours to
+    # diagnose because the license data itself was correct — it was the HTTP
+    # framing that was broken.
+    #
+    # NOTE: CORS headers (Access-Control-Allow-Origin: *) are required 
+    # because the Shaka Player receiver runs in a browser context.
+    # ====================================================================
+    import urllib.parse
+    from . import amazon_drm
+
+    server: "MediaServer" = handler.server.media_server  # type: ignore[attr-defined]
+    qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+    title_id = qs.get("title_id", [""])[0]
+
+    amazon_data = server.drm_tokens.get(f"amazon_{title_id}")
+    if not amazon_data:
+        handler.send_response(404)
+        handler.end_headers()
+        return
+
+    content_length = int(handler.headers.get("Content-Length", 0))
+    challenge_bytes = handler.rfile.read(content_length)
+
+    server.log(f"Proxying Amazon Widevine License for {title_id}", "info")
+    try:
+        license_bytes = amazon_drm.fetch_widevine_license(
+            amazon_data["actor_token"],
+            amazon_data["playback_envelope"],
+            challenge_bytes,
+        )
+        server.log(f"Amazon Widevine License served successfully ({len(license_bytes)} bytes)", "info")
+        handler.send_response(200)
+        handler.send_header("Content-Length", str(len(license_bytes)))
+        handler.send_header("Content-Type", "application/octet-stream")
+        handler.send_header("Access-Control-Allow-Origin", "*")
+        handler.end_headers()
+        handler.wfile.write(license_bytes)
+    except Exception as e:
+        server.log(f"Amazon License Proxy Error: {e}", "warn")
+        handler.send_response(500)
+        handler.end_headers()
+
+
+def _handle_drm_token(handler: BaseHTTPRequestHandler) -> None:
+    server: "MediaServer" = handler.server.media_server  # type: ignore[attr-defined]
+    token_id = handler.path.split("/")[-1]
+
+    if token_id not in server.drm_tokens:
+        handler.send_error(404, "DRM token not found")
+        return
+
+    binary_token = server.drm_tokens[token_id]
+
+    handler.send_response(200)
+    handler.send_header("Access-Control-Allow-Origin", "*")
+    handler.send_header("Content-Type", "application/octet-stream")
+    handler.send_header("Content-Length", str(len(binary_token)))
+    handler.end_headers()
+    handler.wfile.write(binary_token)
+
+
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "castcast"
@@ -238,15 +318,12 @@ class _Handler(BaseHTTPRequestHandler):
             return None
 
         rel = urllib.parse.unquote(path[len(prefix):])
-        # Normalise and refuse anything that escapes the served roots.
         rel = posixpath.normpath(rel).lstrip("/")
-        if rel.startswith("..") or os.path.isabs(rel):
-            return None
 
         for root in server.roots:
+            real_root = os.path.realpath(root)
             candidate = os.path.realpath(os.path.join(root, rel))
-            if candidate == os.path.realpath(root) or candidate.startswith(
-                    os.path.realpath(root) + os.sep):
+            if candidate == real_root or candidate.startswith(real_root + os.sep):
                 if os.path.isfile(candidate):
                     return candidate
         return None
@@ -267,89 +344,17 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.server.media_server.log(f"Received POST: {self.path}", "debug")
-
-        # ====================================================================
-        # [AMAZON LICENSE PROXY ENDPOINT]
-        # This endpoint (/amazon/license?title_id=...) acts as a Widevine 
-        # license proxy between the Chromecast and Amazon's DRM servers.
-        #
-        # Flow: Chromecast CDM -> HTTPS tunnel -> this proxy -> Amazon API
-        #       -> raw license bytes -> back to CDM
-        #
-        # 1. The Chromecast sends the Widevine challenge as the raw POST body.
-        # 2. We forward it to Amazon's GetWidevineLicense endpoint using the
-        #    stored actor_token and playback_envelope.
-        # 3. We return the raw license bytes with Content-Type: application/octet-stream.
-        #
-        # CRITICAL: The Content-Length header MUST be set on the response. 
-        # Without it, Shaka Player (the Chromecast receiver) cannot determine
-        # when the license download is complete on a keep-alive connection.
-        # It will time out after ~10 seconds, retry, get another valid license,
-        # time out again, and loop forever. The Chromecast will appear stuck
-        # in `buffering` state with position 0.0. This bug took many hours to
-        # diagnose because the license data itself was correct — it was the HTTP
-        # framing that was broken.
-        #
-        # NOTE: CORS headers (Access-Control-Allow-Origin: *) are required 
-        # because the Shaka Player receiver runs in a browser context.
-        # ====================================================================
         if self.path.startswith("/amazon/license"):
-            import urllib.parse
-            from . import amazon_drm
-            
-            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            title_id = qs.get("title_id", [""])[0]
-            
-            amazon_data = self.server.media_server.drm_tokens.get(f"amazon_{title_id}")
-            if not amazon_data:
-                self.send_response(404)
-                self.end_headers()
-                return
-                
-            content_length = int(self.headers.get('Content-Length', 0))
-            challenge_bytes = self.rfile.read(content_length)
-            
-            self.server.media_server.log(f"Proxying Amazon Widevine License for {title_id}", "info")
-            try:
-                license_bytes = amazon_drm.fetch_widevine_license(
-                    amazon_data["actor_token"],
-                    amazon_data["playback_envelope"],
-                    challenge_bytes
-                )
-                self.server.media_server.log(f"Amazon Widevine License served successfully ({len(license_bytes)} bytes)", "info")
-                self.send_response(200)
-                self.send_header("Content-Length", str(len(license_bytes)))
-                self.send_header("Content-Type", "application/octet-stream")
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.end_headers()
-                self.wfile.write(license_bytes)
-            except Exception as e:
-                self.server.media_server.log(f"Amazon License Proxy Error: {e}", "warn")
-                self.send_response(500)
-                self.end_headers()
+            _handle_amazon_license(self)
             return
 
         if self.path.startswith("/drm/"):
-            self._serve_drm()
+            _handle_drm_token(self)
         else:
             self.send_error(405)
 
     def _serve_drm(self):
-        server: "MediaServer" = self.server.media_server
-        token_id = self.path.split("/")[-1]
-        
-        if token_id not in server.drm_tokens:
-            self.send_error(404, "DRM token not found")
-            return
-            
-        binary_token = server.drm_tokens[token_id]
-        
-        self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(len(binary_token)))
-        self.end_headers()
-        self.wfile.write(binary_token)
+        _handle_drm_token(self)
 
     def do_HEAD(self):  # noqa: N802
         if self.path.startswith("/proxy/"):
@@ -630,18 +635,59 @@ class _Handler(BaseHTTPRequestHandler):
                 pass
 
 
+class _LicenseHandler(BaseHTTPRequestHandler):
+    """Dedicated loopback listener for Widevine DRM licenses and public SSH reverse tunnel."""
+
+    protocol_version = "HTTP/1.1"
+    server_version = "castcast-drm"
+    sys_version = ""
+
+    def log_message(self, fmt, *args):  # noqa: A003
+        server: "MediaServer" = self.server.media_server  # type: ignore[attr-defined]
+        if hasattr(server, "log"):
+            server.log(f"license_http {self.address_string()} {fmt % args}", "debug")
+
+    def do_OPTIONS(self):  # noqa: N802
+        if self.path.startswith("/drm/") or self.path.startswith("/amazon/license"):
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "*")
+            self.send_header("Access-Control-Allow-Private-Network", "true")
+            self.end_headers()
+            return
+        self.send_error(405, "Method Not Allowed")
+
+    def do_POST(self):  # noqa: N802
+        if self.path.startswith("/amazon/license"):
+            _handle_amazon_license(self)
+        elif self.path.startswith("/drm/"):
+            _handle_drm_token(self)
+        else:
+            self.send_error(405, "Method Not Allowed")
+
+    def do_GET(self):  # noqa: N802
+        self.send_error(405, "Method Not Allowed")
+
+    def do_HEAD(self):  # noqa: N802
+        self.send_error(405, "Method Not Allowed")
+
+
 class MediaServer:
     """Threaded HTTP server exposing one or more directories under a random path."""
 
-    def __init__(self, roots, port: int = 0, bind: str = "0.0.0.0", logger=None, on_telemetry=None):
+    def __init__(self, roots, port: int = 0, bind: str = "0.0.0.0", logger=None, on_telemetry=None, license_port: int = 0):
         self.roots = [os.path.realpath(r) for r in roots]
         self.root_token = secrets.token_urlsafe(12)
         self._bind = bind
         self._requested_port = port
+        self._requested_license_port = license_port
         self._logger = logger
         self._on_telemetry = on_telemetry
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
+        self._license_httpd: Optional[ThreadingHTTPServer] = None
+        self._license_thread: Optional[threading.Thread] = None
         self.drm_tokens: dict[str, bytes] = {}
         self.lan_ip = detect_lan_ip()
         self.live_streams: dict[str, dict] = {}
@@ -666,12 +712,33 @@ class MediaServer:
         return self._httpd.server_address[1] if self._httpd else 0
 
     @property
+    def license_port(self) -> int:
+        return self._license_httpd.server_address[1] if self._license_httpd else 0
+
+    @property
     def running(self) -> bool:
         return self._httpd is not None
 
     @property
     def base_url(self) -> str:
         return f"http://{self.lan_ip}:{self.port}/{self.root_token}/"
+
+    def _resolve(self, path: str) -> Optional[str]:
+        req_path = urllib.parse.urlsplit(path).path
+        prefix = f"/{self.root_token}/"
+        if not req_path.startswith(prefix):
+            return None
+
+        rel = urllib.parse.unquote(req_path[len(prefix):])
+        rel = posixpath.normpath(rel).lstrip("/")
+
+        for root in self.roots:
+            real_root = os.path.realpath(root)
+            candidate = os.path.realpath(os.path.join(root, rel))
+            if candidate == real_root or candidate.startswith(real_root + os.sep):
+                if os.path.isfile(candidate):
+                    return candidate
+        return None
 
     def register_live_stream(self, v_url: str, a_url: str) -> str:
         stream_id = secrets.token_urlsafe(8)
@@ -728,7 +795,17 @@ class MediaServer:
                                         kwargs={"poll_interval": 0.5},
                                         name="castcast-http", daemon=True)
         self._thread.start()
-        self._logger(f"media server listening on {self.base_url}")
+        self.log(f"media server listening on {self.base_url}")
+
+        license_httpd = ThreadingHTTPServer(("127.0.0.1", self._requested_license_port), _LicenseHandler)
+        license_httpd.daemon_threads = True
+        license_httpd.media_server = self  # type: ignore[attr-defined]
+        self._license_httpd = license_httpd
+        self._license_thread = threading.Thread(target=license_httpd.serve_forever,
+                                                kwargs={"poll_interval": 0.5},
+                                                name="castcast-license-http", daemon=True)
+        self._license_thread.start()
+        self.log(f"license server listening on 127.0.0.1:{self.license_port}")
         
         # ====================================================================
         # [SSH TUNNEL SETUP]
@@ -743,19 +820,14 @@ class MediaServer:
         # If SSH is not available, we fall back to plain HTTP (which may fail 
         # on newer Chromecast firmware due to mixed content blocking).
         # ====================================================================
-        # Start SSH tunnel for HTTPS DRM proxy
-        import subprocess
-
-        import time
-
-        
+        # Start SSH tunnel for HTTPS DRM proxy forwarding strictly to license handler
         self.public_url = None
         self._ssh_process = None
         
         def start_tunnel():
             try:
                 self._ssh_process = subprocess.Popen(
-                    ["ssh", "-o", "StrictHostKeyChecking=no", "-R", f"80:localhost:{self.port}", "nokey@localhost.run"],
+                    ["ssh", "-o", "StrictHostKeyChecking=no", "-R", f"80:localhost:{self.license_port}", "nokey@localhost.run"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True
@@ -767,17 +839,17 @@ class MediaServer:
                             self.public_url = u
                             break
                         if self.public_url:
-                            self._logger(f"Established public HTTPS tunnel for DRM: {self.public_url}")
+                            self.log(f"Established public HTTPS tunnel for DRM: {self.public_url}")
                             break
                         if self.public_url:
                             break
             except Exception as e:
-                self._logger(f"Failed to start SSH tunnel: {e}")
+                self.log(f"Failed to start SSH tunnel: {e}")
                 
         if shutil.which("ssh"):
             threading.Thread(target=start_tunnel, daemon=True).start()
         else:
-            self._logger("ssh is not installed, cannot start public HTTPS tunnel for DRM")
+            self.log("ssh is not installed, cannot start public HTTPS tunnel for DRM")
 
     def stop(self) -> None:
         if self._httpd:
@@ -785,6 +857,11 @@ class MediaServer:
             self._httpd.server_close()
             self._httpd = None
         self._thread = None
+        if self._license_httpd:
+            self._license_httpd.shutdown()
+            self._license_httpd.server_close()
+            self._license_httpd = None
+        self._license_thread = None
         if hasattr(self, '_ssh_process') and self._ssh_process:
             try:
                 self._ssh_process.terminate()
