@@ -39,7 +39,7 @@ export async function getSharedUrl() {
   return TermuxDaemon.getSharedUrl();
 }
 
-export const TERMUX_KILL_COMMAND = "pkill -9 -f castcast || pkill -9 -f mediaserver.py";
+export const TERMUX_KILL_COMMAND = "pkill -9 -f castcast; pkill -9 -f mediaserver.py; pkill -9 -f 'localhost.run|pinggy.io' || true";
 
 export const TERMUX_MANUAL_COMMAND = [
   "cd /data/data/com.termux/files/home/CastCast/daemon",

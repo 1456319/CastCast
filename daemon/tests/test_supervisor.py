@@ -123,5 +123,29 @@ class TestSupervisor(unittest.TestCase):
         self.assertEqual(supervisor.status.position, 0.0)
         self.assertEqual(supervisor.status.volume, 0.0)
 
+    def test_api_json_sanitizes_nested_tuples_and_floats(self):
+        import io
+        import json
+        import math
+        from castcast.api import _Handler
+
+        handler = _Handler.__new__(_Handler)
+        handler.wfile = io.BytesIO()
+        handler.headers = {}
+        handler.send_response = lambda code: None
+        handler.send_header = lambda k, v: None
+        handler.end_headers = lambda: None
+        handler._cors = lambda: None
+
+        payload = {
+            "coords": (float("nan"), float("inf"), 42.0),
+            "nested": [{"val": (float("-inf"), 1.0)}]
+        }
+        handler._json(payload)
+        output = handler.wfile.getvalue().decode("utf-8")
+        parsed = json.loads(output)
+        self.assertEqual(parsed["coords"], [0.0, 0.0, 42.0])
+        self.assertEqual(parsed["nested"][0]["val"], [0.0, 1.0])
+
 if __name__ == '__main__':
     unittest.main()

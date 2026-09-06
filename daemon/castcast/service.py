@@ -189,12 +189,24 @@ class CastService:
                 self.log(f"Async title resolution failed for {url}: {e}", "warn")
                 real_title = "Amazon Video"
 
+            resolved_gti = ""
+            try:
+                from .metadata import resolve_amazon_media_info
+                info = resolve_amazon_media_info(url)
+                if isinstance(info, dict):
+                    resolved_gti = info.get("gti") or ""
+            except Exception:
+                pass
+
             with self._lock:
                 changed = False
                 for item in self.amazon_queue:
                     if item.get("url") == url:
                         if real_title and item.get("title") != real_title:
                             item["title"] = real_title
+                            changed = True
+                        if resolved_gti and resolved_gti.startswith("amzn1.dv.gti.") and item.get("gti") != resolved_gti:
+                            item["gti"] = resolved_gti
                             changed = True
                 if changed:
                     self.save_amazon_queue()
@@ -973,27 +985,22 @@ class CastService:
             if m_gti:
                 title_id = m_gti.group(1)
         if not title_id:
-            m = re.search(r'/(?:detail|dp)(?:/[a-zA-Z0-9_-]+)?/([a-zA-Z0-9_.-]+)', parsed.path)
-            if not m:
-                m = re.search(r'/detail/([a-zA-Z0-9_.-]+)', parsed.path)
+            m = re.search(r'/(?:detail|dp|product)/([a-zA-Z0-9_.-]+)', parsed.path)
             if m:
                 title_id = m.group(1)
 
-        if not title or title in ("Fetching title...", "Unknown title", "Amazon Video"):
-            resolved_title = resolve_title(path, provider="amazon")
-            if resolved_title and resolved_title != "Amazon Video":
-                title = resolved_title
-            else:
-                title = "Amazon Video"
+        needs_title = not title or title in ("Fetching title...", "Unknown title", "Amazon Video")
+        needs_gti = not (title_id and title_id.startswith("amzn1.dv.gti."))
 
-        if not (title_id and title_id.startswith("amzn1.dv.gti.")):
+        if needs_title or needs_gti:
             from .metadata import resolve_amazon_media_info
             resolved_info = resolve_amazon_media_info(path)
-            resolved_gti = resolved_info.get("gti")
-            if resolved_gti and resolved_gti.startswith("amzn1.dv.gti."):
-                title_id = resolved_gti
-            if not title or title == "Amazon Video":
-                title = resolved_info.get("title") or title or "Amazon Video"
+            if needs_gti:
+                resolved_gti = resolved_info.get("gti")
+                if resolved_gti and resolved_gti.startswith("amzn1.dv.gti."):
+                    title_id = resolved_gti
+            if needs_title:
+                title = resolved_info.get("title") or "Amazon Video"
 
         if not title_id:
             self.log("DEBUG-ONLY: Could not extract Amazon title ID from URL", "warn")

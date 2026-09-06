@@ -47,9 +47,7 @@ export class SeekController {
     const debounce = this.options.debounceMs ?? 300;
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
-      this.flush().catch((err) => {
-        this.options.onError?.(err);
-      });
+      this.flush().catch(() => {});
     }, debounce);
 
     return nextTarget;
@@ -67,9 +65,7 @@ export class SeekController {
 
     return new Promise<void>((resolve, reject) => {
       this.waiters.push({ target, resolve, reject });
-      this.flush().catch((err) => {
-        this.options.onError?.(err);
-      });
+      this.flush().catch(() => {});
     });
   }
 
@@ -83,7 +79,7 @@ export class SeekController {
       return;
     }
 
-    while (this.pendingTarget !== null) {
+    while (this.pendingTarget !== null && this.debounceTimer === null) {
       const target = this.pendingTarget;
       this.inFlight = true;
 

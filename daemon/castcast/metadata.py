@@ -190,9 +190,7 @@ def resolve_amazon_media_info(raw_url: str) -> dict:
             gti = m_gti.group(1)
 
     if not gti and not catalog_id:
-        m_detail = re.search(r'/(?:detail|dp)(?:/[a-zA-Z0-9_-]+)?/([a-zA-Z0-9_.-]+)', parsed.path)
-        if not m_detail:
-            m_detail = re.search(r'/detail/([a-zA-Z0-9_.-]+)', parsed.path)
+        m_detail = re.search(r'/(?:detail|dp|product)/([a-zA-Z0-9_.-]+)', parsed.path)
         if m_detail:
             cand = m_detail.group(1)
             if cand.startswith("amzn1.dv.gti."):

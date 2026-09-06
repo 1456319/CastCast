@@ -51,7 +51,7 @@ class _Handler(BaseHTTPRequestHandler):
                 return obj
             if isinstance(obj, dict):
                 return {k: _sanitize(v) for k, v in obj.items()}
-            if isinstance(obj, list):
+            if isinstance(obj, (list, tuple)):
                 return [_sanitize(v) for v in obj]
             return obj
 

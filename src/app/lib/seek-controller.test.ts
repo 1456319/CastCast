@@ -173,4 +173,24 @@ describe('SeekController', () => {
     await expect(controller.seekTo(300)).rejects.toThrow('Network error');
     expect(onError).toHaveBeenCalledWith(error);
   });
+
+  it('calls onError only once when seek fails', async () => {
+    const error = new Error('Network timeout');
+    const sendSeek = vi.fn().mockRejectedValue(error);
+    const onError = vi.fn();
+
+    const controller = new SeekController({
+      getPosition: () => 100,
+      getDuration: () => 1000,
+      sendSeek,
+      onError,
+      debounceMs: 100,
+    });
+
+    controller.step(10);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(error);
+  });
 });

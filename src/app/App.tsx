@@ -95,6 +95,7 @@ export default function App() {
   }, [status]);
 
   const [optimisticPos, setOptimisticPos] = useState<number | null>(null);
+  const optimisticPosRef = useRef<number | null>(null);
   const seekControllerRef = useRef<SeekController | null>(null);
   const optimisticTtlRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -102,18 +103,18 @@ export default function App() {
     try {
       const s = await daemon.status();
       setStatus(s);
-      setOptimisticPos((prev) => {
-        if (prev === null) return null;
+      const curOpt = optimisticPosRef.current;
+      if (curOpt !== null) {
         const currentCastPos = s.cast?.position ?? 0;
-        if (Math.abs(currentCastPos - prev) < 2.0) {
+        if (Math.abs(currentCastPos - curOpt) < 2.0) {
           if (optimisticTtlRef.current !== null) {
             clearTimeout(optimisticTtlRef.current);
             optimisticTtlRef.current = null;
           }
-          return null;
+          optimisticPosRef.current = null;
+          setOptimisticPos(null);
         }
-        return prev;
-      });
+      }
       try {
         const q = await daemon.getAmazonQueue();
         if (q && Array.isArray(q.items)) {
@@ -143,6 +144,7 @@ export default function App() {
           clearTimeout(optimisticTtlRef.current);
           optimisticTtlRef.current = null;
         }
+        optimisticPosRef.current = pos;
         setOptimisticPos(pos);
       },
       sendSeek: async (target) => {
@@ -153,11 +155,12 @@ export default function App() {
             clearTimeout(optimisticTtlRef.current);
           }
           optimisticTtlRef.current = setTimeout(() => {
+            optimisticPosRef.current = null;
             setOptimisticPos(null);
             optimisticTtlRef.current = null;
           }, 2500);
         } catch (err: any) {
-          setNotice(`Seek failed: ${err?.message || 'Unknown error'}`);
+          optimisticPosRef.current = null;
           setOptimisticPos(null);
           throw err;
         }

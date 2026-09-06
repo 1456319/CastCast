@@ -234,3 +234,22 @@ class TestResolveAmazonMediaInfo:
         assert res["gti"] == gti
         assert res["title"] == "Hazbin Hotel - Season 2"
 
+    @patch('urllib.request.urlopen')
+    def test_resolve_url_with_referral_subpath(self, mock_urlopen):
+        from castcast.metadata import resolve_amazon_media_info
+        catalog_id = "0lmmoubsox8qg4wkzjxf5v87w6"
+        mock_html = b"<title>Watch Hazbin Hotel - Season 2 | Prime Video</title>"
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = mock_html
+        mock_urlopen.return_value = mock_resp
+
+        # Prime Video URL with /ref= path component
+        url = f"https://www.primevideo.com/detail/{catalog_id}/ref=atv_dp_share_cu_r"
+        res = resolve_amazon_media_info(url)
+        assert res["title"] == "Hazbin Hotel - Season 2"
+        # Verify requested URL used catalog_id, not 'ref'
+        req_arg = mock_urlopen.call_args[0][0]
+        req_url = req_arg.full_url if hasattr(req_arg, "full_url") else str(req_arg)
+        assert catalog_id in req_url
+        assert "/detail/ref" not in req_url
+

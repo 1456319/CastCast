@@ -108,14 +108,33 @@ public class TermuxDaemonPlugin extends Plugin {
     @PluginMethod
     public void stopDaemon(PluginCall call) {
         try {
+            if (wakeLock != null && wakeLock.isHeld()) {
+                wakeLock.release();
+            }
+        } catch (Exception ignored) {}
+        wakeLock = null;
+
+        try {
+            if (wifiLock != null && wifiLock.isHeld()) {
+                wifiLock.release();
+            }
+        } catch (Exception ignored) {}
+        wifiLock = null;
+
+        try {
             ProcessBuilder pb = new ProcessBuilder("su", "-M");
             pb.redirectErrorStream(true);
             Process process = pb.start();
             try (DataOutputStream stdin = new DataOutputStream(process.getOutputStream())) {
-                stdin.write("pkill -9 -f castcast || true\npkill -9 -f mediaserver.py || true\nexit\n".getBytes(StandardCharsets.UTF_8));
+                stdin.write("pkill -9 -f castcast || true\npkill -9 -f mediaserver.py || true\npkill -9 -f 'localhost.run|pinggy.io' || true\nexit\n".getBytes(StandardCharsets.UTF_8));
                 stdin.flush();
             }
-            process.waitFor(ROOT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            boolean finished = process.waitFor(ROOT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                call.reject("Root kill command timed out after " + ROOT_TIMEOUT_SECONDS + "s");
+                return;
+            }
             JSObject ret = new JSObject();
             ret.put("stopped", true);
             call.resolve(ret);
