@@ -189,7 +189,8 @@ class _Handler(BaseHTTPRequestHandler):
             
             elif route == "/amazon/inject":
                 import os, json
-                auth_file = os.path.expanduser("~/.config/castcast/amazon_auth.json")
+                from .amazon import get_config_path
+                auth_file = get_config_path("amazon_auth.json")
                 os.makedirs(os.path.dirname(auth_file), exist_ok=True)
                 with open(auth_file, "w") as f:
                     json.dump(body, f)

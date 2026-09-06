@@ -10,17 +10,25 @@ DEVICE_TYPE_ID = "A3REWRVYBYPKUM"
 
 
 def get_config_path(filename: str) -> str:
-    """Resolves config path, prioritizing Termux home on Android if present."""
+    """Resolves config path, prioritizing Termux home on Android if present and appropriate."""
     termux_candidate = os.path.join("/data/data/com.termux/files/home/.config/castcast", filename)
     if os.path.exists(termux_candidate):
         return termux_candidate
+
     home_dir = os.environ.get("HOME")
     if home_dir and home_dir != "/data":
         user_candidate = os.path.join(home_dir, ".config/castcast", filename)
         if os.path.exists(user_candidate):
             return user_candidate
-    if os.path.isdir("/data/data/com.termux/files/home"):
+        return user_candidate
+
+    is_termux = (
+        os.environ.get("PREFIX", "").startswith("/data/data/com.termux")
+        or home_dir in (None, "", "/data", "/data/data/com.termux/files/home")
+    )
+    if is_termux and (os.path.isdir("/data/data/com.termux/files/home") or os.path.exists("/data/data/com.termux")):
         return termux_candidate
+
     return os.path.expanduser(f"~/.config/castcast/{filename}")
 
 
@@ -28,15 +36,20 @@ DEVICE_ID_FILE = get_config_path("amazon_device_id")
 
 
 def get_device_id():
-    device_file = get_config_path("amazon_device_id")
-    if os.path.exists(device_file):
-        with open(device_file, 'r') as f:
-            return f.read().strip()
+    if os.path.exists(DEVICE_ID_FILE):
+        try:
+            with open(DEVICE_ID_FILE, 'r') as f:
+                return f.read().strip()
+        except Exception:
+            pass
     import uuid
     new_id = str(uuid.uuid4()).replace('-', '')[:16]
-    os.makedirs(os.path.dirname(device_file), exist_ok=True)
-    with open(device_file, 'w') as f:
-        f.write(new_id)
+    try:
+        os.makedirs(os.path.dirname(DEVICE_ID_FILE), exist_ok=True)
+        with open(DEVICE_ID_FILE, 'w') as f:
+            f.write(new_id)
+    except Exception:
+        pass
     return new_id
 
 DEVICE_ID = get_device_id()

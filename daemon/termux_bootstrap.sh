@@ -13,7 +13,9 @@
 # arbitrary destructive actions.
 # =======================================================================
 
-export HOME="${HOME:-/data/data/com.termux/files/home}"
+if [ -z "$HOME" ] || [ "$HOME" = "/data" ]; then
+    export HOME="/data/data/com.termux/files/home"
+fi
 export PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 export PATH="$PREFIX/bin:$PREFIX/bin/applets:$PATH"
 export LD_LIBRARY_PATH="$PREFIX/lib:$LD_LIBRARY_PATH"
