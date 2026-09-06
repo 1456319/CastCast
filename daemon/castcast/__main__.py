@@ -45,8 +45,9 @@ def _api_url(host: str, port: int, path: str = "/status") -> str:
 
 
 def _server_running(host: str, port: int, timeout: float = 0.5) -> bool:
+    connect_host = "127.0.0.1" if host in ("0.0.0.0", "", "::") else host
     try:
-        with urllib.request.urlopen(_api_url(host, port), timeout=timeout) as response:
+        with urllib.request.urlopen(_api_url(connect_host, port), timeout=timeout) as response:
             return response.status < 500
     except urllib.error.HTTPError as exc:
         return exc.code < 500
