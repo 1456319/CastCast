@@ -27,7 +27,8 @@ def test_capability_defaults_to_ultra_and_accurate_4k():
     assert verdict_legacy.video_action == "transcode"
     assert verdict_legacy.will_be_4k is False
 
-def test_service_preflight_defaults_to_ultra():
+@patch("castcast.service.have_ffprobe", return_value=True)
+def test_service_preflight_defaults_to_ultra(mock_have_ffprobe):
     service = Service.__new__(Service)
     service.config = {}
     service.work_dir = "/tmp"
@@ -46,6 +47,14 @@ def test_service_preflight_defaults_to_ultra():
     report = service.preflight("/videos/test_4k.mkv")
     assert report["verdict"]["video_action"] == "copy"
     assert report["verdict"]["will_be_4k"] is True
+
+@patch("castcast.service.have_ffprobe", return_value=False)
+def test_preflight_reports_tools_missing_when_ffprobe_absent(mock_have_ffprobe):
+    service = Service.__new__(Service)
+    res = service.preflight("/videos/movie.mkv")
+    assert res.get("tools_missing") is True
+    assert res.get("media") is None
+    assert "ffprobe is not installed" in res.get("warning", "")
 
 def test_queue_blocks_unauthorized_video_transcode():
     service = Service.__new__(Service)
@@ -109,7 +118,8 @@ def test_queue_skips_transcode_and_queues_valid_item():
     assert res.get("queued", 0) == 1
 
 
-def test_preflight_does_not_reuse_1080p_cache_for_4k_source(tmp_path):
+@patch("castcast.service.have_ffprobe", return_value=True)
+def test_preflight_does_not_reuse_1080p_cache_for_4k_source(mock_have_ffprobe, tmp_path):
     svc = Service({"media_roots": [str(tmp_path)], "work_dir": str(tmp_path / "work")})
     source_path = str(tmp_path / "movie_4k.mkv")
     with open(source_path, "w") as f:
@@ -155,7 +165,8 @@ def test_preflight_does_not_reuse_1080p_cache_for_4k_source(tmp_path):
     assert res.get("prepared_path") is None
 
 
-def test_preflight_reuses_verified_4k_cache_for_4k_source(tmp_path):
+@patch("castcast.service.have_ffprobe", return_value=True)
+def test_preflight_reuses_verified_4k_cache_for_4k_source(mock_have_ffprobe, tmp_path):
     svc = Service({"media_roots": [str(tmp_path)], "work_dir": str(tmp_path / "work")})
     source_path = str(tmp_path / "movie_4k.mkv")
     with open(source_path, "w") as f:
@@ -200,7 +211,8 @@ def test_preflight_reuses_verified_4k_cache_for_4k_source(tmp_path):
     assert res.get("prepared_path") == plan.output_path
 
 
-def test_preflight_does_not_reuse_sdr_cache_for_hdr_source(tmp_path):
+@patch("castcast.service.have_ffprobe", return_value=True)
+def test_preflight_does_not_reuse_sdr_cache_for_hdr_source(mock_have_ffprobe, tmp_path):
     svc = Service({"media_roots": [str(tmp_path)], "work_dir": str(tmp_path / "work")})
     source_path = str(tmp_path / "movie_hdr.mkv")
     with open(source_path, "w") as f:
@@ -245,7 +257,8 @@ def test_preflight_does_not_reuse_sdr_cache_for_hdr_source(tmp_path):
     assert res.get("prepared_path") is None
 
 
-def test_preflight_does_not_reuse_stale_or_empty_cache(tmp_path):
+@patch("castcast.service.have_ffprobe", return_value=True)
+def test_preflight_does_not_reuse_stale_or_empty_cache(mock_have_ffprobe, tmp_path):
     import time
     svc = Service({"media_roots": [str(tmp_path)], "work_dir": str(tmp_path / "work")})
     source_path = str(tmp_path / "movie.mkv")
