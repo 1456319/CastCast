@@ -120,9 +120,67 @@ def test_supervisor_receiver_routing_and_replace_text_tracks():
     assert sup.receiver_app_id == SHAKA_RECEIVER_APP_ID
 
     # 3. replace_text_tracks on Shaka session must not raise RuntimeError and preserve state
+    sup._app_transport_id = "transport-shaka"
+    sup.status.app_id = SHAKA_RECEIVER_APP_ID
+    sup._set_state(State.PLAYING)
+    sup._channel.send_json.reset_mock()
     new_tracks = [{"trackId": 1, "type": "TEXT", "name": "English", "subtype": "SUBTITLES"}]
     sup.replace_text_tracks(new_tracks, active_ids=[1])
     assert sup._session.tracks == new_tracks
     assert sup._session.active_track_ids == [1]
     assert sup._session.license_url == "https://license.server/widevine"
+    sup._channel.send_json.assert_called()
+    call_args = sup._channel.send_json.call_args
+    assert call_args[0][0] == NS_MEDIA
+    assert call_args[0][1] == "transport-shaka"
+    assert call_args[0][2]["type"] == "LOAD"
+    assert call_args[0][2]["media"]["tracks"] == new_tracks
+    assert call_args[0][2]["activeTrackIds"] == [1]
+
+
+def test_handle_receiver_target_app_no_fallback_to_stale_app():
+    from castcast.supervisor import Supervisor, DEFAULT_MEDIA_RECEIVER_APP_ID, SHAKA_RECEIVER_APP_ID
+    sup = Supervisor("127.0.0.1")
+    sup._channel = MagicMock()
+    # Active session targets DEFAULT_MEDIA_RECEIVER_APP_ID
+    sup.load("http://127.0.0.1/video.mp4")
+    assert sup._session.receiver_app_id == DEFAULT_MEDIA_RECEIVER_APP_ID
+
+    # Receiver status arrives with the old Shaka app still running
+    status_payload = {
+        "type": "RECEIVER_STATUS",
+        "status": {
+            "applications": [
+                {
+                    "appId": SHAKA_RECEIVER_APP_ID,
+                    "sessionId": "shaka-session",
+                    "transportId": "shaka-transport",
+                    "namespaces": [{"name": "urn:x-cast:com.google.cast.media"}],
+                }
+            ]
+        }
+    }
+    sup._handle_receiver(status_payload)
+    # Must NOT have matched the dying Shaka app
+    assert sup.status.app_id == ""
+    assert sup._app_transport_id == ""
+
+    # When DMR launches and appears in receiver status:
+    status_payload_dmr = {
+        "type": "RECEIVER_STATUS",
+        "status": {
+            "applications": [
+                {
+                    "appId": DEFAULT_MEDIA_RECEIVER_APP_ID,
+                    "sessionId": "dmr-session",
+                    "transportId": "dmr-transport",
+                    "namespaces": [{"name": "urn:x-cast:com.google.cast.media"}],
+                }
+            ]
+        }
+    }
+    sup._handle_receiver(status_payload_dmr)
+    assert sup.status.app_id == DEFAULT_MEDIA_RECEIVER_APP_ID
+    assert sup._app_transport_id == "dmr-transport"
+
 

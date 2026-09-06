@@ -282,6 +282,8 @@ class Supervisor:
         self._emit("media", self.snapshot())
 
     def play(self) -> Optional[int]:
+        with self._lock:
+            self._restore_paused = False
         return self._media_command({"type": "PLAY"})
 
     def pause(self) -> Optional[int]:
@@ -706,7 +708,7 @@ class Supervisor:
                 if app.get("appId") == target_app_id:
                     matched_app = app
                     break
-        if not matched_app:
+        else:
             for app in apps:
                 if app.get("appId") in (DEFAULT_MEDIA_RECEIVER_APP_ID, SHAKA_RECEIVER_APP_ID) or \
                         NS_MEDIA in [ns.get("name") for ns in (app.get("namespaces") or [])]:
@@ -852,12 +854,17 @@ class Supervisor:
         idle_reason = entry.get("idleReason") or ""
 
         if player_state == "PLAYING":
-            if getattr(self, "_restore_paused", False):
-                self._restore_paused = False
+            should_pause = False
+            with self._lock:
+                if getattr(self, "_restore_paused", False):
+                    self._restore_paused = False
+                    should_pause = True
+            if should_pause:
                 self._media_command({"type": "PAUSE"})
             self._set_state(State.PLAYING)
         elif player_state == "PAUSED":
-            self._restore_paused = False
+            with self._lock:
+                self._restore_paused = False
             self._set_state(State.PAUSED)
         elif player_state == "BUFFERING":
             self._set_state(State.BUFFERING)
