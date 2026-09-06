@@ -145,6 +145,8 @@ class TestTransformDashManifest(unittest.TestCase):
         self.assertNotIn("SegmentDurations", result)
         self.assertNotIn('duration="87193"', result)
         self.assertNotIn('duration="174387"', result)
+        self.assertIn("<SegmentTimeline>", result)
+        self.assertIn("</SegmentTimeline>", result)
         self.assertIn('<S d="72072"/>', result)
         self.assertIn('<S d="144144"/>', result)
 

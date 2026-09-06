@@ -91,6 +91,8 @@ def transform_dash_manifest(body_content: str, target_url: str) -> str:
     3. Strips PlayReady ContentProtection entirely.
     4. Wraps bare Widevine protobufs in valid MP4 pssh boxes.
     5. Preserves all 4K video representations (height="2160") completely untouched.
+    6. Normalizes non-standard SegmentDurations into standard SegmentTimeline across
+       all AdaptationSets (video, audio, text) and strips synthetic duration attributes.
     """
     import re, base64
 
