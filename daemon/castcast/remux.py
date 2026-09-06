@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Callable, List, Optional
 
 from .capability import Verdict
-from .probe import FFMPEG, MediaInfo, have_ffmpeg, probe
+from .probe import FFMPEG, MediaInfo, have_ffmpeg, probe, normalize_color_transfer
 
 COLOR_PRIMARIES = {
     "bt709": 1, "unspecified": 2, "bt470m": 4, "bt470bg": 5, "smpte170m": 6,
@@ -30,13 +30,14 @@ COLOR_TRANSFER = {
     "bt709": 1, "unspecified": 2, "gamma22": 4, "gamma28": 5, "smpte170m": 6,
     "smpte240m": 7, "linear": 8, "log": 9, "log-sqrt": 10, "iec61966-2-4": 11,
     "bt1361e": 12, "iec61966-2-1": 13, "bt2020-10": 14, "bt2020-12": 15,
-    "smpte2084": 16, "smpte428": 17, "smpte428_1": 17, "arib-std-b67": 18,
+    "smpte2084": 16, "smpte-2084": 16, "smpte-st-2084": 16, "pq": 16,
+    "smpte428": 17, "smpte428_1": 17, "arib-std-b67": 18, "hlg": 18,
 }
 
 COLOR_SPACE = {
     "rgb": 0, "bt709": 1, "unspecified": 2, "fcc": 4, "bt470bg": 5,
-    "smpte170m": 6, "smpte240m": 7, "ycgco": 8, "bt2020nc": 9, "bt2020c": 10,
-    "smpte2085": 11, "chroma-derived-nc": 12, "chroma-derived-c": 13, "ictcp": 14,
+    "smpte170m": 6, "smpte240m": 7, "ycgco": 8, "bt2020nc": 9, "bt2020": 9, "bt2020-nc": 9,
+    "bt2020c": 10, "smpte2085": 11, "chroma-derived-nc": 12, "chroma-derived-c": 13, "ictcp": 14,
 }
 
 
@@ -293,16 +294,35 @@ class Remuxer:
         self._emit(job)
 
         os.makedirs(os.path.dirname(plan.output_path) or ".", exist_ok=True)
+        stem, extension = os.path.splitext(plan.output_path)
+        temporary_output = f"{stem}.partial{extension}"
 
         attempt = 1
         while attempt <= 2:
-            cmd = plan.command + ["-progress", "pipe:1", "-nostats"]
+            base_cmd = list(plan.command)
+            if base_cmd and base_cmd[-1] == plan.output_path:
+                base_cmd[-1] = temporary_output
+            else:
+                base_cmd = [temporary_output if arg == plan.output_path else arg for arg in base_cmd]
+            cmd = base_cmd + ["-progress", "pipe:1", "-nostats"]
             try:
                 with self._lock:
                     self._proc = subprocess.Popen(
                         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 proc = self._proc
                 assert proc.stdout is not None
+
+                stderr_output: List[bytes] = []
+
+                def drain_stderr() -> None:
+                    if proc.stderr:
+                        try:
+                            stderr_output.append(proc.stderr.read())
+                        except Exception:
+                            pass
+
+                stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
+                stderr_thread.start()
 
                 for line in proc.stdout:
                     match = _PROGRESS_TIME.search(line)
@@ -314,36 +334,37 @@ class Remuxer:
                             self._emit(job)
 
                 proc.wait()
-                stderr = (proc.stderr.read() if proc.stderr else b"").decode("utf-8", "replace")
+                stderr_thread.join()
+                stderr = (stderr_output[0] if stderr_output else b"").decode("utf-8", "replace")
 
                 if job.state == "cancelled":
-                    _unlink(plan.output_path)
+                    _unlink(temporary_output)
                     break
 
                 elif proc.returncode == 0:
                     # Verify HDR metadata on first attempt if it's a lossless copy
                     if attempt == 1 and plan.lossless_video and plan.expected_hdr_format != "SDR" and plan.video_codec in ("hevc", "h264", "vp9"):
                         try:
-                            out_info = probe(plan.output_path)
+                            out_info = probe(temporary_output)
                             out_pv = out_info.primary_video
-                            if out_pv and out_pv.color_transfer != plan.expected_color_transfer:
+                            if out_pv and normalize_color_transfer(out_pv.color_transfer) != normalize_color_transfer(plan.expected_color_transfer):
                                 # Metadata was lost, we need to retry with a bitstream filter
-                                attempt = 2
-                                _unlink(plan.output_path)
-
                                 filter_name = f"{plan.video_codec}_metadata"
                                 bsf_args = []
                                 if plan.expected_color_primaries:
                                     val = COLOR_PRIMARIES.get(plan.expected_color_primaries, 2)
                                     bsf_args.append(f"colour_primaries={val}")
                                 if plan.expected_color_transfer:
-                                    val = COLOR_TRANSFER.get(plan.expected_color_transfer, 2)
+                                    norm_trc = normalize_color_transfer(plan.expected_color_transfer)
+                                    val = COLOR_TRANSFER.get(norm_trc, COLOR_TRANSFER.get(plan.expected_color_transfer, 2))
                                     bsf_args.append(f"transfer_characteristics={val}")
                                 if plan.expected_color_space:
                                     val = COLOR_SPACE.get(plan.expected_color_space, 2)
                                     bsf_args.append(f"matrix_coefficients={val}")
 
                                 if bsf_args and plan.video_codec != "vp9":
+                                    attempt = 2
+                                    _unlink(temporary_output)
                                     bsf = f"{filter_name}=" + ":".join(bsf_args)
                                     plan.args.extend(["-bsf:v", bsf])
                                     job.progress = 0.0
@@ -353,6 +374,7 @@ class Remuxer:
                         except Exception:
                             pass # If probe fails, just accept the output
 
+                    os.replace(temporary_output, plan.output_path)
                     job.state = "done"
                     job.progress = 1.0
                     break
@@ -360,12 +382,12 @@ class Remuxer:
                     job.state = "failed"
                     tail = [ln for ln in stderr.strip().splitlines() if ln.strip()]
                     job.error = tail[-1] if tail else f"ffmpeg exited {proc.returncode}"
-                    _unlink(plan.output_path)
+                    _unlink(temporary_output)
                     break
             except Exception as exc:  # noqa: BLE001 - surfaced to the UI
                 job.state = "failed"
                 job.error = str(exc)
-                _unlink(plan.output_path)
+                _unlink(temporary_output)
                 break
 
         job.finished_at = time.time()

@@ -351,7 +351,8 @@ def test_remuxer_run_no_ffmpeg(mock_have_ffmpeg):
 @patch("castcast.remux.have_ffmpeg", return_value=True)
 @patch("subprocess.Popen")
 @patch("os.makedirs")
-def test_remuxer_run_success(mock_makedirs, mock_popen, mock_have_ffmpeg):
+@patch("os.replace")
+def test_remuxer_run_success(mock_replace, mock_makedirs, mock_popen, mock_have_ffmpeg):
     mock_proc = MagicMock()
     mock_proc.stdout = [b"out_time_ms=5000000"] # 5 seconds
     mock_proc.stderr = None
@@ -373,6 +374,7 @@ def test_remuxer_run_success(mock_makedirs, mock_popen, mock_have_ffmpeg):
     assert job.progress == 1.0
     assert job.error == ""
     assert len(events) > 0 # Initial emit + progress emit + final emit
+    mock_replace.assert_called_once_with("/out/file.partial.mp4", "/out/file.mp4")
 
 @patch("castcast.remux.have_ffmpeg", return_value=True)
 @patch("subprocess.Popen")
@@ -394,7 +396,7 @@ def test_remuxer_run_failure(mock_unlink, mock_makedirs, mock_popen, mock_have_f
 
     assert job.state == "failed"
     assert "ffmpeg error details" in job.error
-    mock_unlink.assert_called_once_with("/out/file.mp4")
+    mock_unlink.assert_called_once_with("/out/file.partial.mp4")
 
 @patch("castcast.remux.have_ffmpeg", return_value=True)
 @patch("subprocess.Popen")
@@ -412,7 +414,7 @@ def test_remuxer_run_exception(mock_unlink, mock_makedirs, mock_popen, mock_have
 
     assert job.state == "failed"
     assert job.error == "boom"
-    mock_unlink.assert_called_once_with("/out/file.mp4")
+    mock_unlink.assert_called_once_with("/out/file.partial.mp4")
 
 def test_remuxer_cancel():
     r = Remuxer()
@@ -462,7 +464,7 @@ def test_remuxer_run_cancelled(mock_unlink, mock_makedirs, mock_popen, mock_have
     job = r.run(plan)
 
     assert job.state == "cancelled"
-    mock_unlink.assert_called_once_with("/out/file.mp4")
+    mock_unlink.assert_called_once_with("/out/file.partial.mp4")
 
 def test_remuxer_emit_exception():
     def bad_listener(j):
@@ -473,7 +475,8 @@ def test_remuxer_emit_exception():
 @patch("castcast.remux.have_ffmpeg", return_value=True)
 @patch("subprocess.Popen")
 @patch("os.makedirs")
-def test_remuxer_run_success_empty_stderr(mock_makedirs, mock_popen, mock_have_ffmpeg):
+@patch("os.replace")
+def test_remuxer_run_success_empty_stderr(mock_replace, mock_makedirs, mock_popen, mock_have_ffmpeg):
     mock_proc = MagicMock()
     mock_proc.stdout = []
     mock_proc.stderr = None
@@ -489,13 +492,15 @@ def test_remuxer_run_success_empty_stderr(mock_makedirs, mock_popen, mock_have_f
 
     assert job.state == "done"
     assert job.progress == 1.0
+    mock_replace.assert_called_once_with("/out/file.partial.mp4", "/out/file.mp4")
 
 @patch("castcast.remux.have_ffmpeg", return_value=True)
 @patch("castcast.remux.probe")
 @patch("subprocess.Popen")
 @patch("os.makedirs")
+@patch("os.replace")
 @patch("castcast.remux._unlink")
-def test_remuxer_run_hdr_metadata_loss_retry(mock_unlink, mock_makedirs, mock_popen, mock_probe, mock_have_ffmpeg):
+def test_remuxer_run_hdr_metadata_loss_retry(mock_unlink, mock_replace, mock_makedirs, mock_popen, mock_probe, mock_have_ffmpeg):
     mock_proc1 = MagicMock()
     mock_proc1.stdout = []
     mock_proc1.stderr.read.return_value = b""
@@ -534,7 +539,7 @@ def test_remuxer_run_hdr_metadata_loss_retry(mock_unlink, mock_makedirs, mock_po
 
     assert job.state == "done"
     assert mock_popen.call_count == 2
-    mock_probe.assert_called_once_with("/out/file.mp4")
+    mock_probe.assert_called_once_with("/out/file.partial.mp4")
 
     # Assert args were modified
     assert "-bsf:v" in plan.args
@@ -544,14 +549,16 @@ def test_remuxer_run_hdr_metadata_loss_retry(mock_unlink, mock_makedirs, mock_po
     # Assert warning event was emitted
     assert "HDR metadata lost; retrying with bitstream filters" in events
     # Unlink called once after first failed metadata check
-    mock_unlink.assert_called_once_with("/out/file.mp4")
+    mock_unlink.assert_called_once_with("/out/file.partial.mp4")
+    mock_replace.assert_called_once_with("/out/file.partial.mp4", "/out/file.mp4")
 
 @patch("castcast.remux.have_ffmpeg", return_value=True)
 @patch("castcast.remux.probe")
 @patch("subprocess.Popen")
 @patch("os.makedirs")
+@patch("os.replace")
 @patch("castcast.remux._unlink")
-def test_remuxer_run_hdr_metadata_preserved(mock_unlink, mock_makedirs, mock_popen, mock_probe, mock_have_ffmpeg):
+def test_remuxer_run_hdr_metadata_preserved(mock_unlink, mock_replace, mock_makedirs, mock_popen, mock_probe, mock_have_ffmpeg):
     mock_proc1 = MagicMock()
     mock_proc1.stdout = []
     mock_proc1.stderr.read.return_value = b""
@@ -580,6 +587,152 @@ def test_remuxer_run_hdr_metadata_preserved(mock_unlink, mock_makedirs, mock_pop
 
     assert job.state == "done"
     assert mock_popen.call_count == 1
-    mock_probe.assert_called_once_with("/out/file.mp4")
+    mock_probe.assert_called_once_with("/out/file.partial.mp4")
     assert "-bsf:v" not in plan.args
     mock_unlink.assert_not_called()
+    mock_replace.assert_called_once_with("/out/file.partial.mp4", "/out/file.mp4")
+
+
+def test_remux_creates_partial_output_and_publishes_atomically(tmp_path):
+    # Verify .partial is used during encoding and replaced on completion
+    out_path = str(tmp_path / "movie.mp4")
+    expected_partial = str(tmp_path / "movie.partial.mp4")
+
+    mock_proc = MagicMock()
+    mock_proc.stdout = []
+    mock_proc.stderr = None
+    mock_proc.returncode = 0
+
+    with patch("castcast.remux.have_ffmpeg", return_value=True), \
+         patch("subprocess.Popen") as mock_popen, \
+         patch("os.replace") as mock_replace:
+        mock_popen.return_value = mock_proc
+        r = Remuxer()
+        plan = RemuxPlan(
+            input_path=str(tmp_path / "movie.mkv"),
+            output_path=out_path,
+        )
+        job = r.run(plan)
+
+        assert job.state == "done"
+        cmd = mock_popen.call_args[0][0]
+        assert expected_partial in cmd
+        assert out_path not in cmd
+        mock_replace.assert_called_once_with(expected_partial, out_path)
+
+
+def test_hdr_color_transfer_normalization():
+    from castcast.probe import _normalize_color_transfer, normalize_color_transfer
+    # SMPTE 2084 / PQ synonyms
+    assert _normalize_color_transfer("smpte2084") == "smpte2084"
+    assert _normalize_color_transfer("smpte-2084") == "smpte2084"
+    assert _normalize_color_transfer("smpte-st-2084") == "smpte2084"
+    assert _normalize_color_transfer("pq") == "smpte2084"
+    assert normalize_color_transfer(" SMPTE2084 ") == "smpte2084"
+    assert normalize_color_transfer("PQ") == "smpte2084"
+
+    # HLG / ARIB synonyms
+    assert _normalize_color_transfer("arib-std-b67") == "arib-std-b67"
+    assert _normalize_color_transfer("hlg") == "arib-std-b67"
+    assert normalize_color_transfer("ARIB-STD-B67") == "arib-std-b67"
+    assert normalize_color_transfer("HLG") == "arib-std-b67"
+
+    # Standard / passthrough
+    assert _normalize_color_transfer("bt2020-10") == "bt2020-10"
+    assert _normalize_color_transfer("bt709") == "bt709"
+    assert normalize_color_transfer("") == ""
+    assert normalize_color_transfer(None) == ""
+
+
+def test_remux_concurrent_stderr_drain(tmp_path):
+    import io
+    out_path = str(tmp_path / "output.mp4")
+
+    mock_proc = MagicMock()
+    mock_proc.stdout = [b"out_time_ms=1000000"]
+    large_stderr = b"warning line\n" * 5000  # ~65 KiB
+    mock_proc.stderr = io.BytesIO(large_stderr)
+    mock_proc.returncode = 0
+
+    with patch("castcast.remux.have_ffmpeg", return_value=True), \
+         patch("subprocess.Popen", return_value=mock_proc), \
+         patch("os.replace"):
+        r = Remuxer()
+        plan = RemuxPlan(input_path="in.mkv", output_path=out_path)
+        job = r.run(plan)
+        assert job.state == "done"
+        assert mock_proc.stderr.tell() == len(large_stderr)
+
+
+@patch("castcast.remux.have_ffmpeg", return_value=True)
+@patch("castcast.remux.probe")
+@patch("subprocess.Popen")
+@patch("os.makedirs")
+@patch("os.replace")
+@patch("castcast.remux._unlink")
+def test_remuxer_run_hdr_metadata_synonym_no_retry(mock_unlink, mock_replace, mock_makedirs, mock_popen, mock_probe, mock_have_ffmpeg):
+    mock_proc = MagicMock()
+    mock_proc.stdout = []
+    mock_proc.stderr = None
+    mock_proc.returncode = 0
+    mock_popen.return_value = mock_proc
+
+    # Source had 'smpte2084', probed output returns synonym 'smpte-2084'
+    out_info = MagicMock()
+    out_info.primary_video = MagicMock(color_transfer="smpte-2084")
+    mock_probe.return_value = out_info
+
+    r = Remuxer()
+    plan = RemuxPlan(
+        input_path="/in/file.mkv",
+        output_path="/out/file.mp4",
+        lossless_video=True,
+        expected_hdr_format="HDR10",
+        expected_color_primaries="bt2020",
+        expected_color_transfer="smpte2084",
+        expected_color_space="bt2020nc",
+        video_codec="hevc",
+        args=["-c:v", "copy"],
+    )
+    job = r.run(plan)
+
+    assert job.state == "done"
+    # Only 1 attempt because synonym normalized and matched
+    assert mock_popen.call_count == 1
+    mock_probe.assert_called_once_with("/out/file.partial.mp4")
+    assert "-bsf:v" not in plan.args
+    mock_unlink.assert_not_called()
+    mock_replace.assert_called_once_with("/out/file.partial.mp4", "/out/file.mp4")
+
+
+def test_remux_failure_unlinks_partial_file(tmp_path):
+    out_path = str(tmp_path / "fail_movie.mp4")
+    expected_partial = str(tmp_path / "fail_movie.partial.mp4")
+
+    mock_proc = MagicMock()
+    mock_proc.stdout = []
+    mock_proc.stderr.read.return_value = b"encoding error"
+    mock_proc.returncode = 1
+
+    def fake_popen(cmd, *args, **kwargs):
+        # Create the partial file to simulate partial ffmpeg write
+        with open(expected_partial, "w") as f:
+            f.write("partial content")
+        return mock_proc
+
+    with patch("castcast.remux.have_ffmpeg", return_value=True), \
+         patch("subprocess.Popen", side_effect=fake_popen):
+        r = Remuxer()
+        plan = RemuxPlan(
+            input_path=str(tmp_path / "in.mkv"),
+            output_path=out_path,
+        )
+        job = r.run(plan)
+
+        assert job.state == "failed"
+        assert "encoding error" in job.error
+        # The partial file was cleaned up
+        assert not os.path.exists(expected_partial)
+        assert not os.path.exists(out_path)
+
+
