@@ -909,7 +909,14 @@ class Supervisor:
         return True
 
     def _update_resolution(self, width: Any, height: Any) -> None:
-        if not isinstance(width, (int, float)) or not isinstance(height, (int, float)) or width <= 0 or height <= 0:
+        if (
+            isinstance(width, bool)
+            or isinstance(height, bool)
+            or not isinstance(width, (int, float))
+            or not isinstance(height, (int, float))
+            or width <= 0
+            or height <= 0
+        ):
             return
         self.status.receiver_width, self.status.receiver_height = int(width), int(height)
         self.status.quality_state = "receiver_4k" if width >= 3840 and height >= 2160 else "below_4k"

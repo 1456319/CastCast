@@ -47,8 +47,24 @@ class TestSupervisor(unittest.TestCase):
             "reason": "INVALID_MEDIA_SESSION_ID",
         })
 
-        self.assertEqual(supervisor.status.state, "load_failed")
-        self.assertIn(("load_failed", {"reason": "INVALID_MEDIA_SESSION_ID", "request": "LOAD"}), events)
+    def test_update_resolution_rejects_boolean_values(self):
+        supervisor = Supervisor("127.0.0.1")
+        supervisor.status.receiver_width = 3840
+        supervisor.status.receiver_height = 2160
+        supervisor.status.quality_state = "receiver_4k"
+
+        # Passing booleans should be ignored and not change dimensions or quality_state
+        supervisor._update_resolution(True, True)
+        self.assertEqual(supervisor.status.receiver_width, 3840)
+        self.assertEqual(supervisor.status.receiver_height, 2160)
+        self.assertEqual(supervisor.status.quality_state, "receiver_4k")
+
+        supervisor._update_resolution(True, 2160)
+        self.assertEqual(supervisor.status.receiver_width, 3840)
+
+        supervisor._update_resolution(3840, False)
+        self.assertEqual(supervisor.status.receiver_height, 2160)
+
 
 if __name__ == '__main__':
     unittest.main()

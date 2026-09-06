@@ -291,6 +291,30 @@ def test_mediaserver_starts_license_server_and_binds_ssh_tunnel(tmp_path):
             assert not server.running
 
 
+def test_handler_rejects_post_and_drm_routes():
+    mock_server = MagicMock()
+    mock_server.media_server.log = MagicMock()
+    handler = _Handler.__new__(_Handler)
+    handler.server = mock_server
+    handler.send_error = MagicMock()
+
+    # Public _Handler rejects POST unconditionally
+    handler.path = "/amazon/license"
+    handler.do_POST()
+    handler.send_error.assert_called_with(405)
+
+    handler.send_error.reset_mock()
+    handler.path = "/drm/any_token"
+    handler.do_POST()
+    handler.send_error.assert_called_with(405)
+
+    # Public _Handler rejects OPTIONS unconditionally
+    handler.send_error.reset_mock()
+    handler.path = "/drm/any_token"
+    handler.do_OPTIONS()
+    handler.send_error.assert_called_with(405)
+
+
 if __name__ == '__main__':
     unittest.main()
 

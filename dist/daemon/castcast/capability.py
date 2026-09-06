@@ -305,13 +305,14 @@ def evaluate(info: MediaInfo, *, prefer_fmp4: bool = False,
     needs_processing = bool(fatal) or target_container is not None
 
     v = info.primary_video
-    # Will it be 4K *after* we fix it?  A remux never changes resolution, so
-    # this is a property of the source, gated on us not having to downscale.
-    will_be_4k = bool(
-        v and v.is_4k
-        and not any(i.code in ("resolution_exceeds_device", "video_codec_unsupported")
-                    for i in fatal)
-    )
+    if not v or not v.is_4k:
+        will_be_4k = False
+    elif video_action == "transcode" and not is_ultra:
+        will_be_4k = False
+    elif any(i.code in ("resolution_exceeds_device", "video_codec_unsupported") for i in fatal):
+        will_be_4k = False
+    else:
+        will_be_4k = True
 
     if v and not v.is_4k:
         issues.append(Issue(

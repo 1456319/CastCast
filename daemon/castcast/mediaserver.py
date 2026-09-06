@@ -318,30 +318,10 @@ class _Handler(BaseHTTPRequestHandler):
     # -- verbs ------------------------------------------------------------
 
     def do_OPTIONS(self):  # noqa: N802
-        self.server.media_server.log(f"Received OPTIONS: {self.path}", "debug")
-        if self.path.startswith("/drm/") or self.path.startswith("/amazon/license"):
-            self.send_response(200)
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "*")
-            self.send_header("Access-Control-Allow-Private-Network", "true")
-            self.end_headers()
-            return
         self.send_error(405)
 
-    def do_POST(self):
-        self.server.media_server.log(f"Received POST: {self.path}", "debug")
-        if self.path.startswith("/amazon/license"):
-            _handle_amazon_license(self)
-            return
-
-        if self.path.startswith("/drm/"):
-            _handle_drm_token(self)
-        else:
-            self.send_error(405)
-
-    def _serve_drm(self):
-        _handle_drm_token(self)
+    def do_POST(self):  # noqa: N802
+        self.send_error(405)
 
     def do_HEAD(self):  # noqa: N802
         if self.path.startswith("/proxy/"):

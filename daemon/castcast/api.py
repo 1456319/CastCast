@@ -125,7 +125,7 @@ class _Handler(BaseHTTPRequestHandler):
             return False
 
         host = self.headers.get("Host")
-        if host and not _is_allowed_host(host):
+        if host is not None and not _is_allowed_host(host):
             self.send_error(403, "Forbidden host")
             return False
 

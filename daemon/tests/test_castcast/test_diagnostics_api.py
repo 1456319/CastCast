@@ -127,6 +127,15 @@ def test_control_api_accepts_private_lan_host():
         resp = conn.getresponse()
         assert resp.status == 403
         conn.close()
+
+        # 7. Verify explicit empty Host header is rejected with 403 Forbidden
+        conn = http.client.HTTPConnection("127.0.0.1", server.port)
+        conn.request("GET", "/status", headers={
+            "Host": "",
+        })
+        resp = conn.getresponse()
+        assert resp.status == 403
+        conn.close()
     finally:
         server.stop()
 

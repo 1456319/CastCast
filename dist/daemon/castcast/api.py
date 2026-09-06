@@ -8,6 +8,7 @@ Binds to 127.0.0.1 by default so nothing off-device can drive your TV.  The UI
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import traceback
 import json
@@ -30,6 +31,55 @@ AUDIT_LOG_CANDIDATES = [
     "/tmp/castcast.log",
     "/var/log/audit/audit.log",
 ]
+
+RFC1918_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+)
+
+
+def _is_allowed_host(host_str: str | None) -> bool:
+    if not host_str:
+        return False
+    host = host_str.strip()
+    if host.startswith("["):
+        end = host.find("]")
+        if end != -1:
+            hostname = host[1:end]
+        else:
+            hostname = host
+    elif ":" in host:
+        hostname = host.split(":", 1)[0]
+    else:
+        hostname = host
+
+    hostname = hostname.lower().strip()
+    if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+        return True
+
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_loopback:
+            return True
+        if ip.version == 4 and any(ip in net for net in RFC1918_NETWORKS):
+            return True
+        return False
+    except ValueError:
+        return False
+
+
+def _is_allowed_origin(origin_str: str | None) -> bool:
+    if not origin_str:
+        return True
+    origin_str = origin_str.strip()
+    if origin_str == "null":
+        return False
+    parsed = urllib.parse.urlsplit(origin_str)
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+    return _is_allowed_host(hostname)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -70,9 +120,26 @@ class _Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return {}
 
+    def parse_request(self) -> bool:
+        if not super().parse_request():
+            return False
+
+        host = self.headers.get("Host")
+        if host is not None and not _is_allowed_host(host):
+            self.send_error(403, "Forbidden host")
+            return False
+
+        origin = self.headers.get("Origin")
+        if origin and not _is_allowed_origin(origin):
+            self.send_error(403, "Forbidden origin")
+            return False
+
+        return True
+
     def do_OPTIONS(self):  # noqa: N802
         self.send_response(204)
         self._cors()
+        self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -147,7 +214,7 @@ class _Handler(BaseHTTPRequestHandler):
                 for entry in recent_logs:
                     if isinstance(entry, dict):
                         lvl = str(entry.get("level", "info")).upper()
-                        msg = entry.get("msg", "")
+                        msg = entry.get("message") or entry.get("msg") or ""
                         formatted_lines.append(f"[{lvl}] {msg}")
                     else:
                         formatted_lines.append(str(entry))

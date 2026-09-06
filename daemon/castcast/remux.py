@@ -8,12 +8,14 @@ phone is not something you want to do by accident.
 
 from __future__ import annotations
 
+import io
 import os
 import re
 import shutil
 import subprocess
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field, asdict
 from typing import Callable, List, Optional
 
@@ -312,12 +314,20 @@ class Remuxer:
                 proc = self._proc
                 assert proc.stdout is not None
 
-                stderr_output: List[bytes] = []
+                stderr_lines: deque[str] = deque(maxlen=100)
 
                 def drain_stderr() -> None:
                     if proc.stderr:
                         try:
-                            stderr_output.append(proc.stderr.read())
+                            if isinstance(proc.stderr, io.IOBase):
+                                for line in proc.stderr:
+                                    stderr_lines.append(line.decode("utf-8", "replace"))
+                            else:
+                                raw = proc.stderr.read()
+                                if raw:
+                                    text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+                                    for line in text.splitlines():
+                                        stderr_lines.append(line)
                         except Exception:
                             pass
 
@@ -335,7 +345,6 @@ class Remuxer:
 
                 proc.wait()
                 stderr_thread.join()
-                stderr = (stderr_output[0] if stderr_output else b"").decode("utf-8", "replace")
 
                 if job.state == "cancelled":
                     _unlink(temporary_output)
@@ -380,7 +389,7 @@ class Remuxer:
                     break
                 else:
                     job.state = "failed"
-                    tail = [ln for ln in stderr.strip().splitlines() if ln.strip()]
+                    tail = [ln.strip() for ln in stderr_lines if ln.strip()]
                     job.error = tail[-1] if tail else f"ffmpeg exited {proc.returncode}"
                     _unlink(temporary_output)
                     break

@@ -152,8 +152,26 @@ def _normalise_container(format_name: str) -> str:
     return names[0] if names else "unknown"
 
 
+def normalize_color_transfer(trc: Optional[str]) -> str:
+    if not trc:
+        return ""
+    val = trc.strip().lower()
+    mapping = {
+        "smpte2084": "smpte2084",
+        "smpte-2084": "smpte2084",
+        "smpte-st-2084": "smpte2084",
+        "pq": "smpte2084",
+        "arib-std-b67": "arib-std-b67",
+        "hlg": "arib-std-b67",
+    }
+    return mapping.get(val, val)
+
+
+_normalize_color_transfer = normalize_color_transfer
+
+
 def _detect_hdr(stream: dict) -> str:
-    transfer = (stream.get("color_transfer") or "").lower()
+    transfer = normalize_color_transfer(stream.get("color_transfer"))
     primaries = (stream.get("color_primaries") or "").lower()
 
     # Dolby Vision shows up as a side-data block, and only ever rides on HEVC
@@ -163,12 +181,12 @@ def _detect_hdr(stream: dict) -> str:
         if "dovi" in stype or "dolby vision" in stype:
             return "Dolby Vision"
 
-    if transfer in ("smpte2084", "smpte-st-2084", "pq"):
+    if transfer == "smpte2084":
         # HDR10+ carries dynamic metadata; ffprobe surfaces it as side data on
         # frames rather than the stream, so a stream-level probe can only ever
         # say "HDR10 or better".
         return "HDR10"
-    if transfer in ("arib-std-b67", "hlg"):
+    if transfer == "arib-std-b67":
         return "HLG"
     if primaries == "bt2020" or transfer.startswith("bt2020"):
         return "HDR (BT.2020)"
