@@ -152,7 +152,7 @@ class TestMetadataIntegration(unittest.TestCase):
         test_url = "https://watch.amazon.com/watch?gti=amzn1.dv.gti.2a50e5b4-edfb-47c8-9b71-72d085008f16"
         self.svc.amazon_queue = [{"url": test_url, "title": "Fetching title..."}]
 
-        self.svc._cast_amazon(test_url, title="Fetching title...")
+        self.svc._cast_amazon(test_url, title="Fetching title...", manifest_text='<MPD><Period><AdaptationSet contentType="video" width="3840" height="2160"><Representation id="v"/></AdaptationSet></Period></MPD>')
 
         call_kwargs = self.svc.supervisor.load.call_args.kwargs
         self.assertEqual(call_kwargs.get("title"), "Resolved Title")

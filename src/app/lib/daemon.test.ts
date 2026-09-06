@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatDuration } from './daemon';
+import { formatDuration, mergeCastState, type CastState } from './daemon';
 
 describe('formatDuration', () => {
   it('should format 0 seconds correctly', () => {
@@ -42,5 +42,20 @@ describe('formatDuration', () => {
   it('should handle fractional seconds by flooring them', () => {
     expect(formatDuration(65.9)).toBe('1:05');
     expect(formatDuration(45.4)).toBe('0:45');
+  });
+});
+
+
+describe('receiver state ordering', () => {
+  const state = { state: 'playing', connection_id: 'a', connection_epoch: 10, revision: 5, position: 100 } as CastState;
+  it('rejects an older poll arriving after an SSE update', () => {
+    expect(mergeCastState(state, { ...state, revision: 4, position: 50 })).toBe(state);
+  });
+  it('rejects a late response from a replaced supervisor', () => {
+    expect(mergeCastState(state, { ...state, connection_id: 'old', connection_epoch: 9, revision: 100 })).toBe(state);
+  });
+  it('accepts a new connection without retaining old quality claims', () => {
+    const fresh = { state: 'loading', connection_id: 'new', connection_epoch: 11, revision: 1 } as CastState;
+    expect(mergeCastState({ ...state, quality_state: 'receiver_4k' }, fresh)).toEqual(fresh);
   });
 });

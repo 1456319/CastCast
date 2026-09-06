@@ -122,6 +122,12 @@ export interface RemoteSubtitle {
 }
 
 export interface CastState {
+  revision?: number;
+  connection_id?: string;
+  connection_epoch?: number;
+  receiver_width?: number;
+  receiver_height?: number;
+  quality_state?: "unverified" | "receiver_4k" | "below_4k";
   state: string;
   position: number;
   duration: number;
@@ -139,6 +145,7 @@ export interface CastState {
 }
 
 export interface Status {
+  queue?: { paths: string[]; sync_state: string };
   connected: boolean;
   device: { host: string; friendly_name: string; model: string; is_ultra: boolean } | null;
   media_server: { base_url: string; lan_ip: string; port: number; roots: string[] };
@@ -205,6 +212,7 @@ export const daemon = {
   status: () => request<Status>("/status"),
   devices: () => request<{ devices: any[] }>("/devices"),
   library: (deep = false) => request<{ items: LibraryItem[] }>(`/library${deep ? "?deep=1" : ""}`),
+  reorderLibrary: (paths: string[]) => post<{ items: LibraryItem[] }>("/library/reorder", { paths }),
   getTrash: () => request<{ items: LibraryItem[] }>("/trash"),
   preflight: (path: string) => request<Preflight>(`/preflight?path=${encodeURIComponent(path)}`),
   connect: (host: string, port = 8009) => post<Status>("/connect", { host, port }),
@@ -290,6 +298,7 @@ export const daemon = {
 };
 
 export interface SubscribeArgs {
+  onLibrary?: (data: { items: LibraryItem[]; trash: LibraryItem[] }) => void;
   onStatus?: (status: Status) => void;
   onLog?: (line: LogLine) => void;
   onState?: () => void;
@@ -333,8 +342,18 @@ export function subscribe(handlers: SubscribeArgs): () => void {
   bind("remux", () => handlers.onRemux?.());
   bind("telemetry_anomaly", handlers.onTelemetryAnomaly);
   bind("amazon_queue", handlers.onAmazonQueue);
+  bind("library", handlers.onLibrary);
+  bind("quality_failed", () => handlers.onState?.());
 
   return () => source?.close();
+}
+
+export function mergeCastState(previous: CastState, incoming: CastState): CastState {
+  if (previous.connection_epoch && incoming.connection_epoch && previous.connection_epoch > incoming.connection_epoch) return previous;
+  if (previous.connection_id && previous.connection_id === incoming.connection_id &&
+      (previous.revision ?? 0) > (incoming.revision ?? 0)) return previous;
+  if (incoming.state === "disconnected" || (incoming.connection_id && incoming.connection_id !== previous.connection_id)) return incoming;
+  return { ...previous, ...incoming };
 }
 
 export function formatDuration(seconds: number): string {

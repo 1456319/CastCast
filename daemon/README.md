@@ -114,7 +114,7 @@ cd CastCast/daemon
 Then confirm the setup actually took:
 
 ```sh
-python -m castcast --media-root /storage/emulated/0/Download/Chromecast doctor
+python -m castcast --media-root /storage/emulated/0/Download/CastCast/Chromecast doctor
 ```
 
 `doctor` checks the pieces that fail independently and blame each other —
@@ -124,8 +124,8 @@ address at all. Each failing row prints the literal command that fixes it, and
 the exit code is 0 only when nothing blocking is wrong, so it works as a gate:
 
 ```sh
-python -m castcast --media-root /storage/emulated/0/Download/Chromecast doctor && \
-  python -m castcast --media-root /storage/emulated/0/Download/Chromecast serve
+python -m castcast --media-root /storage/emulated/0/Download/CastCast/Chromecast doctor && \
+  python -m castcast --media-root /storage/emulated/0/Download/CastCast/Chromecast serve
 ```
 
 A `127.0.0.1` LAN address is worth calling out: casting would still "succeed"
@@ -136,7 +136,7 @@ because the LOAD URL it was handed resolves to itself.
 
 ```sh
 # Pre-flight without casting -- the most useful command in the project
-python -m castcast check /storage/emulated/0/Download/Chromecast/movie.mkv
+python -m castcast check /storage/emulated/0/Download/CastCast/Chromecast/movie.mkv
 
 # Pre-flight everything at once
 python -m castcast scan
@@ -149,7 +149,7 @@ python -m castcast prepare movie.mkv
 python -m castcast --host 192.168.1.50 cast movie.cast.mp4
 
 # Run the daemon for the UI / other clients
-python -m castcast --media-root /storage/emulated/0/Download/Chromecast serve
+python -m castcast --media-root /storage/emulated/0/Download/CastCast/Chromecast serve
 
 # Check, stop, or restart an already-running daemon
 python -m castcast server status
@@ -165,7 +165,7 @@ Give the Ultra a DHCP reservation and pin it:
 
 ```json
 {
-  "media_roots": ["/storage/emulated/0/Download/Chromecast"],
+  "media_roots": ["/storage/emulated/0/Download/CastCast/Chromecast"],
   "static_host": "192.168.1.50",
   "auto_connect_host": "192.168.1.50",
   "avr_passthrough": false
@@ -245,3 +245,5 @@ added in a later session where shell execution was unavailable, so they have
 not been byte-compiled or executed. The logic is only filesystem stats and
 `shutil.which`, but treat it as unverified until `castcast doctor` has been run
 once on-device — which is also the cheapest way to smoke-test it.
+
+See [the 2026-09-06 Ultra audit](../docs/CHROMECAST_ULTRA_AUDIT_2026-09-06.md) for corrected receiver selection, synchronization contracts, security exceptions, and unverified hardware gates. Source eligibility is not proof of 2160p HDMI output.

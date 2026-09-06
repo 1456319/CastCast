@@ -19,14 +19,18 @@ seek, and large files stall.
 from __future__ import annotations
 
 import os
+import ipaddress
+import base64
 import posixpath
 import re
 import secrets
+import hmac
 import socket
 import subprocess
 import threading
 import shutil
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
@@ -65,26 +69,40 @@ def guess_mime(path: str) -> str:
 
 def redact_sensitive_url(url: str) -> str:
     """Redacts sensitive credentials, tokens, and signatures from query parameters for safe logging."""
-    if not isinstance(url, str) or not url:
+    if not url:
         return ""
     try:
         parsed = urllib.parse.urlsplit(url)
-        if not parsed.query:
-            return url
-        qs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        # Redact userinfo
+        netloc = parsed.netloc
+        if "@" in netloc:
+            userinfo, host = netloc.rsplit("@", 1)
+            user = userinfo.split(":", 1)[0]
+            netloc = f"{user}:[REDACTED]@{host}"
+
+        query_dict = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
         sensitive_keys = {
-            "token", "signature", "key-pair-id", "sessiontoken", "awsaccesskeyid",
-            "policy", "auth", "access_token", "api_key", "secret"
+            "signature", "sig", "token", "key-pair-id", "expires",
+            "x-amz-signature", "x-amz-security-token", "x-amz-credential",
+            "api_key", "secret", "actor_token", "playback_envelope", "authorization", "cookie", "access_token", "refresh_token"
         }
-        redacted_qs = []
-        for k, v in qs:
-            k_lower = k.lower()
-            if k_lower in sensitive_keys or k_lower.startswith("x-amz-") or "secret" in k_lower or "token" in k_lower:
-                redacted_qs.append((k, "[REDACTED]"))
-            else:
-                redacted_qs.append((k, v))
-        new_query = urllib.parse.urlencode(redacted_qs, safe="[]")
-        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment))
+        for k in list(query_dict.keys()):
+            if k.lower() in sensitive_keys or k.lower().startswith("x-amz-"):
+                query_dict[k] = ["[REDACTED]"]
+            elif k.lower() == "url":
+                # Check for nested base64 url
+                val = query_dict[k][0]
+                try:
+                    decoded = base64.b64decode(val).decode("utf-8")
+                    if decoded.startswith("http://") or decoded.startswith("https://"):
+                        redacted_inner = redact_sensitive_url(decoded)
+                        query_dict[k] = [base64.b64encode(redacted_inner.encode("utf-8")).decode("utf-8")]
+                except Exception:
+                    pass
+
+        new_query = urllib.parse.urlencode(query_dict, doseq=True, safe="[]")
+        safe_path = re.sub(r"/[0-9a-f]{32,}/", "/[REDACTED]/", parsed.path)
+        return urllib.parse.urlunsplit((parsed.scheme, netloc, safe_path, new_query, ""))
     except Exception:
         return "[REDACTED_URL]"
 
@@ -112,32 +130,17 @@ def transform_dash_manifest(body_content: str, target_url: str) -> str:
     In-flight transformation for proxied DASH manifests (e.g. Amazon Prime Video).
 
     1. BaseURL injection: points to original CDN directory so relative URLs resolve.
-    2. Filters non-English audio tracks ONLY, leaving all text/subtitle tracks (in all languages)
-       and video tracks completely intact.
+    2. Preserves every audio, video and subtitle language for user selection.
     3. Strips PlayReady ContentProtection entirely.
     4. Wraps bare Widevine protobufs in valid MP4 pssh boxes.
     5. Preserves all 4K video representations (height="2160") completely untouched.
     """
     import re, base64
+    from xml.sax.saxutils import escape
 
     # 1. BaseURL injection
-    base_url = target_url[:target_url.rfind('/')+1]
+    base_url = escape(urllib.parse.urljoin(target_url, '.'))
     body_content = re.sub(r'(<MPD[^>]*>)', r'\1\n  <BaseURL>' + base_url + r'</BaseURL>', body_content, count=1)
-
-    # 2. Filter non-English audio tracks ONLY (leave all subtitle and video tracks intact)
-    def filter_english_audio(tag: str) -> str:
-        lang_match = re.search(r'lang="([^"]+)"', tag)
-        if lang_match:
-            lang = lang_match.group(1).lower()
-            if not lang.startswith("en"):
-                return ""
-        return tag
-
-    def is_audio_adaptation_set(tag: str) -> bool:
-        has_audio = 'contentType="audio"' in tag or 'mimeType="audio/' in tag or 'mimeType="audio"' in tag
-        has_text = any(t in tag for t in ['contentType="text"', 'contentType="subtitle"', 'mimeType="text"', 'text/vtt', 'application/ttml+xml', 'codecs="stpp'])
-        has_video = 'contentType="video"' in tag or 'height=' in tag
-        return has_audio and not has_text and not has_video
 
     def is_text_adaptation_set(tag: str) -> bool:
         return any(t in tag for t in ['contentType="text"', 'contentType="subtitle"', 'mimeType="text"', 'text/vtt', 'application/ttml+xml', 'codecs="stpp'])
@@ -164,8 +167,6 @@ def transform_dash_manifest(body_content: str, target_url: str) -> str:
 
     def process_adaptation_set(match):
         tag = match.group(0)
-        if is_audio_adaptation_set(tag):
-            return filter_english_audio(tag)
         if is_text_adaptation_set(tag):
             return normalize_text_segment_durations(tag)
         return tag
@@ -200,8 +201,42 @@ def transform_dash_manifest(body_content: str, target_url: str) -> str:
         except Exception:
             return match.group(0)
 
-    body_content = re.sub(r'<cenc:pssh>\s*(.*?)\s*</cenc:pssh>', fix_widevine_pssh, body_content, flags=re.DOTALL)
+    # Apply this provider compatibility shim only to Widevine init data.
+    # PSSH for another DRM system must never be relabelled as Widevine.
+    body_content = re.sub(
+        r'<(?:\w+:)?ContentProtection\b[^>]*schemeIdUri=[\"\']urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed[\"\'][^>]*>.*?</(?:\w+:)?ContentProtection>',
+        lambda block: re.sub(r'<cenc:pssh>\s*(.*?)\s*</cenc:pssh>', fix_widevine_pssh, block.group(0), flags=re.DOTALL),
+        body_content, flags=re.DOTALL | re.IGNORECASE)
     return body_content
+
+
+def _validate_proxy_target(url: str) -> None:
+    """Keep LAN media usable while rejecting local control/metadata targets.
+
+    Validate every redirect too. This is defense in depth; a complete DNS
+    rebinding defense still requires pinning the connected peer address.
+    """
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("Unsupported proxy URL")
+    addresses = socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+    for address in addresses:
+        ip = ipaddress.ip_address(address[4][0].split("%", 1)[0])
+        ip = getattr(ip, "ipv4_mapped", None) or ip
+        if ip.is_loopback or ip.is_unspecified or ip.is_link_local or ip.is_multicast:
+            raise ValueError("Local control and link-local proxy targets are forbidden")
+
+
+class _ProxyRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _validate_proxy_target(newurl)
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected and urllib.parse.urlsplit(req.full_url).netloc != urllib.parse.urlsplit(newurl).netloc:
+            # Intercepted credentials are scoped to the captured origin.
+            for name in list(redirected.headers):
+                if name.lower() not in {"range", "user-agent", "accept", "accept-encoding"}:
+                    redirected.remove_header(name)
+        return redirected
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -221,34 +256,21 @@ class _Handler(BaseHTTPRequestHandler):
         prefix = f"/{server.root_token}/"
         if not path.startswith(prefix):
             return None
-
-        rel = urllib.parse.unquote(path[len(prefix):])
-        # Normalise and refuse anything that escapes the served roots.
-        rel = posixpath.normpath(rel).lstrip("/")
-        if rel.startswith("..") or os.path.isabs(rel):
-            return None
-
-        for root in server.roots:
-            candidate = os.path.realpath(os.path.join(root, rel))
-            if candidate == os.path.realpath(root) or candidate.startswith(
-                    os.path.realpath(root) + os.sep):
-                if os.path.isfile(candidate):
-                    return candidate
+        candidate = server._issued_paths.get(path)
+        if candidate and os.path.isfile(candidate) and os.path.realpath(candidate) == candidate:
+            return candidate
         return None
 
     # -- verbs ------------------------------------------------------------
 
     def do_OPTIONS(self):  # noqa: N802
-        self.server.media_server.log(f"Received OPTIONS: {self.path}", "debug")
-        if self.path.startswith("/drm/") or self.path.startswith("/amazon/license"):
-            self.send_response(200)
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "*")
-            self.send_header("Access-Control-Allow-Private-Network", "true")
-            self.end_headers()
-            return
-        self.send_error(405)
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, GET, HEAD, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_POST(self):
         self.server.media_server.log(f"Received POST: {self.path}", "debug")
@@ -278,22 +300,36 @@ class _Handler(BaseHTTPRequestHandler):
         # NOTE: CORS headers (Access-Control-Allow-Origin: *) are required 
         # because the Shaka Player receiver runs in a browser context.
         # ====================================================================
-        if self.path.startswith("/amazon/license"):
-            import urllib.parse
+        if urllib.parse.urlsplit(self.path).path == "/amazon/license":
             from . import amazon_drm
-            
+
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             title_id = qs.get("title_id", [""])[0]
-            
+            if not hmac.compare_digest(qs.get("token", [""])[0], self.server.media_server.license_token):
+                self.send_error(403, "Invalid license capability")
+                self.close_connection = True
+                return
+
             amazon_data = self.server.media_server.drm_tokens.get(f"amazon_{title_id}")
             if not amazon_data:
                 self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.send_header("Connection", "close")
+                self.close_connection = True
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 return
-                
-            content_length = int(self.headers.get('Content-Length', 0))
+
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+            except ValueError:
+                content_length = 0
+            if not 0 < content_length <= 1024 * 1024:
+                self.send_error(413, "Invalid license challenge length")
+                self.close_connection = True
+                return
             challenge_bytes = self.rfile.read(content_length)
-            
+
             self.server.media_server.log(f"Proxying Amazon Widevine License for {title_id}", "info")
             try:
                 license_bytes = amazon_drm.fetch_widevine_license(
@@ -311,6 +347,8 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self.server.media_server.log(f"Amazon License Proxy Error: {e}", "warn")
                 self.send_response(500)
+                self.send_header("Content-Length", "0")
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
             return
 
@@ -322,13 +360,23 @@ class _Handler(BaseHTTPRequestHandler):
     def _serve_drm(self):
         server: "MediaServer" = self.server.media_server
         token_id = self.path.split("/")[-1]
-        
+
         if token_id not in server.drm_tokens:
             self.send_error(404, "DRM token not found")
             return
-            
+
         binary_token = server.drm_tokens[token_id]
-        
+        if not isinstance(binary_token, bytes):
+            self.send_error(404, "DRM token not found")
+            return
+        if self.command == "POST":
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 <= length <= 1024 * 1024:
+                self.send_error(413)
+                self.close_connection = True
+                return
+            self.rfile.read(length)
+
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Type", "application/octet-stream")
@@ -365,6 +413,9 @@ class _Handler(BaseHTTPRequestHandler):
 
         path_obj = urllib.parse.urlsplit(self.path)
         query = urllib.parse.parse_qs(path_obj.query)
+        if not hmac.compare_digest(query.get("token", [""])[0], server.root_token):
+            self.send_error(403, "Invalid media capability")
+            return
         encoded_url = query.get("url", [""])[0]
         if not encoded_url:
             self.send_error(400, "Missing url parameter")
@@ -382,33 +433,52 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_error(400, "Unsupported URL scheme")
             return
         target_host = (target_parsed.hostname or "").lower()
-        if target_host in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
+        is_loopback = False
+        if target_host in ("localhost", "localhost.localdomain"):
+            is_loopback = True
+        else:
+            try:
+                ip = ipaddress.ip_address(target_host)
+                if ip.is_loopback or ip.is_unspecified:
+                    is_loopback = True
+            except ValueError:
+                try:
+                    packed = socket.inet_aton(target_host)
+                    ip = ipaddress.IPv4Address(packed)
+                    if ip.is_loopback or ip.is_unspecified:
+                        is_loopback = True
+                except (OSError, ValueError):
+                    pass
+
+        if is_loopback:
             self.send_error(403, "Forbidden: Loopback target not permitted")
             return
 
         domain = urllib.parse.urlsplit(target_url).netloc
-        headers = server.get_intercept_headers(domain)
+        headers = dict(server.get_intercept_headers(domain))
+        headers["Accept-Encoding"] = "identity"
         if "Range" in self.headers:
             headers["Range"] = self.headers["Range"]
 
         try:
+            _validate_proxy_target(target_url)
             req = urllib.request.Request(target_url, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as response:
+            opener = urllib.request.build_opener(_ProxyRedirect())
+            with opener.open(req, timeout=30) as response:
+                final_url = response.geturl()
                 content_type = response.headers.get("Content-Type", "application/octet-stream")
 
                 # If this is an HLS manifest, rewrite it!
-                if "mpegurl" in content_type.lower() or target_url.endswith(".m3u8"):
+                if "mpegurl" in content_type.lower() or urllib.parse.urlsplit(final_url).path.lower().endswith(".m3u8"):
                     body_content = response.read().decode("utf-8", "replace")
                     rewritten = []
                     for line in body_content.splitlines():
                         line = line.strip()
                         if line and not line.startswith("#"):
-                            abs_uri = urllib.parse.urljoin(target_url, line)
-                            encoded = base64.b64encode(abs_uri.encode("utf-8")).decode("utf-8")
-                            rewritten.append(f"http://{server.lan_ip}:{server.port}/proxy/?url={encoded}")
+                            rewritten.append(server.proxy_url_for(urllib.parse.urljoin(final_url, line)))
                         else:
-                            rewritten.append(line)
-                    
+                            rewritten.append(re.sub(r'URI="([^"]+)"', lambda m: 'URI="' + server.proxy_url_for(urllib.parse.urljoin(final_url, m.group(1))) + '"', line))
+
                     final_body = "\n".join(rewritten).encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", content_type)
@@ -455,9 +525,9 @@ class _Handler(BaseHTTPRequestHandler):
                 # Chromecast's HTTP client will either hang (waiting for more bytes) 
                 # or truncate (cutting off the manifest). Both cause LOAD_FAILED.
                 # ====================================================================
-                elif "dash+xml" in content_type.lower() or target_url.endswith(".mpd"):
+                elif "dash+xml" in content_type.lower() or urllib.parse.urlsplit(final_url).path.lower().endswith(".mpd"):
                     body_content = response.read().decode("utf-8", "replace")
-                    body_content = transform_dash_manifest(body_content, target_url)
+                    body_content = transform_dash_manifest(body_content, final_url)
                     final_body = body_content.encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", content_type)
@@ -474,6 +544,9 @@ class _Handler(BaseHTTPRequestHandler):
                     self.send_header("Access-Control-Allow-Origin", "*")
                     if "Content-Length" in response.headers:
                         self.send_header("Content-Length", response.headers["Content-Length"])
+                    else:
+                        self.send_header("Connection", "close")
+                        self.close_connection = True
                     if "Content-Range" in response.headers:
                         self.send_header("Content-Range", response.headers["Content-Range"])
                     if "Accept-Ranges" in response.headers:
@@ -481,11 +554,13 @@ class _Handler(BaseHTTPRequestHandler):
                     if "Content-Encoding" in response.headers:
                         self.send_header("Content-Encoding", response.headers["Content-Encoding"])
                     self.end_headers()
-                    
+
                     if body:
                         import shutil
                         shutil.copyfileobj(response, self.wfile)
 
+        except urllib.error.HTTPError as e:
+            self.send_error(e.code, "Upstream media request failed")
         except Exception as e:
             server.log(f"Proxy error for {redact_sensitive_url(target_url)}: {e}")
             if not self.wfile.closed:
@@ -509,6 +584,8 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "video/mp2t")
             self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Connection", "close")
+            self.close_connection = True
             self.end_headers()
             if not body:
                 return
@@ -598,12 +675,32 @@ class _Handler(BaseHTTPRequestHandler):
                 pass
 
 
+class _LicenseHandler(_Handler):
+    """Expose only license exchanges to the public TLS tunnel."""
+
+    def do_GET(self):
+        self.send_error(404)
+
+    do_HEAD = do_GET
+
+    def do_POST(self):
+        if urllib.parse.urlsplit(self.path).path == "/amazon/license" or self.path.startswith("/drm/"):
+            super().do_POST()
+        else:
+            self.send_error(404)
+
+
 class MediaServer:
     """Threaded HTTP server exposing one or more directories under a random path."""
 
     def __init__(self, roots, port: int = 0, bind: str = "0.0.0.0", logger=None, on_telemetry=None):
         self.roots = [os.path.realpath(r) for r in roots]
         self.root_token = secrets.token_urlsafe(12)
+        self.license_token = secrets.token_urlsafe(24)
+        self.public_url = None
+        self._license_httpd = None
+        self._ssh_process = None
+        self._issued_paths: dict[str, str] = {}
         self._bind = bind
         self._requested_port = port
         self._logger = logger
@@ -623,6 +720,7 @@ class MediaServer:
         self.telemetry_log = os.path.join(telemetry_dir, "failed_manifests.jsonl")
 
     def log(self, message: str, level: str = "info") -> None:
+        message = str(message).replace(self.root_token, "[REDACTED]").replace(self.license_token, "[REDACTED]")
         if self._logger:
             try:
                 self._logger(message, level)
@@ -657,10 +755,10 @@ class MediaServer:
                 clean_headers[k] = v
 
         self.intercept_rules[domain] = clean_headers
-        self._logger(f"Registered proxy ruleset for domain: {domain}")
+        self.log(f"Registered proxy ruleset for domain: {domain}")
 
     def get_intercept_headers(self, domain: str) -> dict:
-        return self.intercept_rules.get(domain, {})
+        return dict(self.intercept_rules.get(domain, {}))
 
     def trigger_telemetry(self, failed_url: str, error_msg: str):
         import json, time
@@ -672,18 +770,18 @@ class MediaServer:
             "timestamp": int(time.time()),
             "domain": domain,
             "extension": ext,
-            "error": error_msg,
+            "error": re.sub(r"https?://[^\s<>\"']+", lambda m: redact_sensitive_url(m.group(0)), error_msg),
         }
 
         try:
             with open(self.telemetry_log, "a") as f:
                 f.write(json.dumps(telemetry_data) + "\n")
-            self._logger(f"Shadow Telemetry: Logged anonymous failure signature for {domain}")
+            self.log(f"Local telemetry: recorded failure for {domain}")
 
             if self._on_telemetry:
                 self._on_telemetry(telemetry_data)
         except Exception as e:
-            self._logger(f"Failed to write telemetry: {e}")
+            self.log(f"Failed to write telemetry: {e}")
 
     def start(self) -> None:
         if self._httpd:
@@ -696,8 +794,8 @@ class MediaServer:
                                         kwargs={"poll_interval": 0.5},
                                         name="castcast-http", daemon=True)
         self._thread.start()
-        self._logger(f"media server listening on {self.base_url}")
-        
+        self.log(f"media server listening on {self.lan_ip}:{self.port}")
+
         # ====================================================================
         # [SSH TUNNEL SETUP]
         # The Chromecast requires HTTPS for license server URLs (mixed content 
@@ -716,14 +814,22 @@ class MediaServer:
 
         import time
 
-        
+
         self.public_url = None
         self._ssh_process = None
-        
+
         def start_tunnel():
             try:
+                license_httpd = ThreadingHTTPServer(("127.0.0.1", 0), _LicenseHandler)
+                license_httpd.daemon_threads = True
+                license_httpd.media_server = self
+                self._license_httpd = license_httpd
+                threading.Thread(target=license_httpd.serve_forever, daemon=True).start()
                 self._ssh_process = subprocess.Popen(
-                    ["ssh", "-o", "StrictHostKeyChecking=no", "-R", f"80:localhost:{self.port}", "nokey@localhost.run"],
+                    ["ssh", "-T", "-o", "StrictHostKeyChecking=accept-new",
+                     "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15",
+                     "-o", "ServerAliveCountMax=3", "-R",
+                     f"80:127.0.0.1:{license_httpd.server_address[1]}", "nokey@localhost.run"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True
@@ -735,19 +841,21 @@ class MediaServer:
                             self.public_url = u
                             break
                         if self.public_url:
-                            self._logger(f"Established public HTTPS tunnel for DRM: {self.public_url}")
-                            break
-                        if self.public_url:
-                            break
+                            self.log("Established public HTTPS tunnel for DRM")
+                self.public_url = None
             except Exception as e:
-                self._logger(f"Failed to start SSH tunnel: {e}")
-                
-        if shutil.which("ssh"):
+                self.log(f"Failed to start SSH tunnel: {e}")
+
+        if shutil.which("ssh") and os.environ.get("CASTCAST_DISABLE_TUNNEL") != "1":
             threading.Thread(target=start_tunnel, daemon=True).start()
         else:
-            self._logger("ssh is not installed, cannot start public HTTPS tunnel for DRM")
+            self.log("Public HTTPS license tunnel is unavailable or disabled")
 
     def stop(self) -> None:
+        if self._license_httpd:
+            self._license_httpd.shutdown()
+            self._license_httpd.server_close()
+            self._license_httpd = None
         if self._httpd:
             self._httpd.shutdown()
             self._httpd.server_close()
@@ -764,11 +872,11 @@ class MediaServer:
         """Invalidate every previously issued URL."""
         self.root_token = secrets.token_urlsafe(12)
 
-    def refresh_lan_ip(self) -> bool:
+    def refresh_lan_ip(self, target: str = "8.8.8.8") -> bool:
         """Re-detect our LAN IP. Returns True if it changed (i.e. we roamed)."""
-        current = detect_lan_ip()
+        current = detect_lan_ip(target)
         if current != self.lan_ip:
-            self._logger(f"LAN IP changed {self.lan_ip} -> {current}")
+            self.log(f"LAN IP changed {self.lan_ip} -> {current}")
             self.lan_ip = current
             return True
         return False
@@ -776,12 +884,22 @@ class MediaServer:
     def url_for(self, path: str) -> str:
         """Build a servable URL for an absolute path inside one of our roots."""
         real = os.path.realpath(path)
-        for root in self.roots:
+        for index, root in enumerate(self.roots):
             if real == root or real.startswith(root + os.sep):
                 rel = os.path.relpath(real, root)
                 quoted = urllib.parse.quote(rel.replace(os.sep, "/"))
-                return f"http://{self.lan_ip}:{self.port}/{self.root_token}/{quoted}"
+                url_path = f"/{self.root_token}/r{index}/{quoted}"
+                self._issued_paths[url_path] = real
+                return f"http://{self.lan_ip}:{self.port}{url_path}"
         raise ValueError(f"{path} is not inside a served root: {self.roots}")
+
+    def proxy_url_for(self, target_url: str) -> str:
+        encoded = base64.b64encode(target_url.encode("utf-8")).decode("ascii")
+        return f"http://{self.lan_ip}:{self.port}/proxy/?" + urllib.parse.urlencode({"url": encoded, "token": self.root_token})
+
+    def amazon_license_url(self, title_id: str) -> str:
+        base = self.public_url or f"http://{self.lan_ip}:{self.port}"
+        return base + "/amazon/license?" + urllib.parse.urlencode({"title_id": title_id, "token": self.license_token})
 
     def add_drm_token(self, b64_token: str) -> str:
         """Decode and store a Widevine base64 token, returning its local URL."""

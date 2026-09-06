@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.request
 import queue
 import threading
+import math
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -28,7 +29,6 @@ AUDIT_LOG_CANDIDATES = [
     "/storage/emulated/0/Download/CastCast/Chromecast/.castcast/audit.log",
     os.path.expanduser("~/.config/castcast/audit.log"),
     "/tmp/castcast.log",
-    "/var/log/audit/audit.log",
 ]
 
 
@@ -36,6 +36,21 @@ class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "castcast-api"
     sys_version = ""
+
+    def parse_request(self):
+        if not super().parse_request():
+            return False
+        host = urllib.parse.urlsplit("//" + self.headers.get("Host", "")).hostname
+        allowed_hosts = {"127.0.0.1", "localhost", "::1", self.server.server_address[0]}
+        allowed_origins = {"http://localhost", "https://localhost", "capacitor://localhost",
+                           "http://localhost:5173", "http://127.0.0.1:5173"}
+        allowed_origins.update(getattr(self.service, "config", {}).get("api_allowed_origins", []))
+        origin = self.headers.get("Origin")
+        if host not in allowed_hosts or (origin and origin not in allowed_origins):
+            self.send_error(403, "Control API origin or host not allowed")
+            self.close_connection = True
+            return False
+        return True
 
     @property
     def service(self) -> CastService:
@@ -47,7 +62,10 @@ class _Handler(BaseHTTPRequestHandler):
     # -- helpers -----------------------------------------------------------
 
     def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin")
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
 
@@ -63,12 +81,17 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _body(self) -> dict:
         length = int(self.headers.get("Content-Length") or 0)
+        if length < 0 or length > 1024 * 1024:
+            raise ValueError("request body exceeds 1 MiB")
         if not length:
             return {}
         try:
-            return json.loads(self.rfile.read(length).decode("utf-8")) or {}
+            result = json.loads(self.rfile.read(length).decode("utf-8")) or {}
+            if not isinstance(result, dict):
+                raise ValueError("JSON body must be an object")
+            return result
         except json.JSONDecodeError:
-            return {}
+            raise ValueError("invalid JSON body")
 
     def do_OPTIONS(self):  # noqa: N802
         self.send_response(204)
@@ -147,7 +170,7 @@ class _Handler(BaseHTTPRequestHandler):
                 for entry in recent_logs:
                     if isinstance(entry, dict):
                         lvl = str(entry.get("level", "info")).upper()
-                        msg = entry.get("msg", "")
+                        msg = entry.get("message") or entry.get("msg") or ""
                         formatted_lines.append(f"[{lvl}] {msg}")
                     else:
                         formatted_lines.append(str(entry))
@@ -186,7 +209,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         route = urllib.parse.urlsplit(self.path).path.rstrip("/") or "/"
-        body = self._body()
+        try:
+            body = self._body()
+        except (ValueError, UnicodeDecodeError) as exc:
+            self.close_connection = True
+            return self._json({"error": str(exc)}, 400)
         svc = self.service
 
         try:
@@ -203,13 +230,17 @@ class _Handler(BaseHTTPRequestHandler):
                 if not paths or not isinstance(paths, list):
                     return self._json({"error": "paths must be a non-empty list of strings"}, 400)
                 self._json(svc.queue(paths))
+            elif route == "/library/reorder":
+                paths = body.get("paths")
+                if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+                    return self._json({"error": "paths must be a list of strings"}, 400)
+                self._json(svc.reorder_library(paths))
             
             elif route == "/amazon/inject":
-                import os, json
                 auth_file = os.path.expanduser("~/.config/castcast/amazon_auth.json")
                 os.makedirs(os.path.dirname(auth_file), exist_ok=True)
-                with open(auth_file, "w") as f:
-                    json.dump(body, f)
+                svc._save_json(auth_file, body)
+                os.chmod(auth_file, 0o600)
                 return self._json({"success": True, "message": "Injected Amazon tokens"})
             elif route == "/amazon/queue/add":
                 url_raw = body.get("url")
@@ -314,26 +345,23 @@ class _Handler(BaseHTTPRequestHandler):
             elif route == "/stop":
                 self._json(svc.stop_media())
             elif route == "/seek":
-                self._json(svc.seek(float(body.get("position") or 0.0)))
+                value = float(body.get("position") or 0.0)
+                if not math.isfinite(value) or value < 0:
+                    return self._json({"error": "position must be finite and nonnegative"}, 400)
+                self._json(svc.seek(value))
             elif route == "/volume":
-                self._json(svc.set_volume(float(body.get("level") or 0.0)))
+                value = float(body.get("level") or 0.0)
+                if not math.isfinite(value) or not 0 <= value <= 1:
+                    return self._json({"error": "volume must be finite and between 0 and 1"}, 400)
+                self._json(svc.set_volume(value))
             elif route == "/mute":
                 self._json(svc.set_muted(bool(body.get("muted"))))
             elif route == "/shutdown":
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(b'{"status": "ok"}')
-
-                # Graceful cleanup of all processes and threads
-                try:
-                    if hasattr(svc, "_remuxer") and svc._remuxer:
-                        svc._remuxer.cancel()
-                    svc.stop()
-                except Exception as e:
-                    print(f"Error during shutdown cleanup: {e}")
-
-                import os
-                os._exit(0)
+                self._json({"status": "ok"})
+                self.wfile.flush()
+                # The CLI's signal handler owns cleanup and process exit.
+                import signal
+                os.kill(os.getpid(), signal.SIGTERM)
             elif route == "/discovery/intercept":
                 self._json(svc.handle_intercept(body))
             else:
@@ -409,7 +437,7 @@ def _offer(q: "queue.Queue", item) -> None:
         try:
             q.get_nowait()      # drop the oldest rather than block the producer
             q.put_nowait(item)
-        except queue.Empty:
+        except (queue.Empty, queue.Full):
             pass
 
 
@@ -427,9 +455,10 @@ _ROUTES = {
     "POST /connect": "{host, port?}",
     "POST /disconnect": "",
     "POST /cast": "{path, allow_unsafe?, auto_prepare?}",
-    "POST /queue": "{paths} queue a list of castable media",
+    "POST /queue": "{paths} prepare the complete order and submit it for receiver confirmation",
+    "POST /library/reorder": "{paths} persist an exact library permutation after receiver acknowledgement",
     "POST /subtitles/select": "{track_id} switch subtitle track via EDIT_TRACKS_INFO (null to disable)",
-    "POST /subtitles/remote/fetch": "{url, language?, type?} fetch remote subtitle and activate via EDIT_TRACKS_INFO",
+    "POST /subtitles/remote/fetch": "{url, language?, type?} fetch remote subtitle and reload the current queue with its resume state",
     "POST /subtitles/opensubtitles": "{path, language?} download and sideload subtitles",
     "POST /prepare": "{path, force?}  run the remux",
     "POST /prepare/cancel": "",

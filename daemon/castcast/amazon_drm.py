@@ -50,7 +50,7 @@ HOST_API = "https://api.amazon.com"
 def _do_get(url, headers):
     try:
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, timeout=30) as response:
             return json.loads(response.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
         _log(f"GET {url} failed: HTTP {e.code}", "warn")
@@ -61,7 +61,7 @@ def _do_post(url, payload, headers):
         data = json.dumps(payload).encode('utf-8')
         headers['Content-Type'] = 'application/json'
         req = urllib.request.Request(url, data=data, headers=headers)
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, timeout=30) as response:
             return json.loads(response.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
         _log(f"POST {url} failed: HTTP {e.code}", "warn")
@@ -177,7 +177,7 @@ def get_vod_playback_resources(actor_token, playback_envelope, title_id):
         _log("Amazon 4K manifest URL successfully retrieved", "info")
         return mpd_url
     except KeyError:
-        _log(f"Amazon API did not return a manifest URL. Response: {res.get('errors', res)}", "warn")
+        _log("Amazon API did not return a manifest URL", "warn")
         raise Exception(f"Amazon API did not return a manifest URL. Response: {res.get('errors', res)}")
 
 def fetch_amazon_4k_manifest(title_id):
@@ -279,11 +279,11 @@ def fetch_widevine_license(actor_token, playback_envelope, challenge_bytes):
     
     req = urllib.request.Request(url, data=data, headers=headers)
     try:
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, timeout=30) as response:
             res = json.loads(response.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
         err_body = e.read().decode('utf-8', 'ignore')
-        _log(f"Amazon Widevine DRM Error HTTP {e.code}: {err_body}", "warn")
+        _log(f"Amazon Widevine DRM Error HTTP {e.code}", "warn")
         raise Exception(f"Amazon DRM Error {e.code}: {err_body}")
         
     if "license" in res:
@@ -299,7 +299,7 @@ def fetch_widevine_license(actor_token, playback_envelope, challenge_bytes):
         _log(f"Amazon Widevine DRM license acquired successfully ({len(raw)} bytes)", "info")
         return raw
     else:
-        _log(f"Amazon Widevine license not found in response: {res}", "warn")
+        _log("Amazon Widevine license not found in response", "warn")
         raise Exception(f"License not found in response: {res}")
 
 

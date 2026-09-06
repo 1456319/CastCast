@@ -33,6 +33,7 @@ import {
   formatBytes,
   formatDuration,
   subscribe,
+  mergeCastState,
   type LibraryItem,
   type LogLine,
   type Preflight,
@@ -202,7 +203,11 @@ export default function App() {
 
   const refreshStatus = useCallback(async () => {
     try {
-      setStatus(await daemon.status());
+      const freshStatus = await daemon.status();
+      setStatus((previous) => previous ? { ...freshStatus, cast: mergeCastState(previous.cast, freshStatus.cast) } : freshStatus);
+      const [freshLibrary, freshTrash] = await Promise.all([daemon.library(false), daemon.getTrash()]);
+      setLibrary(freshLibrary.items || []);
+      setTrashItems(freshTrash.items || []);
       try {
         const q = await daemon.getAmazonQueue();
         if (q && Array.isArray(q.items)) {
@@ -231,16 +236,17 @@ export default function App() {
       onOpen: () => setOnline(true),
       onError: () => setOnline(false),
       onStatus: (s) => {
-        setStatus(s);
+        setStatus((previous) => previous ? { ...s, cast: mergeCastState(previous.cast, s.cast) } : s);
         setOnline(true);
       },
-      onLog: (line) => setLogs((prev) => [...prev.slice(-300), line]),
+      onLog: (line) => setLogs((prev) => prev.some((old) => old.seq === line.seq && old.ts === line.ts) ? prev : [...prev.slice(-300), line]),
       onState: refreshStatus,
       onRemux: refreshStatus,
       onMedia: (media) =>
-        setStatus((prev) => (prev ? { ...prev, cast: { ...prev.cast, ...media } } : prev)),
+        setStatus((prev) => (prev ? { ...prev, cast: mergeCastState(prev.cast, media) } : prev)),
       onTelemetryAnomaly: (data) => setAnomaly(data),
       onAmazonQueue: (data) => setAmazonQueue((data as any).items || []),
+      onLibrary: (data) => { setLibrary(data.items); setTrashItems(data.trash); },
     });
     unsubscribeRef.current = unsubscribe;
     const timer = window.setInterval(refreshStatus, 5000);
@@ -413,8 +419,8 @@ export default function App() {
         const newItems = [...library];
         const [moved] = newItems.splice(data.index, 1);
         newItems.splice(dropIndex, 0, moved);
-        setLibrary(newItems);
-        // daemon.reorderLibrary(newItems).catch(console.error);
+        const result = await daemon.reorderLibrary(newItems.map((item) => item.path));
+        setLibrary(result.items);
       } else {
         const newItems = [...amazonQueue];
         const [moved] = newItems.splice(data.index, 1);
@@ -430,7 +436,7 @@ export default function App() {
         }
       }
     } catch (err) {
-      console.error(err);
+      setNotice(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -498,15 +504,9 @@ export default function App() {
   const castQueue = () =>
     run("queue", async () => {
       if (!library.length) throw new Error("Scan the queue before casting it.");
-      const selectedIndex = selected ? library.findIndex((item) => item.path === selected.path) : -1;
-      const ordered = selectedIndex >= 0
-        ? [...library.slice(selectedIndex), ...library.slice(0, selectedIndex)]
-        : library;
-      const result = await daemon.queue(ordered.map((item) => item.path));
+      const result = await daemon.queue(library.map((item) => item.path));
       if (result.error) throw new Error(result.error);
-      const first = ordered[0];
-      markLoading(first.name, first.path);
-      setNotice(`Queued ${result.queued ?? 0} item(s); ${result.preparing ?? 0} preparing, ${result.skipped ?? 0} skipped.`);
+      setNotice(result.preparing ? `Preparing ${result.preparing} item(s) before loading the complete queue.` : `Queue sent: ${result.queued ?? 0} item(s). Waiting for receiver confirmation.`);
     });
 
   const cast = status?.cast;
@@ -809,6 +809,12 @@ export default function App() {
         {live && cast && (
           <section className="rounded border border-emerald-500/25 bg-black/40 p-3">
             <div className="mb-2 truncate text-emerald-200">{cast.title || "untitled"}</div>
+            <div className="mb-2 text-xs text-emerald-300">
+              Receiver resolution: {cast.receiver_width && cast.receiver_height
+                ? `${cast.receiver_width}×${cast.receiver_height}` : "not reported"}
+              {cast.quality_state === "below_4k" && " · below 4K"}
+              <span className="block text-emerald-500/60">HDMI output resolution is not verified by the sender.</span>
+            </div>
             <div
               className="mb-2 h-2 overflow-hidden rounded bg-emerald-500/15 cursor-pointer"
               onClick={(e) => {
@@ -915,7 +921,7 @@ export default function App() {
         {/* library */}
         <section className="rounded border border-emerald-500/20 bg-black/40 p-3">
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-emerald-500/50 uppercase tracking-wider">Queue - Local, YouTube</span>
+            <span className="text-emerald-500/50 uppercase tracking-wider">Queue - Local, YouTube · {status?.queue?.sync_state || "inactive"}</span>
             <div className="flex items-center gap-2">
               <button
                 onClick={castQueue}

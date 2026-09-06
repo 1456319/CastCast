@@ -14,7 +14,7 @@
 # =======================================================================
 
 # Canonical user-visible queue; /sdcard/Download/Chromecast is its Android
-# alias. Keep this case synchronized with CastService.DEFAULT_MEDIA_ROOT.
+# alias lives under Download/CastCast. Keep this case synchronized with CastService.DEFAULT_MEDIA_ROOT.
 CHROMECAST_DIR="/storage/emulated/0/Download/CastCast/Chromecast"
 TRASH_DIR="$CHROMECAST_DIR/trash"
 # DEBUG-ONLY: runtime diagnostics are kept out of the visible queue.
@@ -87,24 +87,28 @@ if ! command -v node &> /dev/null; then
 fi
 log_action "[OK] Dependencies verified."
 
-# 4. Kill any old daemon instances and orphan SSH tunnels
-log_action "Cleaning up old daemon instances..."
-pkill -f "python3 -m castcast" || true
-pkill -f "pinggy.io" || true
-pkill -f "localhost.run" || true
-sleep 1
+for dependency in lsof flock; do
+    if ! command -v "$dependency" >/dev/null; then
+        pkg install -y lsof util-linux || abort "Failed to install daemon lifecycle tools"
+    fi
+done
 
-# 5. Launch the Daemon
-log_action "Booting castcast daemon..."
-cd "$(dirname "$0")" || abort "Failed to navigate to daemon directory"
-cd .. || abort "Failed to navigate to project root"
-log_action "Pulling latest code from GitHub..."
-git pull origin main >> "$AUDIT_LOG" 2>&1
-cd daemon || abort "Failed to navigate back to daemon directory"
+# 4. Run the APK's exact bundled daemon in the Termux service job.
+# Do not git-pull here: updating Python independently of the APK breaks the API
+# contract. Do not pkill SSH or arbitrary Python processes.
+cd "$(dirname "$0")" || abort "Failed to navigate to bundled daemon directory"
+python3 -m castcast server kill >> "$AUDIT_LOG" 2>&1 || abort "Existing listener could not be verified or stopped"
 
-# Run the daemon in the background and pipe output to the audit log
-python3 -m castcast --media-root "$CHROMECAST_DIR" serve >> "$AUDIT_LOG" 2>&1 &
-DAEMON_PID=$!
+mkdir -p "$HOME/.config/castcast"
+exec 9>"$HOME/.config/castcast/daemon.lock"
+flock -w 10 9 || abort "Previous CastCast service job has not exited"
 
-log_action "[OK] Daemon launched with PID: $DAEMON_PID"
-log_action "=== Bootstrap Complete ==="
+# Keep Termux's background job alive for the daemon lifetime. Its wake lock
+# belongs to Termux, so closing the controller activity does not release it.
+termux-wake-lock || abort "Failed to acquire the Termux wake lock"
+trap 'termux-wake-unlock' EXIT
+log_action "Starting bundled daemon from $PWD"
+python3 -m castcast --media-root "$CHROMECAST_DIR" serve --quiet >> "$AUDIT_LOG" 2>&1
+DAEMON_RESULT=$?
+log_action "Daemon exited with status $DAEMON_RESULT"
+exit "$DAEMON_RESULT"

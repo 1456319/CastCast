@@ -97,7 +97,7 @@ class Issue:
 class Verdict:
     castable: bool                  # will a direct LOAD work at all?
     needs_processing: bool          # can we fix it with a remux/transcode?
-    will_be_4k: bool                # will the Ultra actually output 2160p?
+    will_be_4k: bool                # source eligibility only; receiver/HDMI not proven
     issues: List[Issue]
     summary: str
     target_container: Optional[str] = None
@@ -119,6 +119,8 @@ REQUIRES_REENCODE = {
     "video_codec_unknown",
     "resolution_exceeds_device",
     "framerate_exceeds_codec_limit",
+    "profile_unsupported", "bit_depth_unsupported", "chroma_unsupported",
+    "level_exceeds_device",
 }
 
 
@@ -158,7 +160,7 @@ def _check_video(v: Optional[VideoStream], container: str, issues: List[Issue], 
 
     # The single most important rule, and the one that silently breaks 4K:
     # HEVC is explicitly not supported inside MPEG-TS.
-    if v.codec == "hevc" and container in ("mpegts", "hls"):
+    if v.codec == "hevc" and container == "mpegts":
         issues.append(Issue(
             "fatal", "hevc_in_transport_stream",
             "HEVC in an MPEG-TS container is explicitly unsupported by Google Cast. "
@@ -176,7 +178,7 @@ def _check_video(v: Optional[VideoStream], container: str, issues: List[Issue], 
         ))
 
     if v.fps and v.fps > max_fps + 0.5:
-        sev = "fatal" if v.is_4k else "warning"
+        sev = "fatal"
         issues.append(Issue(
             sev, "framerate_exceeds_codec_limit",
             f"{v.fps:g}fps at {v.width}x{v.height} exceeds the {max_fps}fps limit for "
@@ -192,13 +194,22 @@ def _check_video(v: Optional[VideoStream], container: str, issues: List[Issue], 
             "Re-encode 4K video to HEVC or VP9 before casting.",
         ))
 
-    if v.level and v.level > 5.1:
+    max_level = 4.2 if v.codec == "h264" else 5.1
+    if v.level and v.level > max_level:
         issues.append(Issue(
-            "warning", "level_exceeds_5_1",
-            f"Stream level {v.level:g} is above the device's level 5.1 limit; "
+            "fatal", "level_exceeds_device",
+            f"Stream level {v.level:g} is above this codec's level {max_level:g} limit; "
             "decoding may stutter or fail.",
             "Re-encode at level 5.1 or below.",
         ))
+    profiles = {"h264": {"baseline", "constrained baseline", "main", "high"},
+                "hevc": {"main", "main 10"}, "vp9": {"profile 0", "profile 2"}}
+    if v.profile and v.codec in profiles and v.profile.lower() not in profiles[v.codec]:
+        issues.append(Issue("fatal", "profile_unsupported", f"{v.codec} profile {v.profile} is outside Ultra's supported profiles.", "Re-encode to a supported profile."))
+    if v.bit_depth > (8 if v.codec in {"h264", "vp8"} else 10):
+        issues.append(Issue("fatal", "bit_depth_unsupported", f"{v.bit_depth}-bit {v.codec} exceeds the decoder's supported bit depth.", "Re-encode to 8-bit AVC or 10-bit HEVC/VP9."))
+    if v.pix_fmt and not v.pix_fmt.startswith(("yuv420p", "yuvj420p", "nv12", "p010")):
+        issues.append(Issue("fatal", "chroma_unsupported", f"Pixel format {v.pix_fmt} is outside the supported 4:2:0 path.", "Re-encode with 4:2:0 chroma."))
 
     if v.hdr_format == "Dolby Vision" and v.codec == "vp9":
         issues.append(Issue(
@@ -274,9 +285,14 @@ def evaluate(info: MediaInfo, *, prefer_fmp4: bool = False,
 
     video_action = _check_video(info.primary_video, container, issues, is_ultra)
     audio_action = _check_audio(info.primary_audio, issues)
+    for audio in info.audio[1:]:
+        if _check_audio(audio, issues) == "transcode":
+            audio_action = "transcode"
 
     if assume_avr_passthrough:
         issues = [i for i in issues if i.code != "audio_requires_passthrough"]
+    elif any(i.code == "audio_requires_passthrough" for i in issues):
+        audio_action = "transcode"
 
     # -- container ------------------------------------------------------
     target_container = None
@@ -302,16 +318,19 @@ def evaluate(info: MediaInfo, *, prefer_fmp4: bool = False,
     # -- roll up --------------------------------------------------------
     fatal = [i for i in issues if i.severity == "fatal"]
     castable_now = not fatal
-    needs_processing = bool(fatal) or target_container is not None
+    needs_processing = bool(fatal) or target_container is not None or "transcode" in (video_action, audio_action)
 
     v = info.primary_video
-    # Will it be 4K *after* we fix it?  A remux never changes resolution, so
-    # this is a property of the source, gated on us not having to downscale.
-    will_be_4k = bool(
-        v and v.is_4k
-        and not any(i.code in ("resolution_exceeds_device", "video_codec_unsupported")
-                    for i in fatal)
-    )
+    if not v or not v.is_4k:
+        will_be_4k = False
+    elif video_action == "transcode" and not is_ultra:
+        will_be_4k = False
+    elif video_action == "transcode":
+        will_be_4k = False
+    else:
+        will_be_4k = True
+    # This flag describes source/codec eligibility only. The receiver and HDMI
+    # sink must still report their actual playback/output capabilities.
 
     if v and not v.is_4k:
         issues.append(Issue(

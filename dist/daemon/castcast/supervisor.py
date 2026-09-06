@@ -31,15 +31,17 @@ single most valuable behaviour for the 4K-stability problem.
 from __future__ import annotations
 
 import json
+import copy
+import uuid
 import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Optional
 
-from .channel import (CastChannel, ChannelClosed, DEFAULT_MEDIA_RECEIVER_APP_ID, DEFAULT_TEXT_TRACK_STYLE,
+from .channel import (CastChannel, ChannelClosed, DEFAULT_MEDIA_RECEIVER_APP_ID, SHAKA_RECEIVER_APP_ID, DEFAULT_TEXT_TRACK_STYLE,
                       NS_CONNECTION, NS_HEARTBEAT, NS_MEDIA, NS_RECEIVER,
-                      PLATFORM_RECEIVER)
+                      NS_SHAKA, PLATFORM_RECEIVER)
 
 #: VLC uses 6s / 1 retry.  We keep the same interval but allow two misses,
 #: because phone Wi-Fi power-save can swallow a single beacon without the link
@@ -93,6 +95,8 @@ class MediaSession:
     # Widevine license server URL for DRM-protected streams. Passed to the
     # Chromecast receiver via customData.asset.licenseServers.
     license_url: str = ""
+    receiver_app_id: str = DEFAULT_MEDIA_RECEIVER_APP_ID
+    require_4k: bool = False
 
     @property
     def content_id(self) -> str:
@@ -124,6 +128,14 @@ class Status:
     active_track_ids: Optional[list] = None
     text_tracks: int = 0
     has_text_tracks: bool = False
+    receiver_width: int = 0
+    receiver_height: int = 0
+    quality_state: str = "unverified"
+    queue_items: Optional[list] = None
+    queue_index: int = 0
+    revision: int = 0
+    connection_id: str = ""
+    connection_epoch: float = 0.0
 
 
 class Supervisor:
@@ -152,18 +164,27 @@ class Supervisor:
 
         self._request_id = 1
         self._pending_requests: dict[int, str] = {}
+        self._request_results: dict[int, str] = {}
         self._app_transport_id = ""
         self._media_session_id: Optional[int] = None
         self._session: Optional[MediaSession] = None
         self._pending_restore = False
+        self._load_sent_at = 0.0
+        self._load_request_id = 0
+        self._restore_paused = False
 
         self._ping_retries = PING_WAIT_RETRIES
         self._last_ping = 0.0
         self._last_status_poll = 0.0
         self._last_position_at = 0.0
         self._last_position_value = 0.0
+        self._last_progress_at = 0.0
+        self._last_stall_at = 0.0
+        self._shaka_tracks: list[dict] = []
+        self._shaka_text_visible = True
+        self._shaka_legacy_visibility = False
 
-        self.status = Status(host=host)
+        self.status = Status(host=host, connection_id=uuid.uuid4().hex, connection_epoch=time.time())
 
     # -- public API --------------------------------------------------------
 
@@ -201,7 +222,8 @@ class Supervisor:
              subtitle: str = "", poster_url: str = "", backdrop_url: str = "",
              duration: float = 0.0, source_path: str = "", autoplay: bool = True,
              tracks: Optional[list] = None, active_track_ids: Optional[list] = None,
-             license_url: str = "", position: float = 0.0) -> None:
+             license_url: str = "", position: float = 0.0,
+             require_4k: bool = False) -> None:
         """Queue a LOAD.  Safe to call before the link is even up."""
         with self._lock:
             self._media_session_id = None
@@ -211,7 +233,9 @@ class Supervisor:
                                          duration=duration, source_path=source_path,
                                          position=position, autoplay=autoplay, tracks=tracks or [],
                                          active_track_ids=active_track_ids or [],
-                                         license_url=license_url)
+                                         license_url=license_url,
+                                         receiver_app_id=SHAKA_RECEIVER_APP_ID if license_url else DEFAULT_MEDIA_RECEIVER_APP_ID,
+                                         require_4k=require_4k)
             self._pending_restore = True
             self.status.title = title
             self.status.content_url = url
@@ -221,15 +245,22 @@ class Supervisor:
             self.status.active_track_ids = active_track_ids or []
             self.status.text_tracks = len(tracks or [])
             self.status.has_text_tracks = bool(tracks)
+            self.status.position = position
+            self.status.last_error = ""
+            self.status.receiver_width = self.status.receiver_height = 0
+            self.status.quality_state = "unverified"
+            self.status.queue_items = []
+            self._shaka_tracks = []
         self._log(f"queued LOAD {title or url}")
         self._try_load()
         self._emit("media", self.snapshot())
 
-    def queue_insert(self, item: dict) -> None:
+    def queue_insert(self, item: dict) -> Optional[int]:
         """Append an item to the current queue."""
-        self._media_command({"type": "QUEUE_INSERT", "items": [item]})
+        return self._media_command({"type": "QUEUE_INSERT", "items": [item]})
 
-    def queue_load(self, items: list) -> None:
+    def queue_load(self, items: list, start_index: int = 0, position: float = 0.0,
+                   autoplay: bool = True) -> None:
         """Queue a QUEUE_LOAD with multiple items."""
         if not items:
             return
@@ -239,7 +270,10 @@ class Supervisor:
             self.status.media_session_id = None
 
             # Extract first item properties to populate status and basic session
-            first = items[0]
+            items = copy.deepcopy(items)
+            for item in items:
+                item.pop("itemId", None)
+            first = items[start_index]
             media = first.get("media", {})
             url = media.get("contentId", "")
             title = media.get("metadata", {}).get("title", "")
@@ -251,7 +285,12 @@ class Supervisor:
                 title=title,
                 duration=duration,
                 source_path=source_path,
-                queue_items=items
+                content_type=media.get("contentType", "video/mp4"),
+                tracks=media.get("tracks") or [],
+                active_track_ids=first.get("activeTrackIds") or [],
+                queue_items=items, queue_index=start_index,
+                position=position, autoplay=autoplay,
+                require_4k=bool(media.get("customData", {}).get("require4k")),
             )
             self._pending_restore = True
 
@@ -264,12 +303,18 @@ class Supervisor:
             self.status.active_track_ids = first.get("activeTrackIds") or []
             self.status.text_tracks = len(first_tracks)
             self.status.has_text_tracks = bool(first_tracks)
+            self.status.position = position
+            self.status.last_error = ""
+            self.status.receiver_width = self.status.receiver_height = 0
+            self.status.quality_state = "unverified"
+            self.status.queue_items = []
 
         self._log(f"queued QUEUE_LOAD with {len(items)} items")
         self._try_load()
         self._emit("media", self.snapshot())
 
     def play(self) -> Optional[int]:
+        self._restore_paused = False
         return self._media_command({"type": "PLAY"})
 
     def pause(self) -> Optional[int]:
@@ -283,21 +328,25 @@ class Supervisor:
 
     def set_active_tracks(self, active_track_ids: list[int]) -> Optional[int]:
         self._log(f"DEBUG-ONLY: Supervisor.set_active_tracks activeTrackIds={active_track_ids}")
-        with self._lock:
-            self.status.active_track_ids = active_track_ids
-            self.status.has_text_tracks = bool(active_track_ids)
-            if self._session:
-                self._session.active_track_ids = active_track_ids
-                self._session.has_text_tracks = bool(active_track_ids)
+        if self.status.app_id == SHAKA_RECEIVER_APP_ID:
+            selected = next((t for t in self._shaka_tracks if t.get("id") in active_track_ids), None)
+            if active_track_ids and not selected:
+                raise RuntimeError("receiver has not reported this subtitle track")
+            if selected or not self._shaka_legacy_visibility:
+                self._shaka_call("selectTextTrack", [selected])
+            if self._shaka_legacy_visibility:
+                self._shaka_call("setTextTrackVisibility", [bool(active_track_ids)])
+            return None  # confirmation arrives in Shaka's next track update
         req_id = self._media_command({
             "type": "EDIT_TRACKS_INFO",
             "activeTrackIds": active_track_ids
         })
-        self._emit("media", self.snapshot())
         return req_id
 
     def stop_media(self) -> None:
-        self._media_command({"type": "STOP"})
+        request_id = self._media_command({"type": "STOP"})
+        if request_id is None:
+            raise RuntimeError("STOP could not be sent: no active media session")
         with self._lock:
             self._session = None
             self._pending_restore = False
@@ -311,10 +360,53 @@ class Supervisor:
 
     def snapshot(self) -> dict:
         with self._lock:
-            data = dict(self.status.__dict__)
+            self.status.revision += 1
+            data = copy.deepcopy(self.status.__dict__)
             data["state"] = self._state.value
             data["position"] = self._extrapolated_position()
             return data
+
+    def replace_text_tracks(self, tracks: list[dict], active_ids: list[int]) -> None:
+        """Reload the current item without dropping its queue or resume state."""
+        with self._lock:
+            session = self._session
+            if not session:
+                raise RuntimeError("No active media session")
+            if session.receiver_app_id == SHAKA_RECEIVER_APP_ID:
+                raise RuntimeError("Shaka external tracks require its asynchronous text-track API")
+            session.position = self._extrapolated_position()
+            session.autoplay = self._state is not State.PAUSED
+            session.tracks = copy.deepcopy(tracks)
+            session.active_track_ids = list(active_ids)
+            if session.queue_items:
+                item = session.queue_items[session.queue_index]
+                item.setdefault("media", {})["tracks"] = copy.deepcopy(tracks)
+                item["activeTrackIds"] = list(active_ids)
+            self._pending_restore = True
+        self._try_load()
+
+    def rebase_media_urls(self, old_base: str, new_base: str) -> None:
+        """Preserve queue, position, pause and DRM while replacing our LAN URL."""
+        def rebase(value):
+            if isinstance(value, str):
+                return new_base + value[len(old_base):] if value.startswith(old_base + "/") else value
+            if isinstance(value, list):
+                return [rebase(v) for v in value]
+            if isinstance(value, dict):
+                return {k: rebase(v) for k, v in value.items()}
+            return value
+        with self._lock:
+            if not self._session:
+                return
+            session = self._session
+            session.position = self._extrapolated_position()
+            session.autoplay = self._state is not State.PAUSED
+            session.url = rebase(session.url)
+            session.license_url = rebase(session.license_url)
+            session.tracks = rebase(session.tracks)
+            session.queue_items = rebase(session.queue_items)
+            self._pending_restore = True
+        self._try_load()
 
     def is_active(self) -> bool:
         """Return True if the supervisor has an active session and is connected."""
@@ -353,7 +445,40 @@ class Supervisor:
             rid = self._request_id
             if kind:
                 self._pending_requests[rid] = kind
+                while len(self._pending_requests) > 256:
+                    self._pending_requests.pop(next(iter(self._pending_requests)))
             return rid
+
+    def _complete_request(self, request_id, error: str = "") -> None:
+        if not isinstance(request_id, int) or not request_id:
+            return
+        with self._state_changed:
+            self._request_results[request_id] = error
+            while len(self._request_results) > 256:
+                self._request_results.pop(next(iter(self._request_results)))
+            self._state_changed.notify_all()
+
+    def wait_for_request(self, request_id: Optional[int], timeout: float = 10.0) -> None:
+        """Wait outside the receiver thread before committing a filesystem edit."""
+        if request_id is None:
+            raise RuntimeError("command not sent: no active media session")
+        deadline = time.monotonic() + timeout
+        with self._state_changed:
+            while request_id not in self._request_results:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or self._stop.is_set():
+                    raise RuntimeError("receiver did not confirm command; state is unconfirmed")
+                self._state_changed.wait(remaining)
+            error = self._request_results.pop(request_id)
+            if error:
+                raise RuntimeError(f"receiver rejected command: {error}")
+
+    def _shaka_call(self, method: str, args: list) -> None:
+        if not self._channel or not self._app_transport_id:
+            raise RuntimeError("Shaka receiver is not connected")
+        self._channel.send_json(NS_SHAKA, self._app_transport_id, {
+            "type": "call", "targetName": "player", "methodName": method, "args": args,
+        })
 
     def _pop_request_kind(self, request_id) -> str:
         if request_id is None:
@@ -425,7 +550,12 @@ class Supervisor:
             return None
 
     def _try_load(self) -> None:
-        """VLC's ``tryLoad()``: launch the app if needed, then LOAD."""
+        # Serialize session selection, command publication, and pending-flag
+        # clearing; a concurrent LOAD must not be erased by its predecessor.
+        with self._lock:
+            self._try_load_locked()
+
+    def _try_load_locked(self) -> None:
         with self._lock:
             session = self._session
             state = self._state
@@ -434,10 +564,16 @@ class Supervisor:
         if not session or not pending:
             return
 
+        if transport and self.status.app_id and self.status.app_id != session.receiver_app_id:
+            with self._lock:
+                self._app_transport_id = ""
+                self._media_session_id = None
+            transport = ""
+            state = State.CONNECTED
         if state is State.CONNECTED and not transport:
-            self._log(f"launching receiver app {DEFAULT_MEDIA_RECEIVER_APP_ID}")
+            self._log(f"launching receiver app {session.receiver_app_id}")
             if self._send_receiver({"type": "LAUNCH",
-                                    "appId": DEFAULT_MEDIA_RECEIVER_APP_ID}) is not None:
+                                    "appId": session.receiver_app_id}) is not None:
                 # Deliberately not via _set_state: we do not want to re-enter
                 # _try_load from here.
                 with self._lock:
@@ -445,7 +581,8 @@ class Supervisor:
                     self.status.state = State.LAUNCHING.value
             return
 
-        if state not in (State.READY, State.CONNECTED) or not transport:
+        if state in (State.DISCONNECTED, State.CONNECTING, State.AUTHENTICATING,
+                     State.LAUNCHING, State.DEAD) or not transport:
             return
 
         channel = self._channel
@@ -453,19 +590,22 @@ class Supervisor:
             return
 
         if session.queue_items:
+            items = copy.deepcopy(session.queue_items)
+            for item in items:
+                item.pop("itemId", None)
+            items[session.queue_index]["autoplay"] = session.autoplay
             payload = {
                 "type": "QUEUE_LOAD",
                 "requestId": self._next_request_id("QUEUE_LOAD"),
-                "sessionId": None,
-                "items": session.queue_items,
+                "items": items,
                 "repeatMode": "REPEAT_OFF",
                 "startIndex": session.queue_index,
+                "currentTime": session.position,
             }
         else:
             payload = {
                 "type": "LOAD",
                 "requestId": self._next_request_id("LOAD"),
-                "sessionId": None,
                 "autoplay": session.autoplay,
                 "currentTime": session.position,
                 "media": {
@@ -529,6 +669,12 @@ class Supervisor:
                     "bufferBehind": 15
                 }
             }
+            if session.require_4k:
+                # Restrict adaptive choices instead of assuming an UHD manifest
+                # means the receiver selected its UHD representation.
+                custom_data["asset"]["extraConfig"]["restrictions"] = {
+                    "minWidth": 3840, "minHeight": 2160,
+                }
             
             if custom_data:
                 payload["media"]["customData"] = custom_data
@@ -560,6 +706,9 @@ class Supervisor:
 
         with self._lock:
             self._pending_restore = False
+            self._load_sent_at = time.monotonic()
+            self._load_request_id = payload["requestId"]
+            self._restore_paused = not session.autoplay
         resume = f" @ {session.position:.1f}s" if session.position else ""
         detail = f" tracks={len(session.tracks or [])} active={session.active_track_ids or []}" if session.tracks else ""
         self._log(f"LOAD sent{resume}{detail}: {session.url}")
@@ -586,6 +735,10 @@ class Supervisor:
         if namespace == NS_CONNECTION:
             payload = _json(message.payload_utf8)
             if payload.get("type") == "CLOSE":
+                if message.source_id == PLATFORM_RECEIVER:
+                    return False  # platform connection closed: rebuild the socket
+                if message.source_id != self._app_transport_id:
+                    return True  # a previous app's CLOSE must not kill the new app
                 # An application closed -- NOT the socket.  VLC is explicit
                 # about this distinction; treating it as a disconnect causes a
                 # pointless full reconnect.
@@ -606,11 +759,14 @@ class Supervisor:
         if namespace == NS_RECEIVER:
             return self._handle_receiver(_json(message.payload_utf8))
 
+        if namespace in (NS_MEDIA, NS_SHAKA) and message.source_id != self._app_transport_id:
+            return True
+
         if namespace == NS_MEDIA:
             return self._handle_media(_json(message.payload_utf8))
 
-        elif namespace == "urn:x-cast:com.google.cast.shaka":
-            self._log(f"SHAKA MESSAGE: {message.payload_utf8}")
+        elif namespace == NS_SHAKA:
+            self._handle_shaka(_json(message.payload_utf8))
 
         return True
 
@@ -650,10 +806,10 @@ class Supervisor:
 
         transport = ""
         app_id = ""
+        desired = self._session.receiver_app_id if self._session else DEFAULT_MEDIA_RECEIVER_APP_ID
         for app in status.get("applications") or []:
-            if app.get("appId") == DEFAULT_MEDIA_RECEIVER_APP_ID or \
-                    NS_MEDIA in [ns.get("name") for ns in (app.get("namespaces") or [])]:
-                transport = app.get("transportId") or app.get("sessionId") or ""
+            if app.get("appId") == desired:
+                transport = app.get("transportId") or ""
                 app_id = app.get("appId") or ""
                 break
 
@@ -675,6 +831,7 @@ class Supervisor:
             with self._lock:
                 self._app_transport_id = transport
             self._set_state(State.READY)
+            self._media_command_without_session({"type": "GET_STATUS"})
         elif not transport and known:
             with self._lock:
                 self._app_transport_id = ""
@@ -683,14 +840,20 @@ class Supervisor:
                     self._pending_restore = True
             self._set_state(State.CONNECTED)
 
+        self._complete_request(payload.get("requestId"))
         return True
 
     def _handle_media(self, payload: dict) -> bool:
         kind = payload.get("type")
+        request_id = payload.get("requestId")
+        if isinstance(request_id, int) and 0 < request_id < self._load_request_id:
+            self._complete_request(request_id, "superseded by a newer LOAD")
+            return True
 
-        if kind in ("LOAD_FAILED", "INVALID_REQUEST"):
+        if kind in ("LOAD_FAILED", "INVALID_REQUEST", "INVALID_PLAYER_STATE"):
             reason = payload.get("reason") or payload.get("detail") or kind
             request_kind = self._pop_request_kind(payload.get("requestId"))
+            self._complete_request(payload.get("requestId"), str(reason))
             is_load_request = kind == "LOAD_FAILED" or request_kind in {"LOAD", "QUEUE_LOAD"}
             if is_load_request:
                 # This is the silent-failure path the capability checker exists to
@@ -726,8 +889,14 @@ class Supervisor:
             with self._lock:
                 had_session = self._media_session_id is not None
                 self._media_session_id = None
+                self.status.media_session_id = None
+                self.status.active_track_ids = []
+                self.status.text_tracks = 0
+                self.status.has_text_tracks = False
             if had_session:
                 self._set_state(State.READY)
+            self._complete_request(payload.get("requestId"))
+            self._emit("media", self.snapshot())
             return True
 
         entry = entries[0]
@@ -743,10 +912,13 @@ class Supervisor:
         with self._lock:
             if self._session:
                 current_item_id = entry.get("currentItemId")
-                status_items = entry.get("items") or []
+                status_items = entry["items"] if "items" in entry else (self._session.queue_items or [])
+                if "items" in entry:
+                    self._session.queue_items = copy.deepcopy(status_items)
                 idx = -1
                 if current_item_id is not None and status_items:
-                    self._session.queue_items = status_items
+                    if "items" in entry:
+                        self._session.queue_items = copy.deepcopy(status_items)
                     for i, item in enumerate(status_items):
                         if item.get("itemId") == current_item_id:
                             idx = i
@@ -759,6 +931,22 @@ class Supervisor:
                             break
                 if idx != -1:
                     self._session.queue_index = idx
+                    current_media = status_items[idx].get("media") or {}
+                    media = {**current_media, **media}
+                    self._session.url = media.get("contentId", self._session.url)
+                    self._session.content_type = media.get("contentType", self._session.content_type)
+                    self._session.tracks = media.get("tracks", self._session.tracks)
+                    self._session.require_4k = bool(media.get("customData", {}).get("require4k"))
+                    self.status.queue_index = idx
+                if self._session.queue_items is not None:
+                    self.status.queue_items = copy.deepcopy(self._session.queue_items)
+
+            if media.get("contentId"):
+                self.status.content_url = media["contentId"]
+            if "title" in (media.get("metadata") or {}):
+                self.status.title = media["metadata"]["title"]
+                if self._session:
+                    self._session.title = self.status.title
 
             custom_data = media.get("customData") or {}
             source_path = custom_data.get("sourcePath")
@@ -767,11 +955,14 @@ class Supervisor:
                 if self._session:
                     self._session.source_path = source_path
 
-            tracks = media.get("tracks") or []
-            self.status.text_tracks = len(tracks)
-            self.status.has_text_tracks = bool(tracks)
+            if "tracks" in media:
+                tracks = media["tracks"] or []
+                self.status.text_tracks = len(tracks)
+                self.status.has_text_tracks = bool(tracks)
             if "activeTrackIds" in entry:
                 self.status.active_track_ids = entry.get("activeTrackIds") or []
+                if self._session:
+                    self._session.active_track_ids = self.status.active_track_ids
             if media.get("duration"):
                 self.status.duration = float(media["duration"])
                 if self._session:
@@ -779,6 +970,8 @@ class Supervisor:
             if "currentTime" in entry:
                 position = float(entry.get("currentTime") or 0.0)
                 self.status.position = position
+                if position != self._last_position_value or not self._last_progress_at:
+                    self._last_progress_at = time.monotonic()
                 self._last_position_value = position
                 self._last_position_at = time.time()
                 if self._session:
@@ -792,26 +985,38 @@ class Supervisor:
         player_state = entry.get("playerState") or ""
         idle_reason = entry.get("idleReason") or ""
 
+        if player_state in ("PLAYING", "PAUSED"):
+            self._load_sent_at = 0.0
         if player_state == "PLAYING":
+            if self._restore_paused:
+                # Shaka generic LOAD currently coerces autoplay=false to true.
+                self._media_command({"type": "PAUSE"})
+            if self._session:
+                self._session.autoplay = True
             self._set_state(State.PLAYING)
         elif player_state == "PAUSED":
+            self._restore_paused = False
+            if self._session:
+                self._session.autoplay = False
             self._set_state(State.PAUSED)
         elif player_state == "BUFFERING":
             self._set_state(State.BUFFERING)
         elif player_state == "LOADING":
             self._set_state(State.LOADING)
-        elif player_state == "IDLE" or not player_state:
+        elif player_state == "IDLE":
             with self._lock:
                 self.status.idle_reason = idle_reason
             if idle_reason == "FINISHED":
                 self._log("playback finished")
                 with self._lock:
                     source_path = self._session.source_path if self._session else ""
+                    native_queue = bool(self._session and self._session.queue_items is not None)
                     self._session = None
                     self._media_session_id = None
+                    self.status.media_session_id = None
                 self._set_state(State.READY)
                 self._emit("finished", {})
-                if self._on_finished and source_path:
+                if self._on_finished and source_path and not native_queue:
                     self._on_finished(source_path)
             elif idle_reason == "INTERRUPTED":
                 self._log("playback interrupted -- another sender took the device")
@@ -823,8 +1028,43 @@ class Supervisor:
             else:
                 self._set_state(State.READY)
 
+        video_info = entry.get("videoInfo") or media.get("videoInfo") or {}
+        self._update_resolution(video_info.get("width"), video_info.get("height"))
+        self._complete_request(payload.get("requestId"))
         self._emit("media", self.snapshot())
         return True
+
+    def _update_resolution(self, width, height) -> None:
+        if not isinstance(width, (int, float)) or not isinstance(height, (int, float)) or width <= 0 or height <= 0:
+            return
+        self.status.receiver_width, self.status.receiver_height = int(width), int(height)
+        self.status.quality_state = "receiver_4k" if width >= 3840 and height >= 2160 else "below_4k"
+        if self._session and self._session.require_4k and self._state is State.PLAYING and self.status.quality_state == "below_4k":
+            self.status.last_error = f"4K required, but receiver reports {int(width)}x{int(height)}; playback paused"
+            self._media_command({"type": "PAUSE"})
+            self._emit("quality_failed", {"error": self.status.last_error})
+
+    def _handle_shaka(self, payload: dict) -> None:
+        if self.status.app_id != SHAKA_RECEIVER_APP_ID:
+            return
+        if payload.get("type") == "update":
+            update = payload.get("update") or {}
+            player = update.get("player") or {}
+            video = update.get("video") or {}
+            stats = player.get("getStats") or {}
+            self._update_resolution(video.get("videoWidth", stats.get("width")), video.get("videoHeight", stats.get("height")))
+            if "getTextTracks" in player:
+                self._shaka_tracks = player["getTextTracks"] or []
+            if "isTextTrackVisible" in player:
+                self._shaka_legacy_visibility = True
+                self._shaka_text_visible = bool(player["isTextTrackVisible"])
+            self.status.active_track_ids = [t["id"] for t in self._shaka_tracks if t.get("active") and self._shaka_text_visible]
+            self.status.text_tracks = len(self._shaka_tracks)
+            self.status.has_text_tracks = bool(self._shaka_tracks)
+            self._emit("receiver_tracks", {"tracks": copy.deepcopy(self._shaka_tracks)})
+            self._emit("media", self.snapshot())
+        elif payload.get("type") == "event" and payload.get("targetName") == "video" and (payload.get("event") or {}).get("type") == "ended":
+            self._handle_media({"type": "MEDIA_STATUS", "status": [{"playerState": "IDLE", "idleReason": "FINISHED"}]})
 
     # -- the loop ----------------------------------------------------------
 
@@ -907,11 +1147,16 @@ class Supervisor:
         while not self._stop.is_set():
             now = time.time()
             budget = PING_WAIT_TIME - (now - self._last_ping)
+            if budget <= 0:
+                self._on_read_timeout()
+                budget = PING_WAIT_TIME
+            self._maybe_poll_status()
 
             try:
                 message = channel.receive(timeout=max(budget, 0.1))
             except TimeoutError:
                 self._on_read_timeout()
+                self._maybe_poll_status()
                 continue
             except OSError as exc:
                 if isinstance(exc, ChannelClosed):
@@ -941,8 +1186,13 @@ class Supervisor:
         self._send_receiver({"type": "GET_STATUS"})
 
     def _maybe_poll_status(self) -> None:
+        if self._load_sent_at and time.monotonic() - self._load_sent_at > 45:
+            self._load_sent_at = 0.0
+            self._complete_request(self._load_request_id, "LOAD timed out")
+            self._set_state(State.LOAD_FAILED, error="Receiver did not confirm playback within 45 seconds")
+            self._emit("load_failed", {"reason": self.status.last_error})
         with self._lock:
-            active = self._state in (State.PLAYING, State.BUFFERING)
+            active = self._state in (State.PLAYING, State.BUFFERING, State.PAUSED, State.LOADING)
             transport = self._app_transport_id
             session_id = self._media_session_id
         if not active or not transport or session_id is None:
@@ -956,8 +1206,10 @@ class Supervisor:
         # advanced between two polls.  Usually means our HTTP server stopped
         # feeding the device fast enough.
         with self._lock:
-            if (self._state is State.PLAYING and self._last_position_at
-                    and now - self._last_position_at > STATUS_POLL_INTERVAL * 2.5):
+            if (self._state is State.PLAYING and self._last_progress_at
+                    and time.monotonic() - self._last_progress_at > STATUS_POLL_INTERVAL * 2.5
+                    and time.monotonic() - self._last_stall_at > STATUS_POLL_INTERVAL * 2.5):
+                self._last_stall_at = time.monotonic()
                 self.status.stream_stalls += 1
                 self._log("stream appears stalled: no position advance from the receiver")
                 self._emit("stall", {"count": self.status.stream_stalls})

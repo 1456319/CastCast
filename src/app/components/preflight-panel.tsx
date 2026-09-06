@@ -79,10 +79,11 @@ export function PreflightPanel({
           <div className="min-w-0">
             <div className={clean ? "text-emerald-300" : "text-amber-300"}>{verdict.summary}</div>
             <div className="mt-1 font-mono text-emerald-500/60">
-              true 4K on the Ultra:{" "}
+              4K source compatibility:{" "}
               <span className={verdict.will_be_4k ? "text-emerald-300" : "text-amber-300"}>
-                {verdict.will_be_4k ? "YES" : "NO"}
+                {verdict.will_be_4k ? "eligible" : "not established"}
               </span>
+              <div>Actual playback resolution is reported separately by the receiver.</div>
             </div>
           </div>
         </div>

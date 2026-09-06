@@ -21,7 +21,7 @@ def test_proxy_boundary_security():
     b64 = base64.b64encode(b"http://example.com/video.mp4").decode("utf-8")
     
     # 1. Request arriving via public tunnel host -> 403 Forbidden
-    handler.path = f"/proxy/?url={b64}"
+    handler.path = f"/proxy/?token=secret123&url={b64}"
     handler.headers = {"Host": "subdomain.lhr.life"}
     sent_errors = []
     handler.send_error = lambda code, msg="": sent_errors.append((code, msg))
@@ -31,7 +31,7 @@ def test_proxy_boundary_security():
     # 2. Invalid target scheme (e.g. file://) -> 400 Bad Request
     sent_errors.clear()
     b64_file = base64.b64encode(b"file:///etc/passwd").decode("utf-8")
-    handler.path = f"/proxy/?url={b64_file}"
+    handler.path = f"/proxy/?token=secret123&url={b64_file}"
     handler.headers = {"Host": "192.168.1.30:38399"}
     handler._serve_proxy(body=False)
     assert any(code == 400 for code, _ in sent_errors)
@@ -39,14 +39,14 @@ def test_proxy_boundary_security():
     # 3. SSRF loopback target (e.g. 127.0.0.1) -> 403 Forbidden
     sent_errors.clear()
     b64_loopback = base64.b64encode(b"http://127.0.0.1:8765/status").decode("utf-8")
-    handler.path = f"/proxy/?url={b64_loopback}"
+    handler.path = f"/proxy/?token=secret123&url={b64_loopback}"
     handler.headers = {"Host": "192.168.1.30:38399"}
     handler._serve_proxy(body=False)
     assert any(code == 403 for code, _ in sent_errors)
 
     sent_errors.clear()
     b64_num_loopback = base64.b64encode(b"http://127.1:8765/status").decode("utf-8")
-    handler.path = f"/proxy/?url={b64_num_loopback}"
+    handler.path = f"/proxy/?token=secret123&url={b64_num_loopback}"
     handler.headers = {"Host": "192.168.1.30:38399"}
     handler._serve_proxy(body=False)
     assert any(code == 403 for code, _ in sent_errors)
@@ -55,7 +55,7 @@ def test_proxy_boundary_security():
     for alt_ip in ("0177.0.0.1", "0x7f000001", "2130706433", "0"):
         sent_errors.clear()
         b64_alt = base64.b64encode(f"http://{alt_ip}:8765/status".encode("utf-8")).decode("utf-8")
-        handler.path = f"/proxy/?url={b64_alt}"
+        handler.path = f"/proxy/?token=secret123&url={b64_alt}"
         handler.headers = {"Host": "192.168.1.30:38399"}
         handler._serve_proxy(body=False)
         assert any(code == 403 for code, _ in sent_errors), f"Failed to block {alt_ip}"
@@ -63,7 +63,7 @@ def test_proxy_boundary_security():
     # 4. Tunnel host blocked even if public_url is None
     mock_server.media_server.public_url = None
     sent_errors.clear()
-    handler.path = f"/proxy/?url={b64}"
+    handler.path = f"/proxy/?token=secret123&url={b64}"
     handler.headers = {"Host": "other.localhost.run"}
     handler._serve_proxy(body=False)
     assert any(code == 403 for code, _ in sent_errors)
@@ -71,7 +71,7 @@ def test_proxy_boundary_security():
     # 5. Null byte in hostname -> gracefully handled (403 or 400)
     sent_errors.clear()
     b64_null = base64.b64encode(b"http://hello\x00world.com/video.mp4").decode("utf-8")
-    handler.path = f"/proxy/?url={b64_null}"
+    handler.path = f"/proxy/?token=secret123&url={b64_null}"
     handler.headers = {"Host": "192.168.1.30:38399"}
     handler._serve_proxy(body=False)
     assert any(code in (400, 403, 500) for code, _ in sent_errors), "Null byte in hostname should be rejected, not crash"

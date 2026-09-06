@@ -250,8 +250,8 @@ class TestAmazonSubtitles(unittest.TestCase):
         # English audio must be preserved
         self.assertIn('<AdaptationSet id="2" contentType="audio" mimeType="audio/mp4" lang="en">', transformed)
 
-        # Non-English audio (es) must be stripped
-        self.assertNotIn('<AdaptationSet id="3"', transformed)
+        # Non-English audio (es) must remain available
+        self.assertIn('<AdaptationSet id="3"', transformed)
 
         # Multi-language subtitle tracks (en, es, fr) MUST be completely preserved!
         self.assertIn('<AdaptationSet id="4" contentType="text" mimeType="text/vtt" lang="en">', transformed)

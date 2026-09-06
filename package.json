@@ -4,7 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "build": "vite build && cp -r daemon dist/",
+    "build": "vite build --emptyOutDir && node scripts/package-daemon.js",
     "dev": "vite",
     "test": "vitest run",
     "android:loopback-cleartext": "node scripts/configure-android-loopback.mjs",
@@ -99,5 +99,6 @@
     "overrides": {
       "vite": "6.3.5"
     }
-  }
+  },
+  "packageManager": "pnpm@9.15.9"
 }

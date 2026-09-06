@@ -135,13 +135,13 @@ def _parse_fps(stream: dict) -> float:
     return 0.0
 
 
-def _normalise_container(format_name: str) -> str:
+def _normalise_container(format_name: str, path: str = "") -> str:
     """ffprobe reports comma-joined alternatives, e.g. ``mov,mp4,m4a,3gp,3g2,mj2``."""
     names = [n.strip() for n in (format_name or "").split(",") if n.strip()]
     nameset = set(names)
     if "mpegts" in nameset:
         return "mpegts"
-    if "webm" in nameset:
+    if "webm" in nameset and ("matroska" not in nameset or path.lower().split("?", 1)[0].endswith(".webm")):
         return "webm"
     if "matroska" in nameset:
         return "matroska"
@@ -150,6 +150,15 @@ def _normalise_container(format_name: str) -> str:
     if "hls" in nameset or "applehttp" in nameset:
         return "hls"
     return names[0] if names else "unknown"
+
+
+def _normalise_level(codec: str, raw) -> Optional[float]:
+    value = _f(raw)
+    if value is None or value <= 0:
+        return None
+    # ffprobe exposes HEVC general_level_idc (30 * level), whereas H.264
+    # level_idc is 10 * level. 153 is HEVC level 5.1, not level 15.3.
+    return value / (30.0 if codec == "hevc" else 10.0) if value > 10 else value
 
 
 def _detect_hdr(stream: dict) -> str:
@@ -221,7 +230,7 @@ def probe(path: str, timeout: float = 30.0) -> MediaInfo:
     info = MediaInfo(
         path=path,
         size_bytes=_i(fmt.get("size"), 0) or 0,
-        container=_normalise_container(fmt.get("format_name", "")),
+        container=_normalise_container(fmt.get("format_name", ""), path),
         format_long=fmt.get("format_long_name", ""),
         duration_s=_f(fmt.get("duration"), 0.0) or 0.0,
         bitrate_kbps=(lambda b: int(b // 1000) if b else None)(_i(fmt.get("bit_rate"))),
@@ -248,7 +257,7 @@ def probe(path: str, timeout: float = 30.0) -> MediaInfo:
                 index=_i(stream.get("index"), 0) or 0,
                 codec=(stream.get("codec_name") or "").lower(),
                 profile=stream.get("profile") or "",
-                level=(lambda lv: lv / 10.0 if lv and lv > 10 else lv)(_f(stream.get("level"))),
+                level=_normalise_level(stream.get("codec_name", ""), stream.get("level")),
                 width=_i(stream.get("width"), 0) or 0,
                 height=_i(stream.get("height"), 0) or 0,
                 fps=_parse_fps(stream),

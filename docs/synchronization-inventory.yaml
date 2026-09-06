@@ -149,3 +149,9 @@ files:
     role: main-activity
     boundaries:
     - config-state
+  scripts/package-daemon.js:
+    section: operations-release
+    role: package-daemon
+    boundaries:
+    - android-bridge
+    - core-service

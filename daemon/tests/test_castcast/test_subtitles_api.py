@@ -111,55 +111,37 @@ class TestSubtitlesSwitching(unittest.TestCase):
             # YouTube
             with patch('castcast.service.have_ytdlp', return_value=False):
                 self.svc.cast("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-                self.assertEqual(self.svc._current_source_type, "youtube")
+                self.assertEqual(self.svc._current_source_type, "local")
 
             # Web
             self.svc.cast("https://example.com/live/stream.m3u8", license_url="http://license")
             self.assertEqual(self.svc._current_source_type, "web")
 
             # Amazon
-            with patch('castcast.amazon_drm.fetch_amazon_4k_manifest', return_value={
-                "mpd_url": "http://amazon/manifest.mpd", "actor_token": "a", "playback_envelope": "e"
-            }):
+            with patch.object(self.svc, "_cast_amazon", return_value={"casting": True}):
                 self.svc.cast("https://www.amazon.com/gp/video/detail/B012345678")
                 self.assertEqual(self.svc._current_source_type, "amazon")
 
-    def test_cast_unconditionally_resets_current_scavenged_tracks(self):
+    def test_failed_cast_preserves_current_scavenged_tracks(self):
         self.svc._current_scavenged_tracks = [{"track_id": 99, "language": "eng"}]
         with patch.object(self.svc, 'preflight', return_value={"error": "corrupted"}):
             res = self.svc.cast("/home/deck/Videos/Corrupted.mp4")
             self.assertIn("error", res)
-            self.assertEqual(self.svc._current_scavenged_tracks, [])
+            self.assertEqual(self.svc._current_scavenged_tracks, [{"track_id": 99, "language": "eng"}])
 
-    def test_supervisor_set_active_tracks(self):
+    def test_supervisor_set_active_tracks_waits_for_receiver_state(self):
         sup = Supervisor("127.0.0.1")
         sup._media_command = MagicMock(return_value=42)
-        sup._emit = MagicMock()
-
-        # Switch to track 2
-        req_id = sup.set_active_tracks([2])
-        self.assertEqual(req_id, 42)
+        self.assertEqual(sup.set_active_tracks([2]), 42)
+        self.assertFalse(sup.status.active_track_ids)
+        sup._media_command.assert_called_once_with({"type": "EDIT_TRACKS_INFO", "activeTrackIds": [2]})
+        sup._handle_media({"type": "MEDIA_STATUS", "status": [{"activeTrackIds": [2], "media": {"tracks": [{"trackId": 2}]}}]})
         self.assertEqual(sup.status.active_track_ids, [2])
-        self.assertTrue(sup.status.has_text_tracks)
-        sup._media_command.assert_called_once_with({
-            "type": "EDIT_TRACKS_INFO",
-            "activeTrackIds": [2]
-        })
-        sup._emit.assert_called_once()
-        media_call = sup._emit.call_args
-        self.assertEqual(media_call[0][0], "media")
-        self.assertEqual(media_call[0][1]["active_track_ids"], [2])
-
-        # Disable tracks
-        sup._media_command.reset_mock()
         sup.set_active_tracks([])
+        self.assertEqual(sup.status.active_track_ids, [2])
+        sup._handle_media({"type": "MEDIA_STATUS", "status": [{"activeTrackIds": []}]})
         self.assertEqual(sup.status.active_track_ids, [])
-        self.assertFalse(sup.status.has_text_tracks)
-        sup._media_command.assert_called_once_with({
-            "type": "EDIT_TRACKS_INFO",
-            "activeTrackIds": []
-        })
-
+        self.assertTrue(sup.status.has_text_tracks)
 
 class TestSubtitlesApiHttp(unittest.TestCase):
     def setUp(self):

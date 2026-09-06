@@ -18,7 +18,6 @@ import java.util.concurrent.TimeUnit;
 import android.os.PowerManager;
 import android.net.wifi.WifiManager;
 import android.content.Context;
-import android.content.Intent;
 import android.net.Uri;
 import android.provider.Settings;
 
@@ -35,8 +34,7 @@ public class TermuxDaemonPlugin extends Plugin {
     private static final int ROOT_TIMEOUT_SECONDS = 15;
 
     private static final String BASH = "/data/data/com.termux/files/usr/bin/bash";
-    private static final String DAEMON_DIR = "/data/data/com.termux/files/home/CastCast/daemon";
-    private static final String BOOTSTRAP = DAEMON_DIR + "/termux_bootstrap.sh";
+    private String daemonDir;
 
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
@@ -49,6 +47,15 @@ public class TermuxDaemonPlugin extends Plugin {
             return;
         }
 
+        try {
+            // Each APK installation owns an immutable daemon bundle. Never
+            // overwrite code that an existing Termux process is importing.
+            long installedAt = packageManager.getPackageInfo(getContext().getPackageName(), 0).lastUpdateTime;
+            daemonDir = "/data/data/com.termux/files/home/CastCast/releases/" + installedAt + "/daemon";
+        } catch (PackageManager.NameNotFoundException e) {
+            call.reject("Cannot identify the installed APK bundle", e);
+            return;
+        }
         RootResult rootResult = configureTermuxWithRoot();
         if (!rootResult.success) {
             call.reject(
@@ -60,8 +67,8 @@ public class TermuxDaemonPlugin extends Plugin {
         Intent intent = new Intent(ACTION_RUN_COMMAND);
         intent.setClassName(TERMUX_PACKAGE, RUN_COMMAND_SERVICE);
         intent.putExtra(EXTRA_COMMAND_PATH, BASH);
-        intent.putExtra(EXTRA_ARGUMENTS, new String[] { "-lc", "bash '" + BOOTSTRAP + "'" });
-        intent.putExtra(EXTRA_WORKDIR, DAEMON_DIR);
+        intent.putExtra(EXTRA_ARGUMENTS, new String[] { "-lc", "exec bash " + shellQuote(daemonDir + "/termux_bootstrap.sh") });
+        intent.putExtra(EXTRA_WORKDIR, daemonDir);
         intent.putExtra(EXTRA_BACKGROUND, true);
         intent.putExtra(EXTRA_SESSION_ACTION, "0");
 
@@ -96,7 +103,7 @@ public class TermuxDaemonPlugin extends Plugin {
             result.put("started", true);
             result.put("rootConfigured", true);
             result.put("auditLog", "/storage/emulated/0/Download/CastCast/Chromecast/.castcast/audit.log");
-            result.put("note", "Root configured Termux allow-external-apps and granted RUN_COMMAND. If the daemon stays offline, check that the repo exists at " + DAEMON_DIR + " and inspect the audit log.");
+            result.put("note", "Root configured Termux allow-external-apps and granted RUN_COMMAND. If the daemon stays offline, check that the repo exists at " + daemonDir + " and inspect the audit log.");
             call.resolve(result);
         } catch (SecurityException e) {
             call.reject("Android blocked Termux RUN_COMMAND even after root configuration. Reopen your root manager, grant root to this app, and retry.", e);
@@ -128,57 +135,41 @@ public class TermuxDaemonPlugin extends Plugin {
         // Each step echoes progress to stdout; on failure, the step prints the
         // error and exits so the user sees exactly what went wrong.
         String apkPath = getContext().getApplicationInfo().sourceDir;
-        String payload =
-            "TERMUX_HOME=/data/data/com.termux/files/home\n" +
-            "TERMUX_PROP=$TERMUX_HOME/.termux/termux.properties\n" +
-            "\n" +
-            "echo '[0/8] extracting bundled daemon code'\n" +
-            "mkdir -p /storage/emulated/0/Download/CastCast || { echo 'FAIL: create app dir'; exit 1; }\n" +
-            "unzip -qo " + shellQuote(apkPath) + " \"assets/public/daemon/*\" -d /data/local/tmp/ || { echo 'FAIL: unzip daemon'; exit 1; }\n" +
-            "mkdir -p " + shellQuote(DAEMON_DIR) + "\n" +
-            "rm -rf " + shellQuote(DAEMON_DIR) + "/*\n" +
-            "cp -rf /data/local/tmp/assets/public/daemon/* " + shellQuote(DAEMON_DIR) + "/ || { echo 'FAIL: copy daemon'; exit 1; }\n" +
-            "rm -rf /data/local/tmp/assets\n" +
-            "rm -rf \"$TERMUX_HOME/VideoQualityCheckerApp\"\n" +
-            "echo '[0/8] creating queue directories'\n" +
-            "mkdir -p /storage/emulated/0/Download/CastCast/Chromecast/trash || { echo 'FAIL: create trash dir'; exit 1; }\n" +
-            "mkdir -p /storage/emulated/0/Download/CastCast/Chromecast/.castcast || { echo 'FAIL: create castcast dir'; exit 1; }\n" +
-            "\n" +
-            "echo '[1/8] checking Termux home'\n" +
-            "if [ ! -d \"$TERMUX_HOME\" ]; then echo 'FAIL: Termux home directory not found at '$TERMUX_HOME'. Is Termux installed and opened at least once?'; exit 1; fi\n" +
-            "\n" +
-            "echo '[2/8] reading Termux UID/GID'\n" +
-            "TERMUX_UID=$(stat -c %u \"$TERMUX_HOME\" 2>/dev/null) || { echo 'FAIL: stat -c %u failed; trying ls fallback'; TERMUX_UID=$(ls -ldn \"$TERMUX_HOME\" | awk '{print $3}'); }\n" +
-            "TERMUX_GID=$(stat -c %g \"$TERMUX_HOME\" 2>/dev/null) || { echo 'FAIL: stat -c %g failed; trying ls fallback'; TERMUX_GID=$(ls -ldn \"$TERMUX_HOME\" | awk '{print $4}'); }\n" +
-            "echo \"  uid=$TERMUX_UID gid=$TERMUX_GID\"\n" +
-            "\n" +
-            "echo '[3/8] creating .termux dir'\n" +
-            "mkdir -p \"$TERMUX_HOME/.termux\" || { echo 'FAIL: mkdir -p .termux'; exit 1; }\n" +
-            "\n" +
-            "echo '[4/8] ensuring termux.properties exists'\n" +
-            "touch \"$TERMUX_PROP\" || { echo 'FAIL: touch termux.properties'; exit 1; }\n" +
-            "\n" +
-            "echo '[5/8] setting allow-external-apps=true'\n" +
-            "grep -q '^allow-external-apps=true$' \"$TERMUX_PROP\" 2>/dev/null || echo 'allow-external-apps=true' >> \"$TERMUX_PROP\" || { echo 'FAIL: write termux.properties'; exit 1; }\n" +
-            "\n" +
-            "echo '[6/8] fixing ownership and permissions'\n" +
-            "chown -R $TERMUX_UID:$TERMUX_GID \"$TERMUX_HOME/.termux\" || { echo 'FAIL: chown .termux'; exit 1; }\n" +
-            "chown -R $TERMUX_UID:$TERMUX_GID \"$TERMUX_HOME/CastCast\" || { echo 'FAIL: chown CastCast'; exit 1; }\n" +
-            "chmod 700 \"$TERMUX_HOME/.termux\" || { echo 'FAIL: chmod 700 .termux'; exit 1; }\n" +
-            "chmod 600 \"$TERMUX_PROP\" || { echo 'FAIL: chmod 600 termux.properties'; exit 1; }\n" +
-            "command -v restorecon >/dev/null 2>&1 && restorecon -R \"$TERMUX_HOME/.termux\" || true\n" +
-            "\n" +
-            "echo '[7/8] granting Android permissions'\n" +
-            "pm grant " + shellQuote(packageName) + " com.termux.permission.RUN_COMMAND 2>&1 || { echo 'FAIL: pm grant RUN_COMMAND'; exit 1; }\n" +
-            "appops set com.termux SYSTEM_ALERT_WINDOW allow 2>&1 || { echo 'FAIL: appops SYSTEM_ALERT_WINDOW'; exit 1; }\n" +
-            "appops set com.termux MANAGE_EXTERNAL_STORAGE allow 2>&1 || { echo 'FAIL: appops MANAGE_EXTERNAL_STORAGE'; exit 1; }\n" +
-            "\n" +
-            "echo '[8/8] killing old daemon instance'\n" +
-            "pkill -f mediaserver.py || true\n" +
-            "\n" +
-            "echo '[8/8] reloading Termux config'\n" +
-            "am broadcast -a com.termux.app.reload_style com.termux >/dev/null 2>&1 || true\n" +
-            "echo 'OK: all steps completed'\n";
+        String payload = "BUNDLE_DIR=" + shellQuote(daemonDir) + "\n"
+            + "APK_PATH=" + shellQuote(apkPath) + "\n"
+            + "APP_PACKAGE=" + shellQuote(packageName) + "\n"
+            + String.join("\n",
+                "set -eu",
+                "TERMUX_HOME=/data/data/com.termux/files/home",
+                "if [ ! -d \"$TERMUX_HOME\" ]; then echo \"Open Termux once before installing the daemon\"; exit 1; fi",
+                "TERMUX_UID=$(stat -c %u \"$TERMUX_HOME\")",
+                "TERMUX_GID=$(stat -c %g \"$TERMUX_HOME\")",
+                "case \"$TERMUX_UID:$TERMUX_GID\" in *[!0-9:]*|0:*|:*) echo \"Invalid Termux ownership\"; exit 1;; esac",
+                "TERMUX_PROP=\"$TERMUX_HOME/.termux/termux.properties\"",
+                "mkdir -p \"$TERMUX_HOME/CastCast/releases\"",
+                "if [ ! -f \"$BUNDLE_DIR/termux_bootstrap.sh\" ]; then",
+                "  STAGE=$(mktemp -d \"$TERMUX_HOME/CastCast/releases/.stage.XXXXXX\")",
+                "  trap 'rm -rf \"$STAGE\"' EXIT",
+                "  unzip -qo \"$APK_PATH\" \"assets/public/daemon/*\" -d \"$STAGE\"",
+                "  test -f \"$STAGE/assets/public/daemon/castcast/__main__.py\"",
+                "  test -f \"$STAGE/assets/public/daemon/termux_bootstrap.sh\"",
+                "  chown -R \"$TERMUX_UID:$TERMUX_GID\" \"$STAGE/assets/public\"",
+                "  RELEASE_DIR=${BUNDLE_DIR%/daemon}",
+                "  if [ ! -d \"$RELEASE_DIR\" ]; then mv \"$STAGE/assets/public\" \"$RELEASE_DIR\"; fi",
+                "fi",
+                "mkdir -p /storage/emulated/0/Download/CastCast/Chromecast/trash /storage/emulated/0/Download/CastCast/Chromecast/.castcast",
+                "mkdir -p \"$TERMUX_HOME/.termux\"",
+                "touch \"$TERMUX_PROP\"",
+                "if ! grep -q \"^allow-external-apps=true$\" \"$TERMUX_PROP\"; then echo \"allow-external-apps=true\" >> \"$TERMUX_PROP\"; fi",
+                "chown \"$TERMUX_UID:$TERMUX_GID\" \"$TERMUX_HOME/.termux\" \"$TERMUX_PROP\" \"$TERMUX_HOME/CastCast\" \"$TERMUX_HOME/CastCast/releases\"",
+                "chmod 700 \"$TERMUX_HOME/.termux\"",
+                "chmod 600 \"$TERMUX_PROP\"",
+                "if command -v restorecon >/dev/null 2>&1; then restorecon -R \"$TERMUX_HOME/.termux\" \"$BUNDLE_DIR\" || true; fi",
+                "pm grant \"$APP_PACKAGE\" com.termux.permission.RUN_COMMAND",
+                "appops set com.termux MANAGE_EXTERNAL_STORAGE allow",
+                "am broadcast -a com.termux.app.reload_style com.termux >/dev/null 2>&1 || true",
+                "echo \"OK: bundled daemon ready\""
+            ) + "\n";
 
         Process process = null;
         try {

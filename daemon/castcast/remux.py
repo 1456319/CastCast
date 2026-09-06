@@ -9,6 +9,7 @@ phone is not something you want to do by accident.
 from __future__ import annotations
 
 import os
+import hashlib
 import re
 import shutil
 import subprocess
@@ -78,10 +79,11 @@ class RemuxPlan:
 
 def output_path_for(input_path: str, work_dir: str, container: str, video_codec: str = "") -> str:
     stem = os.path.splitext(os.path.basename(input_path))[0]
+    identity = hashlib.sha256(os.path.realpath(input_path).encode()).hexdigest()[:12]
     ext = container if container in ("webm", "mkv") else "mp4"
     codec_tag = f".{video_codec}" if video_codec else ""
     suffix = f".cast{codec_tag}.fmp4.mp4" if container == "fmp4" else f".cast{codec_tag}.{ext}"
-    return os.path.join(work_dir, stem + suffix)
+    return os.path.join(work_dir, stem + "." + identity + suffix)
 
 def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str, is_ultra: bool = True) -> Optional[RemuxPlan]:
     """Return the plan needed to make ``info`` castable, or ``None`` if it already is."""
@@ -91,7 +93,7 @@ def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str, is_ultra: bool 
     container = verdict.target_container or "mp4"
     out = output_path_for(info.path, work_dir, container, "hevc" if is_ultra and verdict.video_action == "transcode" else "h264" if verdict.video_action == "transcode" else "")
 
-    args: List[str] = ["-map", "0:v:0"]
+    args: List[str] = ["-map", f"0:{info.primary_video.index}"] if info.primary_video else []
     lossless_video = True
     lossless_audio = True
 
@@ -105,13 +107,22 @@ def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str, is_ultra: bool 
             ten_bit = bool(v and v.bit_depth >= 10)
             args += ["-c:v", "libx265", "-preset", "superfast", "-crf", "18",
                      "-pix_fmt", "yuv420p10le" if ten_bit else "yuv420p",
-                     "-tag:v", "hvc1"]
+                     "-tag:v", "hvc1", "-x265-params",
+                     "level-idc=5.1:high-tier=0:vbv-maxrate=40000:vbv-bufsize=40000:pools=2:frame-threads=2"]
+            if v and (v.width > 3840 or v.height > 2160):
+                args += ["-vf", "scale=3840:2160:force_original_aspect_ratio=decrease:force_divisible_by=2"]
+            if v and v.fps > 60:
+                args += ["-r", "60"]
+            if v:
+                for flag, value in (("-color_primaries", v.color_primaries), ("-color_trc", v.color_transfer), ("-colorspace", v.color_space)):
+                    if value:
+                        args += [flag, value]
         else:
             # Standard Chromecast maxes out at 1080p H.264
             args += ["-c:v", "libx264", "-preset", "superfast", "-crf", "18",
-                     "-profile:v", "high", "-level", "4.1", "-pix_fmt", "yuv420p"]
-            if v and v.width > 1920:
-                args += ["-vf", "scale=-2:1080"]
+                     "-profile:v", "high", "-level", "4.1", "-pix_fmt", "yuv420p", "-r", "30"]
+            if v and (v.width > 1920 or v.height > 1080):
+                args += ["-vf", "scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2"]
         lossless_video = False
     else:
         args += ["-c:v", "copy"]
@@ -197,7 +208,7 @@ def build_4k_remaster_plan(info: MediaInfo, work_dir: str) -> Optional[RemuxPlan
         "-c:v", "libx265",
         "-preset", "medium",  # Replaced 'slow' with 'medium' to prevent thermal throttling
         "-crf", "18",
-        "-vf", "scale=3840:2160:flags=lanczos",
+        "-vf", "scale=3840:2160:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,pad=3840:2160:(ow-iw)/2:(oh-ih)/2",
         "-pix_fmt", "yuv420p10le",
     ]
 
@@ -215,7 +226,7 @@ def build_4k_remaster_plan(info: MediaInfo, work_dir: str) -> Optional[RemuxPlan
         args=args,
         lossless_video=False,
         lossless_audio=True,
-        description="High-fidelity Overnight 4K Remaster (Lanczos scaling, HEVC). Extremely slow.",
+        description="Overnight 4K Remaster: Lanczos upscaling to HEVC; source detail is unchanged.",
         estimated="Hours to Days depending on device power",
         expected_hdr_format="SDR",
         expected_color_primaries="",
@@ -256,6 +267,7 @@ class Remuxer:
         self._on_update = on_update
         self._proc: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
+        self._run_lock = threading.Lock()
         self.job: Optional[RemuxJob] = None
         self.idle_event = threading.Event()
         self.idle_event.set()
@@ -274,11 +286,12 @@ class Remuxer:
 
     def run(self, plan: RemuxPlan, duration_s: float = 0.0, original_info: Optional[MediaInfo] = None) -> RemuxJob:
         """Blocking.  Call from a worker thread."""
-        self.idle_event.clear()
-        try:
-            return self._run_inner(plan, duration_s, original_info)
-        finally:
-            self.idle_event.set()
+        with self._run_lock:
+            self.idle_event.clear()
+            try:
+                return self._run_inner(plan, duration_s, original_info)
+            finally:
+                self.idle_event.set()
 
     def _run_inner(self, plan: RemuxPlan, duration_s: float = 0.0, original_info: Optional[MediaInfo] = None) -> RemuxJob:
         if not have_ffmpeg():
@@ -293,16 +306,28 @@ class Remuxer:
         self._emit(job)
 
         os.makedirs(os.path.dirname(plan.output_path) or ".", exist_ok=True)
+        stem, extension = os.path.splitext(plan.output_path)
+        temporary_output = stem + ".partial" + extension
 
         attempt = 1
         while attempt <= 2:
-            cmd = plan.command + ["-progress", "pipe:1", "-nostats"]
+            cmd = [temporary_output if arg == plan.output_path else arg for arg in plan.command] + ["-progress", "pipe:1", "-nostats"]
             try:
+                # Drain stderr concurrently; ffmpeg can fill the stderr pipe
+                # while stdout waits for progress, deadlocking a long encode.
+                error_lines = []
                 with self._lock:
                     self._proc = subprocess.Popen(
                         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 proc = self._proc
                 assert proc.stdout is not None
+                def drain_stderr():
+                    if proc.stderr:
+                        for line in proc.stderr:
+                            error_lines.append(line)
+                            del error_lines[:-100]
+                error_reader = threading.Thread(target=drain_stderr, daemon=True)
+                error_reader.start()
 
                 for line in proc.stdout:
                     match = _PROGRESS_TIME.search(line)
@@ -314,22 +339,25 @@ class Remuxer:
                             self._emit(job)
 
                 proc.wait()
-                stderr = (proc.stderr.read() if proc.stderr else b"").decode("utf-8", "replace")
+                error_reader.join(timeout=5)
+                stderr = b"".join(error_lines).decode("utf-8", "replace")
 
                 if job.state == "cancelled":
-                    _unlink(plan.output_path)
+                    _unlink(temporary_output)
                     break
 
                 elif proc.returncode == 0:
                     # Verify HDR metadata on first attempt if it's a lossless copy
                     if attempt == 1 and plan.lossless_video and plan.expected_hdr_format != "SDR" and plan.video_codec in ("hevc", "h264", "vp9"):
                         try:
-                            out_info = probe(plan.output_path)
+                            out_info = probe(temporary_output)
                             out_pv = out_info.primary_video
                             if out_pv and out_pv.color_transfer != plan.expected_color_transfer:
                                 # Metadata was lost, we need to retry with a bitstream filter
                                 attempt = 2
-                                _unlink(plan.output_path)
+                                if plan.video_codec == "vp9":
+                                    raise RuntimeError("HDR metadata changed in VP9 output; original preserved")
+                                _unlink(temporary_output)
 
                                 filter_name = f"{plan.video_codec}_metadata"
                                 bsf_args = []
@@ -350,22 +378,31 @@ class Remuxer:
                                     job.error = "HDR metadata lost; retrying with bitstream filters"
                                     self._emit(job)
                                     continue
-                        except Exception:
-                            pass # If probe fails, just accept the output
+                        except Exception as exc:
+                            job.state = "failed"
+                            job.error = f"Output HDR validation failed: {exc}"
+                            _unlink(temporary_output)
+                            break
 
+                    if plan.expected_hdr_format != "SDR":
+                        verified = probe(temporary_output).primary_video
+                        if not verified or verified.color_transfer != plan.expected_color_transfer:
+                            raise RuntimeError("HDR metadata validation failed; original preserved")
+                    os.replace(temporary_output, plan.output_path)
                     job.state = "done"
+                    job.error = ""
                     job.progress = 1.0
                     break
                 else:
                     job.state = "failed"
                     tail = [ln for ln in stderr.strip().splitlines() if ln.strip()]
                     job.error = tail[-1] if tail else f"ffmpeg exited {proc.returncode}"
-                    _unlink(plan.output_path)
+                    _unlink(temporary_output)
                     break
             except Exception as exc:  # noqa: BLE001 - surfaced to the UI
                 job.state = "failed"
                 job.error = str(exc)
-                _unlink(plan.output_path)
+                _unlink(temporary_output)
                 break
 
         job.finished_at = time.time()

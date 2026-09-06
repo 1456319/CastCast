@@ -46,7 +46,7 @@ def test_service_preflight_defaults_to_ultra():
     assert report["verdict"]["will_be_4k"] is True
 
 def test_queue_blocks_unauthorized_video_transcode():
-    service = Service.__new__(Service)
+    service = Service({})
     service.supervisor = MagicMock()
     service.log = MagicMock()
     service._queued_for_later = set()
@@ -65,11 +65,11 @@ def test_queue_blocks_unauthorized_video_transcode():
     res = service.queue(["/videos/transcode_needed.avi"])
     # Prepare must NOT be called for video transcode in queue
     service.prepare.assert_not_called()
-    service.log.assert_called_with("queue: skipping transcode_needed.avi - video re-encoding requires explicit confirmation", "warn")
-    assert res.get("skipped", 0) >= 1 or res.get("error") == "no castable items found in the provided paths"
+    assert "explicitly" in res["error"]
+    service.supervisor.queue_load.assert_not_called()
 
-def test_queue_skips_transcode_and_queues_valid_item():
-    service = Service.__new__(Service)
+def test_queue_blocks_entire_order_when_one_item_needs_transcode():
+    service = Service({})
     service.supervisor = MagicMock()
     service.log = MagicMock()
     service._queued_for_later = set()
@@ -103,5 +103,5 @@ def test_queue_skips_transcode_and_queues_valid_item():
     ])
     res = service.queue(["/videos/transcode_needed.avi", "/videos/ready.mp4"])
     service.prepare.assert_not_called()
-    assert res.get("skipped", 0) == 1
-    assert res.get("queued", 0) == 1
+    assert res.get("error")
+    service.supervisor.queue_load.assert_not_called()

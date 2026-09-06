@@ -20,12 +20,12 @@ import urllib.error
 import urllib.request
 
 from .api import API_PORT, ApiServer
-from .service import CastService
+from .service import CastService, DEFAULT_MEDIA_ROOT
 
 DEFAULT_CONFIG_PATH = "~/.config/castcast/config.json"
 
 DEFAULT_CONFIG = {
-    "media_roots": ["/storage/emulated/0/Download/Chromecast"],
+    "media_roots": [DEFAULT_MEDIA_ROOT],
     "work_dir": None,
     "static_host": None,
     "static_port": 8009,
@@ -77,26 +77,41 @@ def _listener_pids(port: int) -> list[int]:
     return sorted(pids)
 
 
+def _process_identity(pid: int) -> tuple[str, bytes] | None:
+    """Check ownership, command and start time before signalling a listener."""
+    try:
+        proc = f"/proc/{pid}"
+        if os.stat(proc).st_uid != os.getuid():
+            return None
+        with open(f"{proc}/cmdline", "rb") as fh:
+            cmd = fh.read()
+        args = cmd.rstrip(b"\0").split(b"\0")
+        if not any(args[i:i+2] == [b"-m", b"castcast"] for i in range(len(args)-1)):
+            return None
+        with open(f"{proc}/stat") as fh:
+            start = fh.read().rsplit(")", 1)[1].split()[19]
+        return start, cmd
+    except (OSError, IndexError):
+        return None
+
+
 def _kill_server(port: int, timeout: float = 5.0) -> bool:
-    pids = _listener_pids(port)
-    if not pids:
+    identities = {pid: _process_identity(pid) for pid in _listener_pids(port)}
+    if not identities:
         return False
-    for pid in pids:
-        try:
+    if any(identity is None for identity in identities.values()):
+        raise RuntimeError(f"Port {port} belongs to an unverified process; refusing to terminate it")
+    for pid, identity in identities.items():
+        if _process_identity(pid) == identity:
             os.kill(pid, signal.SIGTERM)
-            print(f"sent SIGTERM to castcast listener pid {pid}")
-        except OSError as exc:
-            print(f"warning: could not terminate pid {pid}: {exc}", file=sys.stderr)
-    deadline = time.time() + timeout
-    while time.time() < deadline and _listener_pids(port):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not any(_process_identity(pid) == identity for pid, identity in identities.items()):
+            return True
         time.sleep(0.1)
-    remaining = _listener_pids(port)
-    for pid in remaining:
-        try:
+    for pid, identity in identities.items():
+        if _process_identity(pid) == identity:
             os.kill(pid, signal.SIGKILL)
-            print(f"sent SIGKILL to castcast listener pid {pid}")
-        except OSError as exc:
-            print(f"warning: could not kill pid {pid}: {exc}", file=sys.stderr)
     return True
 
 def load_config(path: str) -> dict:
@@ -113,7 +128,7 @@ def load_config(path: str) -> dict:
 
 def _tail_logs(service: CastService) -> None:
     seen = 0
-    while True:
+    while not service._stop.is_set():
         for line in service.log_buffer.recent(since=seen):
             seen = line["seq"]
             stamp = time.strftime("%H:%M:%S", time.localtime(line["ts"]))
@@ -147,7 +162,7 @@ def _print_report(report: dict) -> int:
     print()
     mark = "OK " if verdict.get("castable") and not verdict.get("needs_processing") else "!! "
     print(f"{mark}{verdict.get('summary')}")
-    print(f"   true 4K on the Ultra: {'yes' if verdict.get('will_be_4k') else 'no'}")
+    print(f"   4K source compatibility (output unverified): {'yes' if verdict.get('will_be_4k') else 'no'}")
     print()
 
     for issue in verdict.get("issues") or []:
@@ -209,7 +224,7 @@ def main(argv=None) -> int:
     serve.add_argument("--api-host")
     serve.add_argument("--quiet", action="store_true")
     serve.add_argument("--kill-existing", action="store_true",
-                       help="terminate any process already listening on the API port before starting")
+                       help="terminate a verified CastCast daemon on the API port before starting")
     serve.add_argument("--restart", action="store_true",
                        help="alias for --kill-existing; useful after starting from the wrong directory")
     serve.add_argument("--if-running", choices=("fail", "exit", "kill", "restart"), default="fail",
@@ -343,7 +358,6 @@ def main(argv=None) -> int:
         args.if_running = "fail"
 
     if args.command == "prepare":
-        service.media_server.start()
         result = service.prepare(os.path.abspath(args.path), force=args.force)
         if result.get("error"):
             print(f"error: {result['error']}", file=sys.stderr)
@@ -351,7 +365,7 @@ def main(argv=None) -> int:
         if not result.get("started"):
             print("nothing to do -- the file is already castable.")
             return 0
-        while service._remuxer.busy:  # noqa: SLF001
+        while service._remux_thread and service._remux_thread.is_alive():  # noqa: SLF001
             job = service._remuxer.job  # noqa: SLF001
             if job:
                 sys.stdout.write(f"\r  converting... {job.progress * 100:5.1f}%")

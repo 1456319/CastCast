@@ -75,9 +75,9 @@ class TestTransformDashManifest(unittest.TestCase):
   </Period>
 </MPD>"""
         result = transform_dash_manifest(manifest, "http://cdn.example.com/manifest.mpd")
-        # Non-English audio sets should be filtered out
-        self.assertNotIn('id="1"', result)
-        self.assertNotIn('id="2"', result)
+        # Preserve all languages; preference belongs to the player
+        self.assertIn('id="1"', result)
+        self.assertIn('id="2"', result)
         # English audio should remain
         self.assertIn('id="3"', result)
         # Spanish subtitle text should remain

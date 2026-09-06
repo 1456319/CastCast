@@ -7,6 +7,8 @@ the pre-flight pipeline.
 from __future__ import annotations
 
 import collections
+import copy
+import json
 import hashlib
 import os
 import re
@@ -139,7 +141,6 @@ class CastService:
             "subdl_api_key",
             "SUBDL_API_KEY",
         )
-        self._queued_for_later = set()
         self._current_scavenged_tracks: List[dict] = []
         self._queue_item_scavenged: dict[str, list[dict]] = {}
         self._current_source_type: str = "local"
@@ -149,12 +150,24 @@ class CastService:
         self._events: List[Callable[[str, dict], None]] = []
         self._watchdog: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._queue_order: list[str] = []
+        self._queue_intent: list[str] = []
+        self._queue_sync = "inactive"
+        self._queue_generation = 0
+        self._library_fingerprint = None
+        order_file = os.path.join(self.work_dir, "queue_order.json")
+        try:
+            with open(order_file) as fh:
+                order = json.load(fh)
+                if isinstance(order, list) and all(isinstance(p, str) for p in order):
+                    self._queue_order = order
+        except (OSError, ValueError):
+            pass
         
         self.amazon_queue_path = os.path.expanduser("~/.config/castcast/amazon_queue.json")
         self.amazon_queue = []
         if os.path.exists(self.amazon_queue_path):
             try:
-                import json
                 with open(self.amazon_queue_path, "r") as f:
                     self.amazon_queue = json.load(f)
             except Exception as e:
@@ -164,19 +177,16 @@ class CastService:
         self.resume_state = {}
         if os.path.exists(self.resume_state_path):
             try:
-                import json
                 with open(self.resume_state_path, "r") as f:
                     self.resume_state = json.load(f)
             except Exception as e:
                 self.log(f"Failed to load resume_state: {e}", "warn")
 
     def save_amazon_queue(self):
-        import json
         with self._lock:
             os.makedirs(os.path.dirname(self.amazon_queue_path), exist_ok=True)
             try:
-                with open(self.amazon_queue_path, "w") as f:
-                    json.dump(self.amazon_queue, f)
+                self._save_json(self.amazon_queue_path, self.amazon_queue)
                 self._emit("amazon_queue", {"items": self.amazon_queue})
             except Exception as e:
                 self.log(f"Failed to save amazon_queue: {e}", "warn")
@@ -224,11 +234,21 @@ class CastService:
 
     def stop(self) -> None:
         self._stop.set()
+        self._remuxer.cancel()
         if self.supervisor:
             self.supervisor.stop()
         self.media_server.stop()
 
     def log(self, message: str, level: str = "info") -> None:
+        # Apply redaction once before either SSE or persistent logging sees it.
+        message = re.sub(r"https?://[^\s<>\"']+", lambda m: redact_sensitive_url(m.group(0)), str(message))
+        message = re.sub(r"(?i)(Bearer\s+)[^\s\"']+", r"\1[REDACTED]", message)
+        server = getattr(self, "media_server", None)
+        if server:
+            for name in ("root_token", "license_token"):
+                token = getattr(server, name, "")
+                if isinstance(token, str) and token:
+                    message = message.replace(token, "[REDACTED]")
         self.log_buffer.add(message, level)
 
     def subscribe(self, listener) -> None:
@@ -239,6 +259,11 @@ class CastService:
             self._events.remove(listener)
 
     def _on_media_status(self, payload: dict) -> None:
+        if self._queue_intent:
+            observed = [i.get("media", {}).get("customData", {}).get("sourcePath") for i in (payload.get("queue_items") or [])]
+            items = payload.get("queue_items") or []
+            confirmed = observed == self._queue_intent and all(i.get("itemId") is not None for i in items)
+            self._queue_sync = "synced" if confirmed and payload.get("media_session_id") is not None else "unconfirmed"
         source_path = payload.get("source_path")
         if not source_path:
             return
@@ -249,12 +274,23 @@ class CastService:
                     self._current_scavenged_tracks = self._queue_item_scavenged[source_path]
                     self._current_source_type = "local"
                 elif os.path.isfile(source_path):
-                    self._current_scavenged_tracks = self._scavenge_all_local_subtitles(source_path)
+                    # Never run ffmpeg or metadata HTTP requests on the Cast
+                    # reader thread: that would prevent heartbeat processing.
+                    self._current_scavenged_tracks = []
                     self._current_source_type = "local"
 
     def _emit(self, kind: str, payload: dict) -> None:
         if kind == "media" and isinstance(payload, dict):
             self._on_media_status(payload)
+        elif kind in ("load_failed", "command_failed") and self._queue_intent:
+            self._queue_sync = "blocked"
+        elif kind == "receiver_tracks":
+            with self._lock:
+                self._current_scavenged_tracks = [
+                    {"track_id": t["id"], "language": t.get("language", "und"),
+                     "label": t.get("label") or t.get("language", "Subtitle"), "source": "manifest"}
+                    for t in payload.get("tracks", []) if "id" in t
+                ]
         for listener in list(self._events):
             try:
                 listener(kind, payload)
@@ -270,6 +306,7 @@ class CastService:
         """
         while not self._stop.wait(5.0):
             try:
+                session = None
                 if self.supervisor:
                     session = self.supervisor._session  # noqa: SLF001
                     
@@ -279,25 +316,34 @@ class CastService:
                         if pos and pos > 10.0:
                             self.resume_state[session.source_path] = pos
                             try:
-                                import json
-                                with open(self.resume_state_path, "w") as f:
-                                    json.dump(self.resume_state, f)
+                                self._save_json(self.resume_state_path, self.resume_state)
                             except Exception as e:
                                 self.log(f"Failed to save resume_state: {e}", "warn")
 
-                if self.media_server.refresh_lan_ip() and self.supervisor:
-                    if session and session.source_path:
+                target_host = self.device.host if self.device else "8.8.8.8"
+                old_base = f"http://{self.media_server.lan_ip}:{self.media_server.port}"
+                if self.media_server.refresh_lan_ip(target_host) and self.supervisor:
+                    if session:
                         self.log("LAN address changed mid-cast; re-issuing LOAD "
                                  "with the new media URL", "warn")
-                        self.supervisor.load(
-                            self.media_server.url_for(session.source_path),
-                            content_type=session.content_type,
-                            title=session.title,
-                            duration=session.duration,
-                            source_path=session.source_path,
-                            tracks=session.tracks,
-                            active_track_ids=session.active_track_ids,
-                        )
+                        self.supervisor.rebase_media_urls(old_base, f"http://{self.media_server.lan_ip}:{self.media_server.port}")
+                items = self.library()
+                fingerprint = [(i["path"], i["size_bytes"]) for i in items]
+                if fingerprint != self._library_fingerprint:
+                    had_fingerprint = self._library_fingerprint is not None
+                    self._library_fingerprint = fingerprint
+                    self._emit("library", {"items": items, "trash": self.get_trash()})
+                    if had_fingerprint and self._queue_intent and self.supervisor and session and session.queue_items:
+                        current_paths = [i["path"] for i in items]
+                        if current_paths != self._queue_intent:
+                            if current_paths:
+                                result = self.queue(current_paths, resume=self.supervisor.snapshot())
+                                if result.get("error"):
+                                    self.log(f"Filesystem queue reconciliation blocked: {result['error']}", "error")
+                            else:
+                                self.supervisor.stop_media()
+                                self._queue_intent = []
+                                self._queue_sync = "inactive"
             except Exception as exc:  # noqa: BLE001
                 self.log(f"watchdog: {exc}", "warn")
 
@@ -313,6 +359,9 @@ class CastService:
         return [d.to_dict() for d in devices]
 
     def connect(self, host: str, port: int = 8009, friendly_name: str = "") -> dict:
+        if port != 8009:
+            raise RuntimeError("Cast V2 uses TLS port 8009; setup HTTP ports are not control ports")
+        self.media_server.refresh_lan_ip(host)
         with self._lock:
             if self.supervisor:
                 self.supervisor.stop()
@@ -349,7 +398,7 @@ class CastService:
 
     def status(self) -> dict:
         out = {
-            "connected": bool(self.supervisor),
+            "connected": bool(self.supervisor and self.supervisor.snapshot()["state"] not in {"disconnected", "connecting", "dead"}),
             "device": self.device.to_dict() if self.device else None,
             "media_server": {
                 "base_url": self.media_server.base_url,
@@ -359,6 +408,7 @@ class CastService:
             },
             "tools": {"ffmpeg": have_ffmpeg(), "ffprobe": have_ffprobe(), "yt_dlp": have_ytdlp()},
             "remux": self._remuxer.job.to_dict() if self._remuxer.job else None,
+            "queue": {"paths": list(self._queue_intent), "sync_state": self._queue_sync},
         }
         out["cast"] = self.supervisor.snapshot() if self.supervisor else {
             "state": State.DISCONNECTED.value}
@@ -382,7 +432,7 @@ class CastService:
             version=__version__,
         )
         out = report.to_dict()
-        out["connected"] = bool(self.supervisor)
+        out["connected"] = self.status()["connected"]
         return out
 
     # -- library and pre-flight -------------------------------------------
@@ -410,7 +460,44 @@ class CastService:
                     if deep:
                         item.update(self.preflight(full))
                     entries.append(item)
+        order = {path: index for index, path in enumerate(self._queue_order)}
+        entries.sort(key=lambda item: (order.get(item["path"], len(order)), item["path"].casefold()))
         return entries
+
+    @staticmethod
+    def _save_json(path: str, value) -> None:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        import tempfile
+        fd, temporary = tempfile.mkstemp(prefix=".state-", dir=os.path.dirname(path))
+        os.close(fd)
+        with open(temporary, "w") as fh:
+            json.dump(value, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, path)
+
+    def reorder_library(self, paths: list[str]) -> dict:
+        current = [item["path"] for item in self.library()]
+        if len(paths) != len(set(paths)) or set(paths) != set(current):
+            raise RuntimeError("library changed; refresh before reordering")
+        supervisor = self.supervisor
+        if supervisor and supervisor.status.queue_items:
+            remote = supervisor.snapshot()["queue_items"]
+            ids = {i.get("media", {}).get("customData", {}).get("sourcePath"): i.get("itemId") for i in remote}
+            if set(ids) != set(paths) or any(ids[p] is None for p in paths):
+                raise RuntimeError("receiver queue is not synchronized; cast the queue before reordering")
+            request_id = supervisor._media_command({"type": "QUEUE_REORDER", "itemIds": [ids[p] for p in paths]})
+            # Never hold the service lock while awaiting the receiver thread.
+            supervisor.wait_for_request(request_id)
+        with self._lock:
+            self._save_json(os.path.join(self.work_dir, "queue_order.json"), paths)
+            self._queue_order = list(paths)
+            if self._queue_intent:
+                self._queue_intent = list(paths)
+                self._queue_sync = "unconfirmed"
+        result = {"items": self.library()}
+        self._emit("library", {**result, "trash": self.get_trash()})
+        return result
 
     def probe_cached(self, path: str) -> MediaInfo:
         try:
@@ -442,10 +529,12 @@ class CastService:
         except ProbeError as exc:
             return {"error": str(exc), "media": None, "verdict": None, "plan": None}
 
-        is_ultra = False
+        is_ultra = True
         dev = getattr(self.supervisor, "device", None) or self.device
         if dev:
-            is_ultra = getattr(dev, "is_ultra", False)
+            model = (getattr(dev, "model", "") or "").lower()
+            if model and ("chromecast" in model or "eureka" in model) and "ultra" not in model and "google tv 4k" not in model:
+                is_ultra = False
 
         verdict = capability.evaluate(
             info,
@@ -458,8 +547,16 @@ class CastService:
 
         # If we already produced a converted copy, point at it.
         ready = None
-        if plan and os.path.exists(plan.output_path):
-            ready = plan.output_path
+        if plan and os.path.isfile(plan.output_path) and os.path.getsize(plan.output_path) > 0:
+            if os.path.isfile(path) and os.path.getmtime(plan.output_path) >= os.path.getmtime(path):
+                try:
+                    prepared_info = self.probe_cached(plan.output_path)
+                    prepared_verdict = capability.evaluate(prepared_info, is_ultra=is_ultra,
+                        assume_avr_passthrough=bool(self.config.get("avr_passthrough")))
+                    if prepared_verdict.castable and not prepared_verdict.needs_processing:
+                        ready = plan.output_path
+                except ProbeError:
+                    pass
 
         return {
             "media": info.to_dict(),
@@ -498,7 +595,7 @@ class CastService:
         self._remux_thread = threading.Thread(target=worker, name="castcast-remux",
                                               daemon=True)
         self._remux_thread.start()
-        return report
+        return {**report, "started": True}
 
     def remaster(self, path: str, force: bool = False) -> dict:
         """Run the high-fidelity 4K remaster in the background."""
@@ -551,68 +648,6 @@ class CastService:
                      + (f": {job.error}" if job.error else ""), level)
         self._emit("remux", job.to_dict())
 
-        if job.state == "done" and job.plan.input_path in self._queued_for_later:
-            self._queued_for_later.remove(job.plan.input_path)
-            if self.supervisor and self.supervisor._state.value != "disconnected":
-                self._insert_queued_item(job.plan.input_path)
-
-    def _insert_queued_item(self, path: str) -> None:
-        report = self.preflight(path)
-        verdict = report.get("verdict")
-        target = path
-
-        if verdict and verdict.get("needs_processing"):
-            prepared = report.get("prepared_path")
-            if prepared:
-                target = prepared
-            else:
-                self.log(f"queue_insert: skipping {os.path.basename(path)} because it still needs conversion", "warn")
-                return
-
-        info = report.get("media") or {}
-        target, language_note = self._target_for_default_language(target, info)
-        if language_note:
-            self.log(language_note, "debug")
-
-        try:
-            url = self.media_server.url_for(target)
-        except ValueError as exc:
-            self.log(f"queue_insert: skipping {os.path.basename(path)} due to url error: {exc}", "warn")
-            return
-
-        title = resolve_title(path)
-        scavenged = self._scavenge_all_local_subtitles(path, info)
-        tracks, active_track_ids = self._tracks_for_load(scavenged)
-
-        item = {
-            "autoplay": True,
-            "preloadTime": 10.0,
-            "media": {
-                "contentId": url,
-                "streamType": "BUFFERED",
-                "contentType": self._get_content_type(target, info),
-                "customData": {
-                    "sourcePath": path
-                },
-                "metadata": {
-                    "metadataType": 1,
-                    "title": title
-                }
-            }
-        }
-
-        duration = float(info.get("duration_s") or 0.0)
-        if duration:
-            item["media"]["duration"] = duration
-        if tracks:
-            item["media"]["tracks"] = tracks
-            item["media"]["textTrackStyle"] = DEFAULT_TEXT_TRACK_STYLE
-        if active_track_ids:
-            item["activeTrackIds"] = active_track_ids
-
-        if self.supervisor:
-            self.supervisor.queue_insert(item)
-
     # -- casting -----------------------------------------------------------
 
     def auto_advance(self, source_path: str) -> None:
@@ -645,7 +680,24 @@ class CastService:
                         ).start()
                 break
 
-    def cast(self, path: str, *, allow_unsafe: bool = False,
+    def cast(self, path: str, **options) -> dict:
+        # Failed preparation must not erase the currently playing queue/UI.
+        fields = ("_queue_intent", "_queue_sync", "_queue_generation",
+                  "_current_scavenged_tracks", "_current_media_path",
+                  "_current_youtube_info", "_queue_item_scavenged", "_current_source_type")
+        saved = {key: copy.deepcopy(getattr(self, key)) for key in fields}
+        try:
+            result = self._cast_impl(path, **options)
+        except Exception:
+            for key, value in saved.items():
+                setattr(self, key, value)
+            raise
+        if not result.get("casting"):
+            for key, value in saved.items():
+                setattr(self, key, value)
+        return result
+
+    def _cast_impl(self, path: str, *, allow_unsafe: bool = False,
              auto_prepare: bool = True, subtitle_path: str = "",
              subtitle_language: str = "", audio_index: Optional[int] = None,
              subtitle_index: Optional[int] = None, license_url: str = None,
@@ -655,6 +707,9 @@ class CastService:
             return {"error": "not connected to a device"}
 
         with self._lock:
+            self._queue_generation += 1
+            self._queue_intent = []
+            self._queue_sync = "inactive"
             self._current_scavenged_tracks = []
             self._current_media_path = path
             self._current_youtube_info = {}
@@ -752,10 +807,9 @@ class CastService:
             if headers:
                 self.log(f"Applying persistent ruleset headers for {path}")
                 self.media_server.register_intercept(path, headers)
-                import base64
-                encoded = base64.b64encode(path.encode("utf-8")).decode("utf-8")
-                path = f"http://{self.media_server.lan_ip}:{self.media_server.port}/proxy/?url={encoded}"
-                # We skip yt-dlp for proxied streams
+                proxy_url = self.media_server.proxy_url_for(path)
+                self.supervisor.load(proxy_url, content_type=guess_mime(path), title=title or resolve_title(path), source_path=path)
+                return {"casting": True, "url": proxy_url}
             else:
                 if not have_ytdlp():
                     return {"error": "yt-dlp is required to download web streams."}
@@ -871,7 +925,9 @@ class CastService:
                                  "pass allow_unsafe to try casting anyway.",
                         "requires_confirmation": True,
                     }
-                self.prepare(path)
+                preparation = self.prepare(path)
+                if preparation.get("error"):
+                    return preparation
                 return {**report, "error": "conversion started; retry the cast when it "
                                            "finishes", "converting": True}
             else:
@@ -880,7 +936,12 @@ class CastService:
 
         original_info = report.get("media") or {}
         info = probe(target).to_dict() if target != path else original_info
-        target, language_note = self._target_for_default_language(target, info)
+        if audio_index is not None:
+            target = self._target_for_selected_audio(path, target, original_info, audio_index)
+            info = probe(target).to_dict()
+            language_note = ""
+        else:
+            target, language_note = self._target_for_default_language(target, info)
         if language_note:
             self.log(language_note, "debug")
 
@@ -931,16 +992,22 @@ class CastService:
             backdrop_url = ""
 
         if subtitle_index is not None:
-            active_track_ids = [subtitle_index]
-
-        if audio_index is not None:
-            active_track_ids.append(audio_index)
+            selected_sub = next((t for t in scavenged_tracks if t.get("stream_index") == subtitle_index), None)
+            if not selected_sub:
+                return {"error": "Selected subtitle stream could not be extracted as WebVTT"}
+            active_track_ids = [selected_sub["track_id"]]
 
         content_type = self._get_content_type(target, info)
         resume_pos = max(0.0, self.resume_state.get(path, 0.0) - 10.0)
 
+        autoplay = True
+        current = self.supervisor.snapshot()
+        if current.get("source_path") == path and current.get("state") in {"playing", "paused", "buffering"}:
+            resume_pos = current.get("position", resume_pos)
+            autoplay = current.get("state") != "paused"
         self.supervisor.load(
             url,
+            autoplay=autoplay,
             content_type=content_type,
             title=title,
             subtitle=subtitle,
@@ -951,7 +1018,8 @@ class CastService:
             tracks=tracks,
             active_track_ids=active_track_ids,
             license_url=license_url,
-            position=resume_pos
+            position=resume_pos,
+            require_4k=bool(original_info.get("is_4k")),
         )
 
 
@@ -992,7 +1060,7 @@ class CastService:
         amazon_data = amazon_drm.fetch_amazon_4k_manifest(title_id)
 
         encoded_url = base64.b64encode(amazon_data["mpd_url"].encode("utf-8")).decode("utf-8")
-        proxied_path = f"http://{self.media_server.lan_ip}:{self.media_server.port}/proxy/?url={encoded_url}"
+        proxied_path = self.media_server.proxy_url_for(amazon_data["mpd_url"])
         self.log(f"Amazon 4K Manifest (Proxied): {redact_sensitive_url(proxied_path)}")
 
         self.media_server.drm_tokens[f"amazon_{title_id}"] = {
@@ -1000,10 +1068,10 @@ class CastService:
             "playback_envelope": amazon_data["playback_envelope"]
         }
         if hasattr(self.media_server, "public_url") and self.media_server.public_url:
-            license_url = f"{self.media_server.public_url}/amazon/license?title_id={title_id}"
+            license_url = self.media_server.amazon_license_url(title_id)
             self.log(f"Using public HTTPS proxy for DRM: {license_url}")
         else:
-            license_url = f"http://{self.media_server.lan_ip}:{self.media_server.port}/amazon/license?title_id={title_id}"
+            license_url = self.media_server.amazon_license_url(title_id)
             self.log("Warning: Using local HTTP proxy for DRM. This may fail due to Chromecast Mixed Content restrictions.", "warn")
 
         # Fetch and parse manifest subtitles
@@ -1029,6 +1097,24 @@ class CastService:
             except Exception as exc:
                 self.log(f"Error parsing MPD subtitles: {exc}", "warn")
 
+        # An API request for UHD is not evidence that UHD was returned.
+        try:
+            import xml.etree.ElementTree as ET
+            manifest = ET.fromstring(manifest_text or "")
+            uhd = False
+            for adaptation in manifest.iter():
+                if adaptation.tag.rsplit("}", 1)[-1] != "AdaptationSet":
+                    continue
+                for representation in adaptation:
+                    if representation.tag.rsplit("}", 1)[-1] == "Representation":
+                        width = int(representation.get("width", adaptation.get("width", "0")))
+                        height = int(representation.get("height", adaptation.get("height", "0")))
+                        uhd = uhd or (width >= 3840 and height >= 2160)
+            if not uhd:
+                return {"error": "Amazon returned no verified 3840x2160 representation; 4K playback was not started"}
+        except (ET.ParseError, ValueError, TypeError):
+            return {"error": "Amazon manifest could not be verified for 4K; playback was not started"}
+
         content_type = "application/dash+xml"
         if resume_pos is None:
             raw_pos = max(self.resume_state.get(proxied_path, 0.0), self.resume_state.get(path, 0.0))
@@ -1051,131 +1137,163 @@ class CastService:
             title=title,
             source_path=path,
             license_url=license_url,
-            position=resume_pos
+            position=resume_pos,
+            require_4k=True,
         )
         return {"casting": True, "url": proxied_path, "drm": True}
 
-    def queue(self, paths: list[str]) -> dict:
-        """Queue multiple items for playback. Pre-flights each and only queues castable ones."""
+    def queue(self, paths: list[str], *, resume: Optional[dict] = None,
+              generation: Optional[int] = None) -> dict:
+        """Prepare the entire requested order, then replace the receiver queue.
+
+        Never omit a failed item or append a remux after later items have begun.
+        A request is unconfirmed until receiver MEDIA_STATUS reports its order.
+        """
         if not self.supervisor:
             return {"error": "not connected to a device"}
-
-        items = []
-        item_scavenged = []
-        skipped = 0
-        preparing = 0
-
+        if not paths or not all(isinstance(p, str) for p in paths) or len(set(paths)) != len(paths):
+            return {"error": "queue paths must be nonempty, unique strings"}
+        with self._lock:
+            if generation is None:
+                self._queue_generation += 1
+                generation = self._queue_generation
+            elif generation != self._queue_generation:
+                return {"error": "queue request was superseded"}
+            self._queue_intent = list(paths)
+            self._queue_sync = "preparing"
+        reports = []
+        plans = []
         for path in paths:
             report = self.preflight(path)
-            verdict = report.get("verdict")
-            target = path
+            if report.get("error") or report.get("tools_missing"):
+                self._queue_sync = "blocked"
+                return {"error": f"Queue preflight failed for {path}: {report.get('error') or 'ffprobe unavailable'}"}
+            verdict = report.get("verdict") or {}
+            if verdict.get("needs_processing") and not report.get("prepared_path"):
+                if verdict.get("video_action") == "transcode":
+                    self._queue_sync = "blocked"
+                    return {"error": f"Prepare {path} explicitly before casting: video re-encoding is required"}
+                plan = dict(report.get("plan") or {})
+                if not plan:
+                    self._queue_sync = "blocked"
+                    return {"error": f"No compatible preparation plan for {path}"}
+                plan.pop("shell_command", None)
+                plans.append((remux.RemuxPlan(**plan), (report.get("media") or {}).get("duration_s", 0)))
+            reports.append(report)
 
-            if verdict and verdict.get("needs_processing"):
-                prepared = report.get("prepared_path")
-                if prepared:
-                    target = prepared
-                    self.log(f"queue: using previously converted file: {os.path.basename(prepared)}")
-                else:
-                    self.log(f"queue: preparing {os.path.basename(path)} for later queueing")
-                    self._queued_for_later.add(path)
-                    self.prepare(path)
-                    preparing += 1
-                    continue
+        if plans:
+            def worker():
+                try:
+                    for plan, duration in plans:
+                        if generation != self._queue_generation or self._stop.is_set():
+                            return
+                        job = self._remuxer.run(plan, duration_s=duration)
+                        if job.state != "done":
+                            raise RuntimeError(job.error or job.state)
+                    result = self.queue(paths, resume=resume, generation=generation)
+                    if result.get("error"):
+                        raise RuntimeError(result["error"])
+                except Exception as exc:
+                    if generation == self._queue_generation:
+                        self._queue_sync = "blocked"
+                    self.log(f"Queue preparation stopped: {exc}", "error")
+            threading.Thread(target=worker, daemon=True, name="castcast-queue-prepare").start()
+            return {"queued": 0, "preparing": len(plans), "skipped": 0, "sync_state": "preparing"}
 
-            info = report.get("media") or {}
-            target, language_note = self._target_for_default_language(target, info)
-            if language_note:
-                self.log(language_note, "debug")
-
+        items, scavenged_by_path = [], {}
+        for path, report in zip(paths, reports):
+            target = report.get("prepared_path") or path
+            original_info = report.get("media") or {}
+            info = self.probe_cached(target).to_dict() if target != path else original_info
+            target, note = self._target_for_default_language(target, info)
+            if note:
+                self.log(note, "debug")
             try:
                 url = self.media_server.url_for(target)
             except ValueError as exc:
-                self.log(f"queue: skipping {os.path.basename(path)} due to url error: {exc}", "warn")
-                skipped += 1
-                continue
-
-            title = resolve_title(path)
-            scavenged = self._scavenge_all_local_subtitles(path, info)
-            tracks, active_track_ids = self._tracks_for_load(scavenged)
-
-            item = {
-                "autoplay": True,
-                "preloadTime": 10.0,
-                "media": {
-                    "contentId": url,
-                    "streamType": "BUFFERED",
-                    "contentType": self._get_content_type(target, info),
-                    "customData": {
-                        "sourcePath": path
-                    },
-                    "metadata": {
-                        "metadataType": 1,
-                        "title": title
-                    }
-                }
-            }
-
-            duration = float(info.get("duration_s") or 0.0)
-            if duration:
-                item["media"]["duration"] = duration
+                self._queue_sync = "blocked"
+                return {"error": str(exc)}
+            scavenged = self._scavenge_all_local_subtitles(path, original_info)
+            tracks, active = self._tracks_for_load(scavenged)
+            scavenged_by_path[path] = scavenged
+            media = {"contentId": url, "streamType": "BUFFERED",
+                     "contentType": self._get_content_type(target, info),
+                     "customData": {"sourcePath": path, "require4k": bool(original_info.get("is_4k"))},
+                     "metadata": {"metadataType": 1, "title": resolve_title(path)}}
+            if info.get("duration_s"):
+                media["duration"] = float(info["duration_s"])
             if tracks:
-                item["media"]["tracks"] = tracks
-                item["media"]["textTrackStyle"] = DEFAULT_TEXT_TRACK_STYLE
-            if active_track_ids:
-                item["activeTrackIds"] = active_track_ids
-
+                media["tracks"] = tracks
+                media["textTrackStyle"] = DEFAULT_TEXT_TRACK_STYLE
+            item = {"autoplay": True, "preloadTime": 5.0, "media": media}
+            if active:
+                item["activeTrackIds"] = active
             items.append(item)
-            item_scavenged.append(scavenged)
-
-        if not items:
-            return {"error": "no castable items found in the provided paths"}
-
-        first_path = items[0].get("media", {}).get("customData", {}).get("sourcePath", "")
+        # Leave room for the protobuf envelope and request metadata.
+        if len(json.dumps(items, separators=(",", ":")).encode()) > 60 * 1024:
+            self._queue_sync = "blocked"
+            return {"error": "Queue exceeds the Cast message limit; split it into smaller queues"}
+        start_index, position, autoplay = 0, 0.0, True
+        if resume and resume.get("source_path") in paths:
+            start_index = paths.index(resume["source_path"])
+            position = resume.get("position", 0.0)
+            autoplay = resume.get("state") != "paused"
         with self._lock:
-            self._current_scavenged_tracks = item_scavenged[0]
+            if generation != self._queue_generation:
+                return {"error": "queue request was superseded"}
+            self._queue_item_scavenged = scavenged_by_path
+            self._current_scavenged_tracks = scavenged_by_path[paths[start_index]]
             self._current_source_type = "local"
-            self._current_media_path = first_path
-            self._queue_item_scavenged = {
-                it.get("media", {}).get("customData", {}).get("sourcePath", ""): sc
-                for it, sc in zip(items, item_scavenged)
-            }
-
-        self.supervisor.queue_load(items)
-        return {"queued": len(items), "skipped": skipped, "preparing": preparing}
+            self._current_media_path = paths[start_index]
+            self._queue_sync = "unconfirmed"
+        if resume:
+            self.supervisor.queue_load(items, start_index=start_index, position=position, autoplay=autoplay)
+        else:
+            self.supervisor.queue_load(items)
+        return {"queued": len(items), "skipped": 0, "preparing": 0, "sync_state": "unconfirmed"}
 
     def _target_for_default_language(self, target: str, info: dict) -> tuple[str, str]:
         audio = info.get("audio") or []
         if len(audio) < 2:
             return target, ""
         preferred = self.default_language
-        selected = self._first_stream_for_language(audio, preferred)
-        if not selected:
-            langs = ", ".join(a.get("language") or "und" for a in audio)
-            return (
-                target,
-                f"no {preferred} audio track found; receiver will use source default ({langs})",
-            )
-        if audio.index(selected) == 0:
-            return target, f"{preferred} audio is already the first/default track"
+        selected = self._first_stream_for_language(audio, preferred) or audio[0]
         if not have_ffmpeg():
-            return (
-                target,
-                f"{preferred} audio is track {selected.get('index')}, "
-                "but ffmpeg is unavailable for default-track remux",
-            )
-        out = self._language_output_path(target, preferred)
-        if not os.path.exists(out) or os.path.getmtime(out) < os.path.getmtime(target):
-            cmd = self._default_audio_remux_command(target, selected, out)
-            self.log(
-                f"remuxing to make {preferred} audio the default track: {' '.join(cmd)}",
-                "debug",
-            )
-            proc = subprocess.run(cmd, capture_output=True, timeout=900, check=False)
-            if proc.returncode != 0:
-                detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
-                reason = detail[-1] if detail else proc.returncode
-                return target, f"default-language remux failed: {reason}"
-        return out, f"using remuxed default-{preferred} audio file: {os.path.basename(out)}"
+            raise RuntimeError("Selecting a reliable audio track requires ffmpeg")
+        # Serve one explicitly selected track; the source retains every language.
+        out = self._target_for_selected_audio(target, target, info, selected["index"])
+        return out, f"using audio language {selected.get('language') or 'und'} (source stream {selected['index']})"
+
+    def _target_for_selected_audio(self, source: str, video_target: str, info: dict, index: int) -> str:
+        selected = next((a for a in info.get("audio", []) if a.get("index") == index), None)
+        if not selected:
+            raise RuntimeError("Selected audio stream does not exist in the source")
+        output = self._language_output_path(video_target, f"audio-{index}")
+        if os.path.isfile(output) and os.path.getsize(output) and os.path.getmtime(output) >= max(os.path.getmtime(source), os.path.getmtime(video_target)):
+            try:
+                candidate = self.probe_cached(output)
+                if not capability.evaluate(candidate, assume_avr_passthrough=bool(self.config.get("avr_passthrough"))).needs_processing:
+                    return output
+            except ProbeError:
+                pass
+        temporary = output + ".partial.mp4"
+        os.makedirs(self.work_dir, exist_ok=True)
+        args = [FFMPEG, "-hide_banner", "-y", "-i", video_target, "-i", source,
+                "-map", "0:v:0", "-map", f"1:{index}", "-c:v", "copy"]
+        native = selected.get("codec") in {"aac", "mp3"} or (self.config.get("avr_passthrough") and selected.get("codec") in {"ac3", "eac3"})
+        channels = min(selected.get("channels") or 2, 6)
+        args += ["-c:a", "copy"] if native else ["-c:a", "aac", "-b:a", "640k" if channels > 2 else "192k", "-ac", str(channels)]
+        video_info = self.probe_cached(video_target).primary_video
+        if video_info and video_info.codec == "hevc":
+            args += ["-tag:v", "hvc1"]
+        args += ["-sn", "-dn", "-movflags", "+faststart", temporary]
+        result = subprocess.run(args, capture_output=True, timeout=900)
+        if result.returncode:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+            raise RuntimeError("Audio selection remux failed; original preserved")
+        os.replace(temporary, output)
+        return output
 
     def _first_stream_for_language(
         self,
@@ -1191,30 +1309,6 @@ class CastService:
                 continue
             return stream
         return None
-
-    def _default_audio_remux_command(self, source: str, audio: dict, output: str) -> list:
-        return [
-            FFMPEG,
-            "-hide_banner",
-            "-y",
-            "-i",
-            source,
-            "-map",
-            "0:v:0",
-            "-map",
-            f"0:{audio.get('index')}",
-            "-c",
-            "copy",
-            "-sn",
-            "-dn",
-            "-map_chapters",
-            "-1",
-            "-disposition:a:0",
-            "default",
-            "-movflags",
-            "+faststart",
-            output,
-        ]
 
     def _subtitle_extract_command(self, source: str, subtitle: dict, output: str) -> list:
         return [
@@ -1234,49 +1328,6 @@ class CastService:
         stem = os.path.splitext(os.path.basename(path))[0]
         digest = hashlib.sha1((path + language).encode()).hexdigest()[:10]
         return os.path.join(self.work_dir, f"{stem}.{language}.{digest}.cast.mp4")
-
-    def _extract_default_subtitle(self, path: str, info: dict) -> str:
-        preferred = self.default_language
-        sidecar = self._find_sidecar_subtitle(path, preferred)
-        if sidecar:
-            self.log(f"DEBUG-ONLY: selected sidecar {preferred} subtitles: {os.path.basename(sidecar)}", "debug")
-            return sidecar
-
-        subtitles = info.get("subtitles") or []
-        if not subtitles:
-            self.log(f"DEBUG-ONLY: no sidecar or embedded {preferred} subtitles found", "debug")
-            return ""
-        if not have_ffmpeg():
-            self.log(f"DEBUG-ONLY: embedded {preferred} subtitles found but ffmpeg is unavailable", "debug")
-            return ""
-        selected = self._first_stream_for_language(subtitles, preferred, forced=False)
-        selected = selected or self._first_stream_for_language(
-            subtitles,
-            preferred,
-        )
-        if not selected:
-            self.log(f"DEBUG-ONLY: no embedded {preferred} subtitle track found", "debug")
-            return ""
-        stem = hashlib.sha1((path + preferred + "sub").encode()).hexdigest()[:12]
-        out = os.path.join(self.work_dir, f"{stem}.{preferred}.vtt")
-        if os.path.exists(out) and os.path.getmtime(out) >= os.path.getmtime(path):
-            self.log(
-                f"DEBUG-ONLY: using cached embedded {preferred} subtitles: {os.path.basename(out)}",
-                "debug",
-            )
-            return out
-        cmd = self._subtitle_extract_command(path, selected, out)
-        self.log(
-            f"DEBUG-ONLY: extracting embedded {preferred} subtitles for sideload: {' '.join(cmd)}",
-            "debug",
-        )
-        proc = subprocess.run(cmd, capture_output=True, timeout=300, check=False)
-        if proc.returncode != 0:
-            detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
-            reason = detail[-1] if detail else proc.returncode
-            self.log(f"embedded subtitle extraction failed: {reason}", "warn")
-            return ""
-        return out
 
     def _find_sidecar_subtitle(self, path: str, language: str) -> str:
         directory = os.path.dirname(path)
@@ -1430,6 +1481,7 @@ class CastService:
                         "label": label,
                         "vtt_path": out_path,
                         "source": "embedded",
+                        "stream_index": idx,
                     })
                     seen_paths.add(out_path)
                     track_id += 1
@@ -1629,7 +1681,7 @@ class CastService:
         except (ValueError, TypeError):
             return {"error": f"invalid track_id: {track_id}"}
 
-        if tid == 0:
+        if tid == 0 and not any(t.get("track_id") == 0 for t in self._current_scavenged_tracks):
             self.supervisor.set_active_tracks([])
             return {"active_track_ids": []}
 
@@ -1665,7 +1717,6 @@ class CastService:
                     self.log(f"DEBUG-ONLY: extracting youtube subtitles info with yt-dlp: {self._current_media_path}", "debug")
                     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
                     if proc.returncode == 0 and proc.stdout:
-                        import json
                         self._current_youtube_info = json.loads(proc.stdout)
                         info = self._current_youtube_info
                 except Exception as exc:
@@ -1688,6 +1739,8 @@ class CastService:
         return []
 
     def fetch_and_activate_remote_subtitle(self, language: str, track_type: str, url: str) -> dict:
+        if self.supervisor and self.supervisor.status.app_id == "07AEE832":
+            return {"error": "External subtitle loading needs a Shaka receiver adapter; select a manifest subtitle for this stream"}
         self.log(f"DEBUG-ONLY: fetch_and_activate_remote_subtitle lang={language} type={track_type} url={url}", "debug")
         if not self.supervisor:
             return {"error": "not connected to a device"}
@@ -1761,37 +1814,9 @@ class CastService:
         with self._lock:
             self._current_scavenged_tracks.append(new_track)
             tracks_copy = list(self._current_scavenged_tracks)
-            if hasattr(self.supervisor, "_session") and self.supervisor._session:
-                session = self.supervisor._session
-                if hasattr(session, "tracks") and isinstance(session.tracks, list):
-                    if not any(isinstance(t, dict) and t.get("trackId") == new_track_id for t in session.tracks):
-                        session.tracks.append(caf_track)
-
+            self._queue_item_scavenged[self._current_media_path] = tracks_copy
         caf_tracks, _ = self._tracks_for_load(tracks_copy)
-        current_pos = self.supervisor.snapshot().get("position", 0.0) if hasattr(self.supervisor, "snapshot") else 0.0
-        # Reload media with the updated tracks array at the current position, preserving the active stream
-        if hasattr(self.supervisor, "is_active") and self.supervisor.is_active():
-            session = self.supervisor._session
-            if session and getattr(session, "content_id", None):
-                self.supervisor.load(
-                    session.content_id,
-                    content_type=getattr(session, "content_type", "video/mp4"),
-                    title=getattr(session, "title", ""),
-                    subtitle=getattr(session, "subtitle", ""),
-                    poster_url=getattr(session, "poster_url", ""),
-                    backdrop_url=getattr(session, "backdrop_url", ""),
-                    duration=getattr(session, "duration", 0.0),
-                    source_path=getattr(session, "source_path", self._current_media_path),
-                    autoplay=getattr(session, "autoplay", True),
-                    license_url=getattr(session, "license_url", ""),
-                    tracks=caf_tracks,
-                    active_track_ids=[new_track_id],
-                    position=current_pos,
-                )
-            else:
-                self.supervisor.set_active_tracks([new_track_id])
-        else:
-            self.supervisor.set_active_tracks([new_track_id])
+        self.supervisor.replace_text_tracks(caf_tracks, [new_track_id])
         return {
             "track_id": new_track_id,
             "active_track_ids": [new_track_id],
@@ -1806,15 +1831,18 @@ class CastService:
         return self.supervisor
 
     def play(self):
-        self._require().play()
+        if self._require().play() is None:
+            raise RuntimeError("PLAY not sent: no active media session")
         return self.status()
 
     def pause(self):
-        self._require().pause()
+        if self._require().pause() is None:
+            raise RuntimeError("PAUSE not sent: no active media session")
         return self.status()
 
     def seek(self, position: float):
-        self._require().seek(position)
+        if self._require().seek(position) is None:
+            raise RuntimeError("SEEK not sent: no active media session")
         return self.status()
 
     def stop_media(self):
@@ -1835,7 +1863,6 @@ class CastService:
         rel = os.path.relpath(safe_path, target_root)
         dest = self._unique_trash_path(os.path.join(trash_dir, rel))
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        shutil.move(safe_path, dest)
 
         # Check if in queue and remove
         session = getattr(self.supervisor, "_session", None) if self.supervisor else None
@@ -1845,12 +1872,25 @@ class CastService:
                 media = item.get("media", {})
                 custom_data = media.get("customData", {})
                 content_id = media.get("contentId", "")
-                if custom_data.get("sourcePath") in {path, safe_path} or os.path.basename(safe_path) in content_id:
+                if custom_data.get("sourcePath") in {path, safe_path}:
                     item_id = item.get("itemId")
-                    if item_id is not None:
-                        item_ids_to_remove.append(item_id)
+                    if item_id is None:
+                        return {"error": "receiver has not confirmed queue item IDs; retry after loading"}
+                    item_ids_to_remove.append(item_id)
             if item_ids_to_remove:
-                self.supervisor.queue_remove(item_ids_to_remove)
+                request_id = self.supervisor.queue_remove(item_ids_to_remove)
+                self.supervisor.wait_for_request(request_id)
+        elif session and session.source_path in {path, safe_path}:
+            request_id = self.supervisor._media_command({"type": "STOP"})
+            self.supervisor.wait_for_request(request_id)
+            with self.supervisor._lock:
+                self.supervisor._session = None
+                self.supervisor._pending_restore = False
+
+        shutil.move(safe_path, dest)
+        self._queue_generation += 1
+        self._queue_intent = [p for p in self._queue_intent if p not in {path, safe_path}]
+        self._emit("library", {"items": self.library(), "trash": self.get_trash()})
 
         return {"trashed": dest}
 
@@ -1904,9 +1944,12 @@ class CastService:
             trash_dir = os.path.join(root, "trash")
             if not os.path.isdir(trash_dir):
                 continue
-            for filename in sorted(os.listdir(trash_dir)):
-                full = os.path.join(trash_dir, filename)
-                if os.path.isfile(full):
+            for directory, dirs, files in os.walk(trash_dir):
+                dirs.sort()
+                for filename in sorted(files):
+                    full = os.path.join(directory, filename)
+                    if not self._resolve_under_trash(full):
+                        continue
                     entries.append({
                         "path": full,
                         "name": filename,
@@ -1937,12 +1980,13 @@ class CastService:
             # Auto-cast the proxied stream!
             import base64
             encoded = base64.b64encode(url.encode("utf-8")).decode("utf-8")
-            proxy_url = f"http://{self.media_server.lan_ip}:{self.media_server.port}/proxy/?url={encoded}"
+            proxy_url = self.media_server.proxy_url_for(url)
 
             if getattr(self, "supervisor", None):
                 self.log(f"Discovery: Routing intercepted stream through local proxy to TV...", "info")
                 try:
-                    self.cast(proxy_url, allow_unsafe=True, auto_prepare=False)
+                    self.supervisor.load(proxy_url, content_type=guess_mime(url),
+                                         title=resolve_title(url), source_path=url)
                 except Exception as e:
                     self.log(f"Discovery Cast failed: {e}", "warn")
                     self.media_server.trigger_telemetry(url, str(e))

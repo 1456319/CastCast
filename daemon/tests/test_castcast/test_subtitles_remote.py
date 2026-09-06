@@ -407,7 +407,7 @@ class TestRemoteSubtitlesServiceAndApi(unittest.TestCase):
         self.assertEqual(len(self.svc._current_scavenged_tracks), 2)
         self.assertEqual(self.svc._current_scavenged_tracks[1]["track_id"], 2)
         self.assertEqual(self.svc._current_scavenged_tracks[1]["language"], "fre")
-        self.svc.supervisor.set_active_tracks.assert_called_once_with([2])
+        self.svc.supervisor.replace_text_tracks.assert_called_once()
 
     @patch("castcast.service.download_subtitle_to_vtt")
     def test_fetch_and_activate_remote_subtitle_reloads_active_session(self, mock_download):
@@ -435,21 +435,7 @@ class TestRemoteSubtitlesServiceAndApi(unittest.TestCase):
         res = self.svc.fetch_and_activate_remote_subtitle("deu", "manual", "http://example.com/de.vtt")
         self.assertEqual(res["track_id"], 2)
         caf_tracks, _ = self.svc._tracks_for_load(self.svc._current_scavenged_tracks)
-        self.svc.supervisor.load.assert_called_once_with(
-            "http://fake/video.mp4",
-            content_type="video/mp4",
-            title="Test Movie",
-            subtitle="Test Subtitle",
-            poster_url="http://fake/poster.jpg",
-            backdrop_url="http://fake/backdrop.jpg",
-            duration=120.0,
-            source_path="/media/test.mp4",
-            autoplay=True,
-            license_url="http://fake/license",
-            tracks=caf_tracks,
-            active_track_ids=[2],
-            position=42.5,
-        )
+        self.svc.supervisor.replace_text_tracks.assert_called_once_with(caf_tracks, [2])
         self.svc.supervisor.set_active_tracks.assert_not_called()
 
     def test_fetch_and_activate_remote_subtitle_disconnected(self):
@@ -500,7 +486,8 @@ class TestRemoteSubtitlesServiceAndApi(unittest.TestCase):
         self.assertEqual(mock_download.call_count, 1)  # not called again!
         self.assertEqual(len(self.svc._current_scavenged_tracks), 1)  # not duplicated!
         self.assertEqual(res2["track_id"], 1)
-        self.assertEqual(self.svc.supervisor.set_active_tracks.call_count, 2)
+        self.assertEqual(self.svc.supervisor.replace_text_tracks.call_count, 1)
+        self.assertEqual(self.svc.supervisor.set_active_tracks.call_count, 1)
 
 
 class TestRemoteSubtitlesApiHttp(unittest.TestCase):
