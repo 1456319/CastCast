@@ -23,7 +23,7 @@ from .mediaserver import MediaServer, guess_mime
 from .opensubtitles import download_best, language3
 from .probe import FFMPEG, MediaInfo, ProbeError, have_ffmpeg, have_ffprobe, probe
 from .supervisor import State, Supervisor
-from .metadata import TMDBClient, parse_filename, resolve_title, parse_intent_url
+from .metadata import TMDBClient, parse_filename, resolve_title, parse_intent_url, resolve_amazon_media_info
 from .subtitles_remote import (
     LANGUAGE_NAMES,
     parse_youtube_subtitles,
@@ -190,13 +190,13 @@ class CastService:
                 real_title = "Amazon Video"
 
             resolved_gti = ""
-            try:
-                from .metadata import resolve_amazon_media_info
-                info = resolve_amazon_media_info(url)
-                if isinstance(info, dict):
-                    resolved_gti = info.get("gti") or ""
-            except Exception:
-                pass
+            if real_title and real_title != "Amazon Video":
+                try:
+                    info = resolve_amazon_media_info(url)
+                    if isinstance(info, dict):
+                        resolved_gti = info.get("gti") or ""
+                except Exception:
+                    pass
 
             with self._lock:
                 changed = False
@@ -993,7 +993,6 @@ class CastService:
         needs_gti = not (title_id and title_id.startswith("amzn1.dv.gti."))
 
         if needs_title or needs_gti:
-            from .metadata import resolve_amazon_media_info
             if needs_title:
                 resolved = resolve_title(path, provider="amazon")
                 if resolved and resolved not in ("Fetching title...", "Unknown title", "Amazon Video"):
@@ -1057,8 +1056,6 @@ class CastService:
             raw_pos = max(self.resume_state.get(proxied_path, 0.0), self.resume_state.get(path, 0.0))
             resume_pos = max(0.0, raw_pos - 10.0)
 
-        if not title or title in ("Fetching title...", "Unknown title", "Amazon Video"):
-            title = resolve_title(path, provider="amazon")
         with self._lock:
             changed = False
             for item in self.amazon_queue:

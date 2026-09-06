@@ -9,11 +9,12 @@ from unittest.mock import MagicMock, patch
 
 from castcast.service import CastService
 from castcast.supervisor import Supervisor, State
-from castcast.metadata import resolve_title, TMDBClient
+from castcast.metadata import resolve_title, TMDBClient, clear_amazon_cache
 
 
 class TestMetadataIntegration(unittest.TestCase):
     def setUp(self):
+        clear_amazon_cache()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.media_dir = os.path.join(self.temp_dir.name, "media")
         os.makedirs(self.media_dir, exist_ok=True)
@@ -31,6 +32,7 @@ class TestMetadataIntegration(unittest.TestCase):
         self.svc.media_server.url_for = lambda p: f"http://localhost:8080/{p}"
 
     def tearDown(self):
+        clear_amazon_cache()
         self.temp_dir.cleanup()
 
     def test_castservice_library_returns_title(self):

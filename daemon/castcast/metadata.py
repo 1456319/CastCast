@@ -3,7 +3,8 @@ import re
 import urllib.request
 import urllib.parse
 import json
-import functools
+import base64
+import ssl
 
 def parse_filename(filename: str):
     """Parses S01E02 or similar patterns to extract title, season, and episode."""
@@ -97,9 +98,6 @@ class TMDBClient:
 
         return result
 
-import base64
-import ssl
-
 def _clean_title(raw_title: str) -> str:
     clean = raw_title
     clean = re.sub(r'(?i)^Watch\s+', '', clean)
@@ -154,10 +152,26 @@ def parse_intent_url(raw_url: str) -> str:
     return raw_url
 
 
-@functools.lru_cache(maxsize=128)
-def _resolve_amazon_media_info_cached(raw_url: str):
+_AMAZON_INFO_CACHE = {}
+
+
+def clear_amazon_cache() -> None:
+    """Clears the cached Amazon media info results."""
+    _AMAZON_INFO_CACHE.clear()
+
+
+def resolve_amazon_media_info(raw_url: str) -> dict:
+    """
+    Extracts canonical GTI and resolves rich episode/movie/season title across all Amazon Prime Video URL variations:
+    - https://watch.amazon.com/watch?gti=amzn1.dv.gti....
+    - https://www.primevideo.com/region/na/detail/amzn1.dv.gti....
+    - https://www.primevideo.com/detail/<catalog_id>
+    - https://www.amazon.com/gp/video/detail/<asin>
+    - intent:// URIs
+    - Bare GTIs
+    """
     if not isinstance(raw_url, str) or not raw_url.strip():
-        return ("", "Unknown title", None)
+        return {"gti": "", "title": "Unknown title", "episode": None}
 
     clean_url = raw_url.strip()
     if clean_url.startswith(("intent://", "intent:")):
@@ -190,6 +204,23 @@ def _resolve_amazon_media_info_cached(raw_url: str):
                 gti = cand
             else:
                 catalog_id = cand
+
+    # Check cache by any known identifier to prevent redundant network requests
+    cached = None
+    if gti and gti in _AMAZON_INFO_CACHE:
+        cached = _AMAZON_INFO_CACHE[gti]
+    elif catalog_id and catalog_id in _AMAZON_INFO_CACHE:
+        cached = _AMAZON_INFO_CACHE[catalog_id]
+    elif clean_url in _AMAZON_INFO_CACHE:
+        cached = _AMAZON_INFO_CACHE[clean_url]
+
+    if cached:
+        cached_gti, cached_title, cached_ep = cached
+        return {
+            "gti": cached_gti,
+            "title": cached_title,
+            "episode": cached_ep,
+        }
 
     resolved_title = ""
     episode_number = None
@@ -281,27 +312,24 @@ def _resolve_amazon_media_info_cached(raw_url: str):
         except Exception:
             pass
 
+    final_gti = gti or catalog_id
     if not resolved_title:
         resolved_title = "Amazon Video"
+    else:
+        # Cache successful resolutions, keyed by all discovered identifiers
+        if len(_AMAZON_INFO_CACHE) > 512:
+            _AMAZON_INFO_CACHE.clear()
+        entry = (final_gti, resolved_title, episode_number)
+        if final_gti:
+            _AMAZON_INFO_CACHE[final_gti] = entry
+        if catalog_id:
+            _AMAZON_INFO_CACHE[catalog_id] = entry
+        _AMAZON_INFO_CACHE[clean_url] = entry
 
-    return (gti or catalog_id, resolved_title, episode_number)
-
-
-def resolve_amazon_media_info(raw_url: str) -> dict:
-    """
-    Extracts canonical GTI and resolves rich episode/movie/season title across all Amazon Prime Video URL variations:
-    - https://watch.amazon.com/watch?gti=amzn1.dv.gti....
-    - https://www.primevideo.com/region/na/detail/amzn1.dv.gti....
-    - https://www.primevideo.com/detail/<catalog_id>
-    - https://www.amazon.com/gp/video/detail/<asin>
-    - intent:// URIs
-    - Bare GTIs
-    """
-    gti, title, ep = _resolve_amazon_media_info_cached(raw_url)
     return {
-        "gti": gti,
-        "title": title,
-        "episode": ep,
+        "gti": final_gti,
+        "title": resolved_title,
+        "episode": episode_number,
     }
 
 

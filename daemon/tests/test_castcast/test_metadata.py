@@ -1,7 +1,13 @@
 import pytest
 import base64
 from unittest.mock import patch, MagicMock
-from castcast.metadata import resolve_title, _clean_title
+from castcast.metadata import resolve_title, _clean_title, clear_amazon_cache
+
+@pytest.fixture(autouse=True)
+def reset_amazon_cache():
+    clear_amazon_cache()
+    yield
+    clear_amazon_cache()
 
 class TestMetadataTier1:
     @patch('urllib.request.urlopen')
