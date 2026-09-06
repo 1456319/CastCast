@@ -1976,5 +1976,5 @@ def _size(path: str) -> int:
         return 0
 
 
-Service = CastService
+
 

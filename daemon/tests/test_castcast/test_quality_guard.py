@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import MagicMock
 from castcast.probe import MediaInfo, VideoStream
 from castcast import capability
-from castcast.service import Service
+from castcast.service import CastService as Service
 
 def test_capability_defaults_to_ultra_and_accurate_4k():
     info = MediaInfo(

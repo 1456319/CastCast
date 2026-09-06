@@ -1,6 +1,6 @@
 import json
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from castcast.api import _Handler
 
 def test_diagnostics_logs_returns_logs_field_and_finds_audit_log(tmp_path, monkeypatch):
@@ -33,7 +33,7 @@ def test_diagnostics_logs_returns_logs_field_and_finds_audit_log(tmp_path, monke
     assert "Daemon listening" in captured["data"]["logs"]
     assert "TERMUX_BOOTSTRAP_SUCCESS" in captured["data"]["logs"]
 
-from unittest.mock import patch
+
 
 def test_diagnostics_api_real_log_buffer():
     # Verify that actual entries emitted with `message` (from LogBuffer.add) are formatted

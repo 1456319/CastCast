@@ -411,7 +411,7 @@ class _Handler(BaseHTTPRequestHandler):
                     ip = ipaddress.IPv4Address(packed)
                     if ip.is_loopback or ip.is_unspecified:
                         is_loopback = True
-                except OSError:
+                except (OSError, ValueError):
                     pass
 
         if is_loopback:

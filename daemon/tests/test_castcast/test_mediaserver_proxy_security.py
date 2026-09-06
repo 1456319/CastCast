@@ -16,6 +16,7 @@ def test_proxy_boundary_security():
     mock_server.media_server.trigger_telemetry = MagicMock()
     handler.server = mock_server
     handler.wfile = MagicMock()
+    handler.wfile.closed = False
     
     b64 = base64.b64encode(b"http://example.com/video.mp4").decode("utf-8")
     
@@ -66,3 +67,11 @@ def test_proxy_boundary_security():
     handler.headers = {"Host": "other.localhost.run"}
     handler._serve_proxy(body=False)
     assert any(code == 403 for code, _ in sent_errors)
+
+    # 5. Null byte in hostname -> gracefully handled (403 or 400)
+    sent_errors.clear()
+    b64_null = base64.b64encode(b"http://hello\x00world.com/video.mp4").decode("utf-8")
+    handler.path = f"/proxy/?url={b64_null}"
+    handler.headers = {"Host": "192.168.1.30:38399"}
+    handler._serve_proxy(body=False)
+    assert any(code in (400, 403, 500) for code, _ in sent_errors), "Null byte in hostname should be rejected, not crash"
