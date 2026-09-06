@@ -10,6 +10,7 @@ export interface LaunchDaemonResult {
 
 interface TermuxDaemonPlugin {
   launch(): Promise<LaunchDaemonResult>;
+  stopDaemon(): Promise<{ stopped: boolean }>;
   getSharedUrl(): Promise<{ url?: string }>;
 }
 
@@ -26,10 +27,19 @@ export async function launchTermuxDaemon() {
   return TermuxDaemon.launch();
 }
 
+export async function stopTermuxDaemon() {
+  if (!canLaunchTermuxDaemon()) {
+    return { stopped: false };
+  }
+  return TermuxDaemon.stopDaemon();
+}
+
 export async function getSharedUrl() {
   if (!canLaunchTermuxDaemon()) return { url: undefined };
   return TermuxDaemon.getSharedUrl();
 }
+
+export const TERMUX_KILL_COMMAND = "pkill -9 -f castcast || pkill -9 -f mediaserver.py";
 
 export const TERMUX_MANUAL_COMMAND = [
   "cd /data/data/com.termux/files/home/CastCast/daemon",

@@ -9,6 +9,7 @@ Binds to 127.0.0.1 by default so nothing off-device can drive your TV.  The UI
 from __future__ import annotations
 
 import json
+import math
 import re
 import urllib.parse
 import urllib.request
@@ -43,7 +44,18 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
 
     def _json(self, payload, code: int = 200):
-        body = json.dumps(payload, default=str).encode("utf-8")
+        def _sanitize(obj):
+            if isinstance(obj, float):
+                if math.isnan(obj) or math.isinf(obj):
+                    return 0.0
+                return obj
+            if isinstance(obj, dict):
+                return {k: _sanitize(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_sanitize(v) for v in obj]
+            return obj
+
+        body = json.dumps(_sanitize(payload), default=str, allow_nan=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")

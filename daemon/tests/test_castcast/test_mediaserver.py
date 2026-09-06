@@ -158,6 +158,7 @@ class TestTunnelSupervisor(unittest.TestCase):
     def test_tunnel_keepalive_options_and_reconnect(self, mock_popen, mock_which):
         from castcast.mediaserver import MediaServer
         import time
+        import subprocess
 
         proc1 = unittest.mock.MagicMock()
         proc1.stdout = iter([
@@ -171,24 +172,27 @@ class TestTunnelSupervisor(unittest.TestCase):
             "Reconnecting to localhost.run...\n",
             "https://second.lhr.life tunnel open\n"
         ])
-        proc2.wait.return_value = 0
-
-        mock_popen.side_effect = [proc1, proc2]
 
         server = MediaServer(roots=["/tmp"], port=0)
+        server.reconnect_delay = 0.01
         server._httpd = unittest.mock.MagicMock()
         server.lan_ip = "127.0.0.1"
+
+        proc2.wait.side_effect = lambda: server._tunnel_stop.wait(2.0)
+        mock_popen.side_effect = [proc1, proc2]
 
         server._start_tunnel()
 
         for _ in range(50):
             if server.public_url == "https://second.lhr.life":
                 break
-            time.sleep(0.05)
+            time.sleep(0.01)
 
         self.assertEqual(server.public_url, "https://second.lhr.life")
         self.assertGreaterEqual(mock_popen.call_count, 2)
         first_call_cmd = mock_popen.call_args_list[0][0][0]
+        first_call_kwargs = mock_popen.call_args_list[0][1]
+        self.assertEqual(first_call_kwargs.get("stdin"), subprocess.DEVNULL)
         self.assertIn("-o", first_call_cmd)
         self.assertIn("ServerAliveInterval=15", first_call_cmd)
         self.assertIn("ServerAliveCountMax=3", first_call_cmd)
@@ -196,6 +200,7 @@ class TestTunnelSupervisor(unittest.TestCase):
 
         server.stop()
         self.assertTrue(server._tunnel_stop.is_set())
+        self.assertIsNone(server.public_url)
 
 
 if __name__ == '__main__':

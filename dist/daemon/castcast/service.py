@@ -192,9 +192,10 @@ class CastService:
             with self._lock:
                 changed = False
                 for item in self.amazon_queue:
-                    if item.get("url") == url and item.get("title") == "Fetching title...":
-                        item["title"] = real_title
-                        changed = True
+                    if item.get("url") == url:
+                        if real_title and item.get("title") != real_title:
+                            item["title"] = real_title
+                            changed = True
                 if changed:
                     self.save_amazon_queue()
         threading.Thread(target=worker, daemon=True, name="TitleResolverThread").start()
@@ -972,14 +973,33 @@ class CastService:
             if m_gti:
                 title_id = m_gti.group(1)
         if not title_id:
-            m = re.search(r'/detail/([a-zA-Z0-9_.-]+)', parsed.path)
+            m = re.search(r'/(?:detail|dp)(?:/[a-zA-Z0-9_-]+)?/([a-zA-Z0-9_.-]+)', parsed.path)
+            if not m:
+                m = re.search(r'/detail/([a-zA-Z0-9_.-]+)', parsed.path)
             if m:
                 title_id = m.group(1)
+
+        if not title or title in ("Fetching title...", "Unknown title", "Amazon Video"):
+            resolved_title = resolve_title(path, provider="amazon")
+            if resolved_title and resolved_title != "Amazon Video":
+                title = resolved_title
+            else:
+                title = "Amazon Video"
+
+        if not (title_id and title_id.startswith("amzn1.dv.gti.")):
+            from .metadata import resolve_amazon_media_info
+            resolved_info = resolve_amazon_media_info(path)
+            resolved_gti = resolved_info.get("gti")
+            if resolved_gti and resolved_gti.startswith("amzn1.dv.gti."):
+                title_id = resolved_gti
+            if not title or title == "Amazon Video":
+                title = resolved_info.get("title") or title or "Amazon Video"
+
         if not title_id:
             self.log("DEBUG-ONLY: Could not extract Amazon title ID from URL", "warn")
             return {"error": "Could not extract Amazon title ID from URL"}
 
-        self.log(f"Detected Amazon Title ID: {title_id}")
+        self.log(f"Detected Amazon Title ID: {title_id} ({title})")
         amazon_data = amazon_drm.fetch_amazon_4k_manifest(title_id)
 
         encoded_url = base64.b64encode(amazon_data["mpd_url"].encode("utf-8")).decode("utf-8")
@@ -1025,16 +1045,20 @@ class CastService:
             raw_pos = max(self.resume_state.get(proxied_path, 0.0), self.resume_state.get(path, 0.0))
             resume_pos = max(0.0, raw_pos - 10.0)
 
-        if not title or title in ("Fetching title...", "Unknown title"):
+        if not title or title in ("Fetching title...", "Unknown title", "Amazon Video"):
             title = resolve_title(path, provider="amazon")
-            with self._lock:
-                changed = False
-                for item in self.amazon_queue:
-                    if item.get("url") == path and item.get("title") in ("Fetching title...", "Unknown title"):
+        with self._lock:
+            changed = False
+            for item in self.amazon_queue:
+                if item.get("url") == path:
+                    if title and title != "Amazon Video" and item.get("title") != title:
                         item["title"] = title
                         changed = True
-                if changed:
-                    self.save_amazon_queue()
+                    if title_id and title_id.startswith("amzn1.dv.gti.") and not item.get("gti"):
+                        item["gti"] = title_id
+                        changed = True
+            if changed:
+                self.save_amazon_queue()
 
         self.supervisor.load(
             proxied_path,

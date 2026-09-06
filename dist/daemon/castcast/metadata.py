@@ -153,6 +153,153 @@ def parse_intent_url(raw_url: str) -> str:
     return raw_url
 
 
+def resolve_amazon_media_info(raw_url: str) -> dict:
+    """
+    Extracts canonical GTI and resolves rich episode/movie/season title across all Amazon Prime Video URL variations:
+    - https://watch.amazon.com/watch?gti=amzn1.dv.gti....
+    - https://www.primevideo.com/region/na/detail/amzn1.dv.gti....
+    - https://www.primevideo.com/detail/<catalog_id>
+    - https://www.amazon.com/gp/video/detail/<asin>
+    - intent:// URIs
+    - Bare GTIs
+    """
+    if not isinstance(raw_url, str) or not raw_url.strip():
+        return {"gti": "", "title": "Unknown title", "episode": None}
+
+    clean_url = raw_url.strip()
+    if clean_url.startswith(("intent://", "intent:")):
+        clean_url = parse_intent_url(clean_url)
+
+    gti = ""
+    catalog_id = ""
+    parsed = urllib.parse.urlparse(clean_url)
+    qs = urllib.parse.parse_qs(parsed.query)
+
+    if qs.get("gti"):
+        gti = qs["gti"][0]
+    elif qs.get("titleId"):
+        t_id = qs["titleId"][0]
+        if t_id.startswith("amzn1.dv.gti."):
+            gti = t_id
+        else:
+            catalog_id = t_id
+
+    if not gti:
+        m_gti = re.search(r'(amzn1\.dv\.gti\.[a-f0-9-]+)', clean_url)
+        if m_gti:
+            gti = m_gti.group(1)
+
+    if not gti and not catalog_id:
+        m_detail = re.search(r'/(?:detail|dp)(?:/[a-zA-Z0-9_-]+)?/([a-zA-Z0-9_.-]+)', parsed.path)
+        if not m_detail:
+            m_detail = re.search(r'/detail/([a-zA-Z0-9_.-]+)', parsed.path)
+        if m_detail:
+            cand = m_detail.group(1)
+            if cand.startswith("amzn1.dv.gti."):
+                gti = cand
+            else:
+                catalog_id = cand
+
+    resolved_title = ""
+    episode_number = None
+
+    req_url = ""
+    if gti:
+        req_url = f"https://www.primevideo.com/region/na/detail/{gti}"
+    elif catalog_id:
+        req_url = f"https://www.primevideo.com/detail/{catalog_id}"
+    elif clean_url.startswith("http"):
+        req_url = clean_url
+
+    if req_url:
+        try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            req = urllib.request.Request(req_url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html'
+            })
+            html = urllib.request.urlopen(req, context=ctx, timeout=5.0).read().decode('utf-8', errors='ignore')
+
+            m_tag = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
+            page_title = _clean_title(m_tag.group(1).strip()) if m_tag else ""
+
+            for s in re.findall(r'<script[^>]*>(.*?)</script>', html, re.DOTALL):
+                if 'init' in s and 'preparations' in s:
+                    try:
+                        data = json.loads(s)
+                        body = data.get('init', {}).get('preparations', {}).get('body', {})
+                        atf = body.get('atf', {}).get('state', {})
+                        btf = body.get('btf', {}).get('state', {})
+                        details = btf.get('detail', {}).get('detail', {})
+                        actions = btf.get('action', {}).get('btf', {})
+
+                        if catalog_id and not gti:
+                            cat_upper = catalog_id.upper()
+                            for candidate_gti, action_info in actions.items():
+                                act_str = json.dumps(action_info)
+                                if cat_upper in act_str.upper():
+                                    gti = candidate_gti
+                                    break
+                                for m_ret in re.findall(r'return_url=([^&\"\'\s]+)', act_str):
+                                    try:
+                                        dec = base64.b64decode(urllib.parse.unquote(m_ret)).decode()
+                                        if cat_upper in dec.upper():
+                                            gti = candidate_gti
+                                            break
+                                    except Exception:
+                                        pass
+                                if gti:
+                                    break
+
+                            if not gti:
+                                gti = atf.get('pageTitleId') or btf.get('pageTitleId') or ""
+
+                        show_title = ""
+                        header_detail = atf.get('detail', {}).get('headerDetail', {})
+                        for h_info in header_detail.values():
+                            if isinstance(h_info, dict) and h_info.get('title'):
+                                show_title = _clean_title(h_info['title'])
+                                break
+                        if not show_title:
+                            show_title = page_title
+
+                        if gti and gti in details:
+                            ep_info = details[gti]
+                            ep_title = ep_info.get('title', '').strip()
+                            ep_num = ep_info.get('episodeNumber')
+                            if ep_num is not None:
+                                episode_number = int(ep_num)
+                            if show_title and ep_title:
+                                if episode_number is not None:
+                                    resolved_title = f"{show_title} - Ep {episode_number}: {ep_title}"
+                                else:
+                                    resolved_title = f"{show_title} - {ep_title}"
+                            elif ep_title:
+                                resolved_title = ep_title
+
+                        if not resolved_title:
+                            resolved_title = show_title or page_title
+                        break
+                    except Exception:
+                        pass
+
+            if not resolved_title:
+                resolved_title = page_title
+        except Exception:
+            pass
+
+    if not resolved_title:
+        resolved_title = "Amazon Video"
+
+    return {
+        "gti": gti or catalog_id,
+        "title": resolved_title,
+        "episode": episode_number,
+    }
+
+
 def resolve_title(raw_url: str, provider: str = None) -> str:
     if not isinstance(raw_url, str) or not raw_url.strip():
         return "Unknown title"
@@ -175,32 +322,8 @@ def resolve_title(raw_url: str, provider: str = None) -> str:
 
     is_amazon = provider == "amazon" or "amazon.com" in raw_url or "primevideo.com" in raw_url or "amzn1.dv.gti" in raw_url
     if is_amazon:
-        req_url = raw_url
-        if "amzn1.dv.gti" in raw_url:
-            gti_match = re.search(r'(amzn1\.dv\.gti\.[a-f0-9-]+)', raw_url)
-            if gti_match:
-                req_url = f"https://www.primevideo.com/region/na/detail/{gti_match.group(1)}"
-            elif "http" not in raw_url:
-                req_url = f"https://www.primevideo.com/region/na/detail/{raw_url}"
-
-        if req_url.startswith("http"):
-            try:
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                req = urllib.request.Request(req_url, headers={
-                    'User-Agent': 'Mozilla/5.0',
-                    'Accept': 'text/html'
-                })
-                html = urllib.request.urlopen(req, context=ctx, timeout=5.0).read().decode('utf-8', errors='ignore')
-                m = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
-                if m:
-                    title = m.group(1).strip()
-                    if title:
-                        return _clean_title(title)
-            except Exception:
-                pass
-        return "Amazon Video"
+        info = resolve_amazon_media_info(raw_url)
+        return info.get("title") or "Amazon Video"
 
     try:
         path = urllib.parse.urlparse(raw_url).path

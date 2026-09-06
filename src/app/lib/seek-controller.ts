@@ -4,14 +4,21 @@ export interface SeekControllerOptions {
   getPosition: () => number;
   onOptimisticChange?: (pos: number) => void;
   sendSeek: (pos: number) => Promise<unknown>;
+  onError?: (err: unknown) => void;
   debounceMs?: number;
+}
+
+interface PendingWaiter {
+  target: number;
+  resolve: () => void;
+  reject: (err: unknown) => void;
 }
 
 export class SeekController {
   private pendingTarget: number | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private inFlight = false;
-  private queuedTarget: number | null = null;
+  private waiters: PendingWaiter[] = [];
 
   constructor(private options: SeekControllerOptions) {}
 
@@ -19,11 +26,16 @@ export class SeekController {
     return this.pendingTarget;
   }
 
-  public step(deltaSeconds: number): number {
+  private clamp(target: number): number {
     const duration = this.options.getDuration() || 0;
+    if (duration <= 0) return Math.max(0, target);
+    const maxTarget = duration > 2 ? duration - 2 : Math.max(0, duration - 0.1);
+    return Math.max(0, Math.min(target, maxTarget));
+  }
+
+  public step(deltaSeconds: number): number {
     const currentBase = this.pendingTarget !== null ? this.pendingTarget : this.options.getPosition();
-    let nextTarget = currentBase + deltaSeconds;
-    nextTarget = Math.max(0, duration > 2 ? Math.min(nextTarget, duration - 2) : nextTarget);
+    const nextTarget = this.clamp(currentBase + deltaSeconds);
 
     this.pendingTarget = nextTarget;
     this.options.onOptimisticChange?.(nextTarget);
@@ -35,15 +47,16 @@ export class SeekController {
     const debounce = this.options.debounceMs ?? 300;
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
-      this.flush();
+      this.flush().catch((err) => {
+        this.options.onError?.(err);
+      });
     }, debounce);
 
     return nextTarget;
   }
 
   public async seekTo(absoluteSeconds: number): Promise<void> {
-    const duration = this.options.getDuration() || 0;
-    const target = Math.max(0, duration > 2 ? Math.min(absoluteSeconds, duration - 2) : absoluteSeconds);
+    const target = this.clamp(absoluteSeconds);
     this.pendingTarget = target;
     this.options.onOptimisticChange?.(target);
 
@@ -52,33 +65,57 @@ export class SeekController {
       this.debounceTimer = null;
     }
 
-    await this.flush();
+    return new Promise<void>((resolve, reject) => {
+      this.waiters.push({ target, resolve, reject });
+      this.flush().catch((err) => {
+        this.options.onError?.(err);
+      });
+    });
   }
 
   public async flush(): Promise<void> {
-    if (this.pendingTarget === null) return;
-    const target = this.pendingTarget;
+    if (this.debounceTimer !== null) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
 
     if (this.inFlight) {
-      this.queuedTarget = target;
       return;
     }
 
-    this.inFlight = true;
-    try {
-      await this.options.sendSeek(target);
-    } finally {
-      this.inFlight = false;
-      if (this.queuedTarget !== null) {
-        const next = this.queuedTarget;
-        this.queuedTarget = null;
-        if (next !== target) {
-          this.pendingTarget = next;
-          await this.flush();
-          return;
+    while (this.pendingTarget !== null) {
+      const target = this.pendingTarget;
+      this.inFlight = true;
+
+      let sendError: unknown = null;
+      try {
+        await this.options.sendSeek(target);
+      } catch (err) {
+        sendError = err;
+        this.options.onError?.(err);
+      } finally {
+        this.inFlight = false;
+        if (this.pendingTarget === target || sendError !== null) {
+          this.pendingTarget = null;
         }
+
+        const remainingWaiters: PendingWaiter[] = [];
+        for (const w of this.waiters) {
+          if (w.target === target || (this.pendingTarget === null && sendError === null)) {
+            if (sendError) w.reject(sendError);
+            else w.resolve();
+          } else if (sendError && this.pendingTarget === null) {
+            w.reject(sendError);
+          } else {
+            remainingWaiters.push(w);
+          }
+        }
+        this.waiters = remainingWaiters;
       }
-      this.pendingTarget = null;
+
+      if (sendError !== null) {
+        throw sendError;
+      }
     }
   }
 
@@ -88,6 +125,9 @@ export class SeekController {
       this.debounceTimer = null;
     }
     this.pendingTarget = null;
-    this.queuedTarget = null;
+    for (const w of this.waiters) {
+      w.resolve();
+    }
+    this.waiters = [];
   }
 }

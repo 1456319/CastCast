@@ -106,6 +106,25 @@ public class TermuxDaemonPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void stopDaemon(PluginCall call) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("su", "-M");
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            try (DataOutputStream stdin = new DataOutputStream(process.getOutputStream())) {
+                stdin.write("pkill -9 -f castcast || true\npkill -9 -f mediaserver.py || true\nexit\n".getBytes(StandardCharsets.UTF_8));
+                stdin.flush();
+            }
+            process.waitFor(ROOT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            JSObject ret = new JSObject();
+            ret.put("stopped", true);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Unable to terminate daemon processes: " + e.getMessage(), e);
+        }
+    }
+
+    @PluginMethod
     public void getSharedUrl(PluginCall call) {
         Intent intent = getActivity().getIntent();
         String action = intent.getAction();

@@ -139,3 +139,98 @@ class TestParseIntentUrl:
         assert parse_intent_url("/media/local.mp4") == "/media/local.mp4"
         assert parse_intent_url(None) is None
 
+
+class TestResolveAmazonMediaInfo:
+    @patch('urllib.request.urlopen')
+    def test_resolve_catalog_id_to_canonical_gti_and_episode_title(self, mock_urlopen):
+        from castcast.metadata import resolve_amazon_media_info
+        import json, base64
+
+        catalog_id = "0lmmoubsox8qg4wkzjxf5v87w6"
+        expected_gti = "amzn1.dv.gti.6d5556d5-f739-4dcb-a3a1-9a68d8fcbcf6"
+        b64_return = base64.b64encode(f"/detail/{catalog_id.upper()}?ref_=atv_dp_sign_suc".encode()).decode()
+
+        mock_json = {
+            "init": {
+                "preparations": {
+                    "body": {
+                        "atf": {
+                            "state": {
+                                "pageTitleId": "amzn1.dv.gti.54bc782b-2be8-4072-bfeb-fe28e054d5ac",
+                                "detail": {
+                                    "headerDetail": {
+                                        "amzn1.dv.gti.54bc782b-2be8-4072-bfeb-fe28e054d5ac": {
+                                            "title": "Hazbin Hotel - Season 2"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "btf": {
+                            "state": {
+                                "detail": {
+                                    "detail": {
+                                        expected_gti: {
+                                            "title": "It's A Deal",
+                                            "episodeNumber": 4
+                                        }
+                                    }
+                                },
+                                "action": {
+                                    "btf": {
+                                        expected_gti: {
+                                            "primaryActions": [{
+                                                "payload": {
+                                                    "expandingCard": {
+                                                        "actions": [{
+                                                            "payload": {
+                                                                "subscription": {
+                                                                    "signupLink": f"/signup?force_return_url=1&cGTI={expected_gti}&return_url={b64_return}"
+                                                                }
+                                                            }
+                                                        }]
+                                                    }
+                                                }
+                                            }]
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        mock_html = f"""
+        <html>
+        <head><title>Watch Hazbin Hotel Season 2 – Prime Video</title></head>
+        <body>
+        <script id="store" type="application/json">{json.dumps(mock_json)}</script>
+        </body>
+        </html>
+        """.encode("utf-8")
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = mock_html
+        mock_urlopen.return_value = mock_resp
+
+        url = f"https://www.primevideo.com/detail/{catalog_id}?autoplay=1&t=0&ref_=atv_dp_btf_el_prime_hd_tv_resume_t1adaaaaaa0wg0"
+        res = resolve_amazon_media_info(url)
+        assert res["gti"] == expected_gti
+        assert res["title"] == "Hazbin Hotel - Season 2 - Ep 4: It's A Deal"
+        assert res["episode"] == 4
+
+    @patch('urllib.request.urlopen')
+    def test_resolve_direct_gti_url(self, mock_urlopen):
+        from castcast.metadata import resolve_amazon_media_info
+        gti = "amzn1.dv.gti.2a50e5b4-edfb-47c8-9b71-72d085008f16"
+        mock_html = b"<title>Watch Hazbin Hotel - Season 2 | Prime Video</title>"
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = mock_html
+        mock_urlopen.return_value = mock_resp
+
+        url = f"https://watch.amazon.com/watch?gti={gti}"
+        res = resolve_amazon_media_info(url)
+        assert res["gti"] == gti
+        assert res["title"] == "Hazbin Hotel - Season 2"
+

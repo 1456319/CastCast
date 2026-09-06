@@ -80,4 +80,97 @@ describe('SeekController', () => {
     await controller.seekTo(500);
     expect(sendSeek).toHaveBeenCalledWith(500);
   });
+
+  it('does not lose trailing steps during in-flight network dispatch', async () => {
+    let resolveFirstSeek!: (val?: unknown) => void;
+    const sendSeek = vi.fn().mockImplementationOnce(() => new Promise((resolve) => {
+      resolveFirstSeek = resolve;
+    })).mockResolvedValue({});
+
+    const controller = new SeekController({
+      getPosition: () => 100,
+      getDuration: () => 1000,
+      sendSeek,
+      debounceMs: 100,
+    });
+
+    // Step +10 and let debounce fire
+    controller.step(10); // target: 110
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sendSeek).toHaveBeenCalledTimes(1);
+    expect(sendSeek).toHaveBeenLastCalledWith(110);
+
+    // Now sendSeek(110) is still in flight!
+    // User taps fast-forward two more times
+    controller.step(10); // target: 120
+    controller.step(10); // target: 130
+    expect(controller.getPendingPosition()).toBe(130);
+
+    // Resolve the first in-flight seek
+    resolveFirstSeek();
+    await Promise.resolve(); // drain microtasks
+
+    // Let the trailing seek flush
+    await vi.advanceTimersByTimeAsync(100);
+    await Promise.resolve();
+
+    // Now sendSeek should have been called again with 130!
+    expect(sendSeek).toHaveBeenCalledTimes(2);
+    expect(sendSeek).toHaveBeenLastCalledWith(130);
+    expect(controller.getPendingPosition()).toBe(null);
+  });
+
+  it('awaits until queued seekTo is completely dispatched', async () => {
+    let resolveFirstSeek!: (val?: unknown) => void;
+    const sendSeek = vi.fn().mockImplementationOnce(() => new Promise((resolve) => {
+      resolveFirstSeek = resolve;
+    })).mockResolvedValue({});
+
+    const controller = new SeekController({
+      getPosition: () => 100,
+      getDuration: () => 1000,
+      sendSeek,
+      debounceMs: 100,
+    });
+
+    // Step once to get seek in flight
+    controller.step(10);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sendSeek).toHaveBeenCalledTimes(1);
+
+    // Now call seekTo(500) while first seek is in flight
+    let seekToCompleted = false;
+    const seekToPromise = controller.seekTo(500).then(() => {
+      seekToCompleted = true;
+    });
+
+    await Promise.resolve();
+    // Must NOT be completed yet!
+    expect(seekToCompleted).toBe(false);
+
+    // Resolve the first seek
+    resolveFirstSeek();
+    await Promise.resolve();
+
+    await seekToPromise;
+    expect(seekToCompleted).toBe(true);
+    expect(sendSeek).toHaveBeenCalledWith(500);
+  });
+
+  it('propagates errors to onError and rejects pending seekTo', async () => {
+    const error = new Error('Network error');
+    const sendSeek = vi.fn().mockRejectedValue(error);
+    const onError = vi.fn();
+
+    const controller = new SeekController({
+      getPosition: () => 100,
+      getDuration: () => 1000,
+      sendSeek,
+      onError,
+      debounceMs: 100,
+    });
+
+    await expect(controller.seekTo(300)).rejects.toThrow('Network error');
+    expect(onError).toHaveBeenCalledWith(error);
+  });
 });

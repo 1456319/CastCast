@@ -31,6 +31,7 @@ single most valuable behaviour for the 4K-stability problem.
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -320,7 +321,12 @@ class Supervisor:
         with self._lock:
             data = dict(self.status.__dict__)
             data["state"] = self._state.value
-            data["position"] = self._extrapolated_position()
+            pos = self._extrapolated_position()
+            data["position"] = 0.0 if (pos is None or math.isnan(pos) or math.isinf(pos)) else pos
+            for key in ("duration", "position", "volume", "connected_since"):
+                val = data.get(key)
+                if val is not None and isinstance(val, (int, float)) and (math.isnan(val) or math.isinf(val)):
+                    data[key] = 0.0
             return data
 
     def is_active(self) -> bool:
@@ -371,11 +377,18 @@ class Supervisor:
     def _extrapolated_position(self) -> float:
         """Interpolate between MEDIA_STATUS messages so the UI ticks smoothly."""
         if self._state is not State.PLAYING or not self._last_position_at:
-            return self.status.position
+            pos = self.status.position
+            return 0.0 if (pos is None or math.isnan(pos) or math.isinf(pos)) else pos
         elapsed = time.time() - self._last_position_at
-        pos = self._last_position_value + elapsed
-        if self.status.duration:
-            pos = min(pos, self.status.duration)
+        base_val = self._last_position_value
+        if base_val is None or math.isnan(base_val) or math.isinf(base_val):
+            base_val = 0.0
+        pos = base_val + elapsed
+        dur = self.status.duration
+        if dur and not math.isnan(dur) and not math.isinf(dur):
+            pos = min(pos, dur)
+        if math.isnan(pos) or math.isinf(pos):
+            pos = 0.0
         return round(pos, 2)
 
     # -- outbound ----------------------------------------------------------
@@ -779,12 +792,20 @@ class Supervisor:
             self.status.has_text_tracks = bool(tracks)
             if "activeTrackIds" in entry:
                 self.status.active_track_ids = entry.get("activeTrackIds") or []
-            if media.get("duration"):
-                self.status.duration = float(media["duration"])
+            if media.get("duration") is not None:
+                try:
+                    dur_val = float(media["duration"])
+                    self.status.duration = 0.0 if (math.isnan(dur_val) or math.isinf(dur_val)) else dur_val
+                except (ValueError, TypeError):
+                    self.status.duration = 0.0
                 if self._session:
                     self._session.duration = self.status.duration
             if "currentTime" in entry:
-                position = float(entry.get("currentTime") or 0.0)
+                try:
+                    pos_val = float(entry.get("currentTime") or 0.0)
+                    position = 0.0 if (math.isnan(pos_val) or math.isinf(pos_val)) else pos_val
+                except (ValueError, TypeError):
+                    position = 0.0
                 self.status.position = position
                 self._last_position_value = position
                 self._last_position_at = time.time()
@@ -792,7 +813,11 @@ class Supervisor:
                     self._session.position = position
             volume = entry.get("volume") or {}
             if "level" in volume:
-                self.status.volume = float(volume.get("level") or 0.0)
+                try:
+                    vol_val = float(volume.get("level") or 0.0)
+                    self.status.volume = 0.0 if (math.isnan(vol_val) or math.isinf(vol_val)) else vol_val
+                except (ValueError, TypeError):
+                    self.status.volume = 0.0
             if "muted" in volume:
                 self.status.muted = bool(volume.get("muted"))
 

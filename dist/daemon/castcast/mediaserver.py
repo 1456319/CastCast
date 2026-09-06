@@ -569,6 +569,7 @@ class MediaServer:
         self.live_streams: dict[str, dict] = {}
         self.intercept_rules: dict[str, dict] = {}
         self.public_url: Optional[str] = None
+        self.reconnect_delay: float = 2.0
         self._ssh_process: Optional[subprocess.Popen] = None
         self._tunnel_stop = threading.Event()
         self._tunnel_lock = threading.Lock()
@@ -663,6 +664,9 @@ class MediaServer:
             self.log("ssh is not installed, cannot start public HTTPS tunnel for DRM", "warning")
             return
 
+        if self._tunnel_thread and self._tunnel_thread.is_alive():
+            return
+
         self._tunnel_stop.clear()
 
         def tunnel_supervisor():
@@ -680,6 +684,7 @@ class MediaServer:
                     ]
                     proc = subprocess.Popen(
                         cmd,
+                        stdin=subprocess.DEVNULL,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                         text=True,
@@ -693,7 +698,7 @@ class MediaServer:
                             if self._tunnel_stop.is_set():
                                 break
                             if "http" in line and "lhr.life" in line:
-                                urls = [word for word in line.split() if word.startswith("https://")]
+                                urls = [word.rstrip(".,:;\"'/") for word in line.split() if word.startswith("https://")]
                                 for u in urls:
                                     with self._tunnel_lock:
                                         if self.public_url != u:
@@ -708,6 +713,7 @@ class MediaServer:
                     with self._tunnel_lock:
                         if self._ssh_process == proc:
                             self._ssh_process = None
+                        self.public_url = None
                     if proc:
                         try:
                             proc.terminate()
@@ -719,7 +725,7 @@ class MediaServer:
                                 pass
 
                 if not self._tunnel_stop.is_set():
-                    self._tunnel_stop.wait(2.0)
+                    self._tunnel_stop.wait(self.reconnect_delay)
 
         self._tunnel_thread = threading.Thread(target=tunnel_supervisor, daemon=True, name="castcast-tunnel")
         self._tunnel_thread.start()
@@ -732,6 +738,7 @@ class MediaServer:
         self._thread = None
         self._tunnel_stop.set()
         with self._tunnel_lock:
+            self.public_url = None
             if self._ssh_process:
                 try:
                     self._ssh_process.terminate()

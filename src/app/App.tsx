@@ -35,7 +35,7 @@ import {
 } from "./lib/daemon";
 import { PreflightPanel } from "./components/preflight-panel";
 import SubtitlesDrawer from "./components/SubtitlesDrawer";
-import { TERMUX_MANUAL_COMMAND, launchTermuxDaemon, getSharedUrl } from "./lib/termux-daemon";
+import { TERMUX_MANUAL_COMMAND, TERMUX_KILL_COMMAND, launchTermuxDaemon, stopTermuxDaemon, canLaunchTermuxDaemon, getSharedUrl } from "./lib/termux-daemon";
 import { DiscoveryBrowser } from "./lib/discovery-browser";
 import { SeekController } from "./lib/seek-controller";
 import {
@@ -94,9 +94,26 @@ export default function App() {
     statusRef.current = status;
   }, [status]);
 
+  const [optimisticPos, setOptimisticPos] = useState<number | null>(null);
+  const seekControllerRef = useRef<SeekController | null>(null);
+  const optimisticTtlRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const refreshStatus = useCallback(async () => {
     try {
-      setStatus(await daemon.status());
+      const s = await daemon.status();
+      setStatus(s);
+      setOptimisticPos((prev) => {
+        if (prev === null) return null;
+        const currentCastPos = s.cast?.position ?? 0;
+        if (Math.abs(currentCastPos - prev) < 2.0) {
+          if (optimisticTtlRef.current !== null) {
+            clearTimeout(optimisticTtlRef.current);
+            optimisticTtlRef.current = null;
+          }
+          return null;
+        }
+        return prev;
+      });
       try {
         const q = await daemon.getAmazonQueue();
         if (q && Array.isArray(q.items)) {
@@ -117,26 +134,44 @@ export default function App() {
     }
   }, []);
 
-  const [optimisticPos, setOptimisticPos] = useState<number | null>(null);
-  const seekControllerRef = useRef<SeekController | null>(null);
-
   useEffect(() => {
     seekControllerRef.current = new SeekController({
       getPosition: () => statusRef.current?.cast?.position ?? 0,
       getDuration: () => statusRef.current?.cast?.duration ?? 0,
-      onOptimisticChange: (pos) => setOptimisticPos(pos),
+      onOptimisticChange: (pos) => {
+        if (optimisticTtlRef.current !== null) {
+          clearTimeout(optimisticTtlRef.current);
+          optimisticTtlRef.current = null;
+        }
+        setOptimisticPos(pos);
+      },
       sendSeek: async (target) => {
         try {
           await daemon.seek(target);
           await refreshStatus();
-        } finally {
+          if (optimisticTtlRef.current !== null) {
+            clearTimeout(optimisticTtlRef.current);
+          }
+          optimisticTtlRef.current = setTimeout(() => {
+            setOptimisticPos(null);
+            optimisticTtlRef.current = null;
+          }, 2500);
+        } catch (err: any) {
+          setNotice(`Seek failed: ${err?.message || 'Unknown error'}`);
           setOptimisticPos(null);
+          throw err;
         }
+      },
+      onError: (err: any) => {
+        setNotice(`Seek failed: ${err?.message || 'Unknown error'}`);
       },
       debounceMs: 250,
     });
     return () => {
       seekControllerRef.current?.cancel();
+      if (optimisticTtlRef.current !== null) {
+        clearTimeout(optimisticTtlRef.current);
+      }
     };
   }, [refreshStatus]);
 
@@ -288,6 +323,26 @@ export default function App() {
       );
       await new Promise((resolve) => window.setTimeout(resolve, 2500));
       await refreshStatus();
+    });
+
+  const forceKillDaemon = () =>
+    run("force-kill", async () => {
+      setLaunchMessage("Force stopping daemon…");
+      try {
+        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 1000));
+        await Promise.race([daemon.shutdown(), timeoutPromise]);
+      } catch {
+        // Expected if daemon is unresponsive
+      }
+      if (canLaunchTermuxDaemon()) {
+        try {
+          await stopTermuxDaemon();
+        } catch {
+          // Ignore
+        }
+      }
+      setNotice("Daemon terminated. You can relaunch it now.");
+      setLaunchMessage("");
     });
 
   const loadLibrary = () =>
@@ -474,10 +529,18 @@ export default function App() {
           <button
             type="button"
             onClick={launchDaemon}
-            disabled={busy === "launch-daemon"}
+            disabled={busy === "launch-daemon" || busy === "force-kill"}
             className="block w-full rounded border border-emerald-500/50 bg-emerald-500/20 px-4 py-3 text-center font-bold tracking-wide text-emerald-100 shadow-lg hover:bg-emerald-500/30 disabled:cursor-wait disabled:opacity-60"
           >
             {busy === "launch-daemon" ? "Launching Termux…" : "Launch Daemon (Termux)"}
+          </button>
+          <button
+            type="button"
+            onClick={forceKillDaemon}
+            disabled={busy === "launch-daemon" || busy === "force-kill"}
+            className="block w-full rounded border border-red-500/40 bg-red-500/10 px-4 py-2.5 text-center font-semibold tracking-wide text-red-300 shadow hover:bg-red-500/20 disabled:cursor-wait disabled:opacity-60"
+          >
+            {busy === "force-kill" ? "Stopping Daemon…" : "Force Kill Daemon"}
           </button>
           <div className="font-mono text-emerald-500/50">expecting: {DAEMON_BASE}</div>
           {(launchMessage || notice) && (
@@ -486,8 +549,10 @@ export default function App() {
             </div>
           )}
           <div className="rounded border border-emerald-500/20 bg-black/40 p-3 text-xs text-emerald-500/70">
-            <div className="mb-1 text-emerald-400/80">Manual fallback command:</div>
+            <div className="mb-1 text-emerald-400/80">Manual start command:</div>
             <code className="break-words font-mono">{TERMUX_MANUAL_COMMAND}</code>
+            <div className="mt-2 mb-1 text-red-400/80">Manual kill command:</div>
+            <code className="break-words font-mono">{TERMUX_KILL_COMMAND}</code>
           </div>
           <button
             onClick={() => run("retry", refreshStatus)}
