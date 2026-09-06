@@ -3,6 +3,7 @@ import re
 import urllib.request
 import urllib.parse
 import json
+import functools
 
 def parse_filename(filename: str):
     """Parses S01E02 or similar patterns to extract title, season, and episode."""
@@ -153,18 +154,10 @@ def parse_intent_url(raw_url: str) -> str:
     return raw_url
 
 
-def resolve_amazon_media_info(raw_url: str) -> dict:
-    """
-    Extracts canonical GTI and resolves rich episode/movie/season title across all Amazon Prime Video URL variations:
-    - https://watch.amazon.com/watch?gti=amzn1.dv.gti....
-    - https://www.primevideo.com/region/na/detail/amzn1.dv.gti....
-    - https://www.primevideo.com/detail/<catalog_id>
-    - https://www.amazon.com/gp/video/detail/<asin>
-    - intent:// URIs
-    - Bare GTIs
-    """
+@functools.lru_cache(maxsize=128)
+def _resolve_amazon_media_info_cached(raw_url: str):
     if not isinstance(raw_url, str) or not raw_url.strip():
-        return {"gti": "", "title": "Unknown title", "episode": None}
+        return ("", "Unknown title", None)
 
     clean_url = raw_url.strip()
     if clean_url.startswith(("intent://", "intent:")):
@@ -291,10 +284,24 @@ def resolve_amazon_media_info(raw_url: str) -> dict:
     if not resolved_title:
         resolved_title = "Amazon Video"
 
+    return (gti or catalog_id, resolved_title, episode_number)
+
+
+def resolve_amazon_media_info(raw_url: str) -> dict:
+    """
+    Extracts canonical GTI and resolves rich episode/movie/season title across all Amazon Prime Video URL variations:
+    - https://watch.amazon.com/watch?gti=amzn1.dv.gti....
+    - https://www.primevideo.com/region/na/detail/amzn1.dv.gti....
+    - https://www.primevideo.com/detail/<catalog_id>
+    - https://www.amazon.com/gp/video/detail/<asin>
+    - intent:// URIs
+    - Bare GTIs
+    """
+    gti, title, ep = _resolve_amazon_media_info_cached(raw_url)
     return {
-        "gti": gti or catalog_id,
-        "title": resolved_title,
-        "episode": episode_number,
+        "gti": gti,
+        "title": title,
+        "episode": ep,
     }
 
 

@@ -994,13 +994,18 @@ class CastService:
 
         if needs_title or needs_gti:
             from .metadata import resolve_amazon_media_info
-            resolved_info = resolve_amazon_media_info(path)
-            if needs_gti:
-                resolved_gti = resolved_info.get("gti")
-                if resolved_gti and resolved_gti.startswith("amzn1.dv.gti."):
-                    title_id = resolved_gti
             if needs_title:
-                title = resolved_info.get("title") or "Amazon Video"
+                resolved = resolve_title(path, provider="amazon")
+                if resolved and resolved not in ("Fetching title...", "Unknown title", "Amazon Video"):
+                    title = resolved
+            if needs_gti or not title or title in ("Fetching title...", "Unknown title", "Amazon Video"):
+                resolved_info = resolve_amazon_media_info(path)
+                if needs_gti:
+                    resolved_gti = resolved_info.get("gti")
+                    if resolved_gti and resolved_gti.startswith("amzn1.dv.gti."):
+                        title_id = resolved_gti
+                if not title or title in ("Fetching title...", "Unknown title", "Amazon Video"):
+                    title = resolved_info.get("title") or title or "Amazon Video"
 
         if not title_id:
             self.log("DEBUG-ONLY: Could not extract Amazon title ID from URL", "warn")
