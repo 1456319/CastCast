@@ -124,8 +124,8 @@ export function Explain({ text, title = "What is this?", children }: ExplainProp
 
   const handlePointerDown = (e: React.PointerEvent) => {
     firedRef.current = false;
-    startRef.current = { x: e.clientX, y: e.clientY };
     clear();
+    startRef.current = { x: e.clientX, y: e.clientY };
     timer.current = window.setTimeout(() => {
       firedRef.current = true;
       show(title, text);

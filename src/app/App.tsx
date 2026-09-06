@@ -144,7 +144,9 @@ export default function App() {
       setAmazonStatus("Go to amazon.com/code, sign in, and enter the code below.");
 
       let tries = 0;
+      let inFlight = false;
       amazonPollRef.current = window.setInterval(async () => {
+        if (inFlight) return;
         tries += 1;
         if (tries > 30) {
           stopAmazonPolling();
@@ -152,6 +154,7 @@ export default function App() {
           setAmazonAuthData(null);
           return;
         }
+        inFlight = true;
         try {
           if (typeof daemon.amazonPoll === "function") {
             const res = await daemon.amazonPoll(pub, priv);
@@ -163,6 +166,8 @@ export default function App() {
           }
         } catch {
           // Poll returns error until user authorizes
+        } finally {
+          inFlight = false;
         }
       }, 4000);
     } catch (err: any) {
