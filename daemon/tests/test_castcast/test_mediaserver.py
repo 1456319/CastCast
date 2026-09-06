@@ -110,6 +110,43 @@ class TestTransformDashManifest(unittest.TestCase):
         self.assertIn('<S d="300000"/>', result)
         self.assertIn("</SegmentTimeline>", result)
 
+    def test_dash_video_and_audio_segment_durations_normalization(self):
+        manifest = """<MPD>
+  <Period>
+    <AdaptationSet contentType="video" mimeType="video/mp4">
+      <Representation id="v1" codecs="hev1.1.6.L90.90">
+        <SegmentList duration="87193" timescale="24000">
+          <Initialization range="0-700"/>
+          <SegmentURL mediaRange="701-1500"/>
+          <SegmentURL mediaRange="1501-2500"/>
+        </SegmentList>
+      </Representation>
+      <SegmentDurations timescale="24000">
+        <S d="72072"/>
+        <S d="72072"/>
+      </SegmentDurations>
+    </AdaptationSet>
+    <AdaptationSet contentType="audio" lang="en" mimeType="audio/mp4">
+      <Representation id="a1" codecs="mp4a.40.2">
+        <SegmentList duration="174387" timescale="48000">
+          <Initialization range="0-600"/>
+          <SegmentURL mediaRange="601-1200"/>
+          <SegmentURL mediaRange="1201-2000"/>
+        </SegmentList>
+      </Representation>
+      <SegmentDurations timescale="48000">
+        <S d="144144"/>
+        <S d="144144"/>
+      </SegmentDurations>
+    </AdaptationSet>
+  </Period>
+</MPD>"""
+        result = transform_dash_manifest(manifest, "http://cdn.example.com/manifest.mpd")
+        self.assertNotIn("SegmentDurations", result)
+        self.assertNotIn('duration="87193"', result)
+        self.assertNotIn('duration="174387"', result)
+        self.assertIn('<S d="72072"/>', result)
+        self.assertIn('<S d="144144"/>', result)
 
 
 if __name__ == '__main__':

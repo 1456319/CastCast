@@ -113,10 +113,7 @@ def transform_dash_manifest(body_content: str, target_url: str) -> str:
         has_video = 'contentType="video"' in tag or 'height=' in tag
         return has_audio and not has_text and not has_video
 
-    def is_text_adaptation_set(tag: str) -> bool:
-        return any(t in tag for t in ['contentType="text"', 'contentType="subtitle"', 'mimeType="text"', 'text/vtt', 'application/ttml+xml', 'codecs="stpp'])
-
-    def normalize_text_segment_durations(adapt_str: str) -> str:
+    def normalize_segment_durations(adapt_str: str) -> str:
         if "SegmentDurations" not in adapt_str or "SegmentList" not in adapt_str:
             return adapt_str
 
@@ -139,9 +136,9 @@ def transform_dash_manifest(body_content: str, target_url: str) -> str:
     def process_adaptation_set(match):
         tag = match.group(0)
         if is_audio_adaptation_set(tag):
-            return filter_english_audio(tag)
-        if is_text_adaptation_set(tag):
-            return normalize_text_segment_durations(tag)
+            tag = filter_english_audio(tag)
+        if tag:
+            tag = normalize_segment_durations(tag)
         return tag
 
     body_content = re.sub(
