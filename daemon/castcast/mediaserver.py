@@ -245,7 +245,6 @@ def _handle_amazon_license(handler: BaseHTTPRequestHandler) -> None:
     # NOTE: CORS headers (Access-Control-Allow-Origin: *) are required 
     # because the Shaka Player receiver runs in a browser context.
     # ====================================================================
-    import urllib.parse
     from . import amazon_drm
 
     server: "MediaServer" = handler.server.media_server  # type: ignore[attr-defined]
@@ -290,6 +289,9 @@ def _handle_drm_token(handler: BaseHTTPRequestHandler) -> None:
         return
 
     binary_token = server.drm_tokens[token_id]
+    if not isinstance(binary_token, (bytes, bytearray)):
+        handler.send_error(404, "Invalid token format")
+        return
 
     handler.send_response(200)
     handler.send_header("Access-Control-Allow-Origin", "*")
@@ -311,22 +313,7 @@ class _Handler(BaseHTTPRequestHandler):
         server.log(f"http {self.address_string()} {fmt % args}", "debug")
 
     def _resolve(self) -> Optional[str]:
-        server: "MediaServer" = self.server.media_server  # type: ignore[attr-defined]
-        path = urllib.parse.urlsplit(self.path).path
-        prefix = f"/{server.root_token}/"
-        if not path.startswith(prefix):
-            return None
-
-        rel = urllib.parse.unquote(path[len(prefix):])
-        rel = posixpath.normpath(rel).lstrip("/")
-
-        for root in server.roots:
-            real_root = os.path.realpath(root)
-            candidate = os.path.realpath(os.path.join(root, rel))
-            if candidate == real_root or candidate.startswith(real_root + os.sep):
-                if os.path.isfile(candidate):
-                    return candidate
-        return None
+        return self.server.media_server._resolve(self.path)
 
     # -- verbs ------------------------------------------------------------
 

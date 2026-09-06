@@ -246,6 +246,21 @@ def test_license_handler_rejects_get_and_file_requests():
     handler.send_error.assert_called_with(405, "Method Not Allowed")
 
 
+def test_license_handler_rejects_invalid_token_format():
+    mock_server = MagicMock()
+    mock_server.media_server.log = MagicMock()
+    mock_server.media_server.drm_tokens = {
+        "bad_token": "string-not-bytes",
+    }
+    handler = _LicenseHandler.__new__(_LicenseHandler)
+    handler.server = mock_server
+    handler.path = "/drm/bad_token"
+    handler.send_error = MagicMock()
+
+    handler.do_POST()
+    handler.send_error.assert_called_with(404, "Invalid token format")
+
+
 def test_mediaserver_starts_license_server_and_binds_ssh_tunnel(tmp_path):
     root = tmp_path / "media"
     root.mkdir()
