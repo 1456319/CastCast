@@ -95,6 +95,7 @@ class MediaSession:
     # Chromecast receiver via customData.asset.licenseServers.
     license_url: str = ""
     receiver_app_id: str = DEFAULT_MEDIA_RECEIVER_APP_ID
+    require_4k: bool = False
 
     @property
     def content_id(self) -> str:
@@ -126,6 +127,9 @@ class Status:
     active_track_ids: Optional[list] = None
     text_tracks: int = 0
     has_text_tracks: bool = False
+    receiver_width: int = 0
+    receiver_height: int = 0
+    quality_state: str = "unverified"
 
 
 class Supervisor:
@@ -211,7 +215,8 @@ class Supervisor:
              subtitle: str = "", poster_url: str = "", backdrop_url: str = "",
              duration: float = 0.0, source_path: str = "", autoplay: bool = True,
              tracks: Optional[list] = None, active_track_ids: Optional[list] = None,
-             license_url: str = "", position: float = 0.0) -> None:
+             license_url: str = "", position: float = 0.0,
+             require_4k: bool = False) -> None:
         """Queue a LOAD.  Safe to call before the link is even up."""
         with self._lock:
             self._media_session_id = None
@@ -222,7 +227,8 @@ class Supervisor:
                                          duration=duration, source_path=source_path,
                                          position=position, autoplay=autoplay, tracks=tracks or [],
                                          active_track_ids=active_track_ids or [],
-                                         license_url=license_url, receiver_app_id=app_id)
+                                         license_url=license_url, receiver_app_id=app_id,
+                                         require_4k=require_4k)
             self._pending_restore = True
             self.status.title = title
             self.status.content_url = url
@@ -232,6 +238,8 @@ class Supervisor:
             self.status.active_track_ids = active_track_ids or []
             self.status.text_tracks = len(tracks or [])
             self.status.has_text_tracks = bool(tracks)
+            self.status.receiver_width = self.status.receiver_height = 0
+            self.status.quality_state = "unverified"
         self._log(f"queued LOAD {title or url}")
         self._try_load()
         self._emit("media", self.snapshot())
@@ -276,6 +284,8 @@ class Supervisor:
             self.status.active_track_ids = first.get("activeTrackIds") or []
             self.status.text_tracks = len(first_tracks)
             self.status.has_text_tracks = bool(first_tracks)
+            self.status.receiver_width = self.status.receiver_height = 0
+            self.status.quality_state = "unverified"
 
         self._log(f"queued QUEUE_LOAD with {len(items)} items")
         self._try_load()
@@ -893,8 +903,16 @@ class Supervisor:
             else:
                 self._set_state(State.READY)
 
+        video_info = entry.get("videoInfo") or media.get("videoInfo") or {}
+        self._update_resolution(video_info.get("width"), video_info.get("height"))
         self._emit("media", self.snapshot())
         return True
+
+    def _update_resolution(self, width: Any, height: Any) -> None:
+        if not isinstance(width, (int, float)) or not isinstance(height, (int, float)) or width <= 0 or height <= 0:
+            return
+        self.status.receiver_width, self.status.receiver_height = int(width), int(height)
+        self.status.quality_state = "receiver_4k" if width >= 3840 and height >= 2160 else "below_4k"
 
     # -- the loop ----------------------------------------------------------
 

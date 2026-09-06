@@ -460,8 +460,26 @@ class CastService:
 
         # If we already produced a converted copy, point at it.
         ready = None
-        if plan and os.path.exists(plan.output_path):
-            ready = plan.output_path
+        if plan and os.path.isfile(plan.output_path) and os.path.getsize(plan.output_path) > 0:
+            if os.path.isfile(path) and os.path.getmtime(plan.output_path) >= os.path.getmtime(path):
+                try:
+                    prepared_info = self.probe_cached(plan.output_path)
+                    prepared_verdict = capability.evaluate(
+                        prepared_info,
+                        is_ultra=is_ultra,
+                        assume_avr_passthrough=bool(self.config.get("avr_passthrough"))
+                    )
+                    pv = info.primary_video
+                    ppv = prepared_info.primary_video
+                    # 4K fidelity assertion: do not reuse lower resolution conversion for 4K source
+                    if pv and pv.is_4k and (not ppv or not ppv.is_4k):
+                        pass
+                    elif pv and pv.hdr_format not in ("SDR", "", None) and (not ppv or ppv.hdr_format != pv.hdr_format):
+                        pass
+                    elif prepared_verdict.castable and not prepared_verdict.needs_processing:
+                        ready = plan.output_path
+                except ProbeError:
+                    pass
 
         return {
             "media": info.to_dict(),
