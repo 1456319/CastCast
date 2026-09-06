@@ -8,6 +8,7 @@ import socket
 import ssl
 import struct
 import threading
+import time
 from typing import Optional
 
 from .protobuf import CastMessage, device_auth_challenge
@@ -28,7 +29,10 @@ CAST_PORT = 8009
 #: Google Home ecosystem: it is a stock app ID that needs no developer console
 #: registration, no custom receiver hosted on Google's CDN, and no Home app.
 #: pychromecast, VLC, catt and go-chromecast all hardcode it.
-DEFAULT_MEDIA_RECEIVER_APP_ID = "07AEE832"
+DEFAULT_MEDIA_RECEIVER_APP_ID = "CC1AD845"
+# Shaka's demo accepts custom Widevine license configuration, but its generic
+# Cast interface does not implement QUEUE_* or EDIT_TRACKS_INFO.
+SHAKA_RECEIVER_APP_ID = "07AEE832"
 
 DEFAULT_TEXT_TRACK_STYLE = {"fontScale": 1.0, "foregroundColor": "#FFFFFFFF", "backgroundColor": "#00000099"}
 
@@ -66,12 +70,13 @@ class CastChannel:
     followed by that many bytes of serialised ``CastMessage``.
     """
 
-    def __init__(self, host: str, port: int = CAST_PORT, connect_timeout: float = 8.0):
+    def __init__(self, host: str, port: int = CAST_PORT, connect_timeout: float = 10.0):
         self.host = host
         self.port = port
         self._sock: Optional[ssl.SSLSocket] = None
         self._send_lock = threading.Lock()
         self._connect_timeout = connect_timeout
+        self._receive_buffer = bytearray()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -91,6 +96,7 @@ class CastChannel:
 
     def close(self) -> None:
         sock, self._sock = self._sock, None
+        self._receive_buffer.clear()
         if sock is not None:
             try:
                 sock.shutdown(socket.SHUT_RDWR)
@@ -107,52 +113,44 @@ class CastChannel:
 
     # -- raw I/O -----------------------------------------------------------
 
-    def _read_exactly(self, count: int) -> bytes:
-        sock = self._sock
-        if sock is None:
-            raise ChannelClosed("not connected")
-        chunks = []
-        remaining = count
-        while remaining:
-            # If we've started reading a chunk but it's not finished, don't time out
-            # prematurely. This prevents losing bytes if the connection is slow.
-            if remaining < count:
-                sock.settimeout(15.0)
-            try:
-                chunk = sock.recv(remaining)
-            except (ssl.SSLWantReadError, socket.timeout):
-                raise socket.timeout()
-            if not chunk:
-                raise ChannelClosed("peer closed the connection")
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        return b"".join(chunks)
-
     def receive(self, timeout: float) -> CastMessage:
         """Read one message.  Raises ``socket.timeout`` if none arrives in time."""
         sock = self._sock
         if sock is None:
             raise ChannelClosed("not connected")
-        sock.settimeout(max(timeout, 0.05))
-        header = self._read_exactly(4)
-        (size,) = struct.unpack(">I", header)
-        if size > PACKET_MAX_LEN:
+        deadline = time.monotonic() + max(timeout, 0.05)
+        while True:
+            buffered = self._receive_buffer
+            if len(buffered) >= 4:
+                size = struct.unpack(">I", buffered[:4])[0]
+                if not 0 < size <= PACKET_MAX_LEN:
+                    raise ChannelClosed(f"invalid Cast frame length: {size}")
+                if len(buffered) >= size + 4:
+                    packet = bytes(buffered[4:size + 4])
+                    del buffered[:size + 4]
+                    return CastMessage.decode(packet)
+                needed = size + 4 - len(buffered)
+            else:
+                needed = 4 - len(buffered)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout()
+            sock.settimeout(remaining)
             try:
-                extra = sock.recv(1024)
-            except:
-                extra = b''
-            raise ChannelClosed(f"payload size is too long ({size}); dropping connection. Header was: {header}, following bytes: {extra}")
-        
-        # We got the header, so the body must be coming. Set a long timeout 
-        # so we don't abort mid-packet and desync the TCP stream on slow Wi-Fi.
-        sock.settimeout(15.0)
-        return CastMessage.decode(self._read_exactly(size))
+                chunk = sock.recv(needed)
+            except ssl.SSLWantReadError as exc:
+                raise socket.timeout() from exc
+            if not chunk:
+                raise ChannelClosed("peer closed the connection")
+            buffered.extend(chunk)
 
     def send(self, message: CastMessage) -> None:
         sock = self._sock
         if sock is None:
             raise ChannelClosed("not connected")
         body = message.encode()
+        if len(body) > PACKET_MAX_LEN:
+            raise ChannelClosed("outbound Cast message exceeds 64 KiB; reduce the queue size")
         frame = struct.pack(">I", len(body)) + body
         with self._send_lock:
             try:

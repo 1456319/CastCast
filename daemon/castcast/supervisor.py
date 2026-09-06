@@ -30,6 +30,7 @@ single most valuable behaviour for the 4K-stability problem.
 
 from __future__ import annotations
 
+import copy
 import json
 import threading
 import time
@@ -37,8 +38,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Optional
 
-from .channel import (CastChannel, ChannelClosed, DEFAULT_MEDIA_RECEIVER_APP_ID, DEFAULT_TEXT_TRACK_STYLE,
-                      NS_CONNECTION, NS_HEARTBEAT, NS_MEDIA, NS_RECEIVER,
+from .channel import (CastChannel, ChannelClosed, DEFAULT_MEDIA_RECEIVER_APP_ID, SHAKA_RECEIVER_APP_ID,
+                      DEFAULT_TEXT_TRACK_STYLE, NS_CONNECTION, NS_HEARTBEAT, NS_MEDIA, NS_RECEIVER,
                       PLATFORM_RECEIVER)
 
 #: VLC uses 6s / 1 retry.  We keep the same interval but allow two misses,
@@ -93,6 +94,7 @@ class MediaSession:
     # Widevine license server URL for DRM-protected streams. Passed to the
     # Chromecast receiver via customData.asset.licenseServers.
     license_url: str = ""
+    receiver_app_id: str = DEFAULT_MEDIA_RECEIVER_APP_ID
 
     @property
     def content_id(self) -> str:
@@ -156,6 +158,7 @@ class Supervisor:
         self._media_session_id: Optional[int] = None
         self._session: Optional[MediaSession] = None
         self._pending_restore = False
+        self._restore_paused = False
 
         self._ping_retries = PING_WAIT_RETRIES
         self._last_ping = 0.0
@@ -164,6 +167,13 @@ class Supervisor:
         self._last_position_value = 0.0
 
         self.status = Status(host=host)
+
+    @property
+    def receiver_app_id(self) -> str:
+        with self._lock:
+            if self._session and self._session.receiver_app_id:
+                return self._session.receiver_app_id
+            return self.status.app_id or DEFAULT_MEDIA_RECEIVER_APP_ID
 
     # -- public API --------------------------------------------------------
 
@@ -206,12 +216,13 @@ class Supervisor:
         with self._lock:
             self._media_session_id = None
             self.status.media_session_id = None
+            app_id = SHAKA_RECEIVER_APP_ID if license_url else DEFAULT_MEDIA_RECEIVER_APP_ID
             self._session = MediaSession(url=url, content_type=content_type, title=title,
                                          subtitle=subtitle, poster_url=poster_url, backdrop_url=backdrop_url,
                                          duration=duration, source_path=source_path,
                                          position=position, autoplay=autoplay, tracks=tracks or [],
                                          active_track_ids=active_track_ids or [],
-                                         license_url=license_url)
+                                         license_url=license_url, receiver_app_id=app_id)
             self._pending_restore = True
             self.status.title = title
             self.status.content_url = url
@@ -251,7 +262,8 @@ class Supervisor:
                 title=title,
                 duration=duration,
                 source_path=source_path,
-                queue_items=items
+                queue_items=items,
+                receiver_app_id=DEFAULT_MEDIA_RECEIVER_APP_ID,
             )
             self._pending_restore = True
 
@@ -295,6 +307,28 @@ class Supervisor:
         })
         self._emit("media", self.snapshot())
         return req_id
+
+    def replace_text_tracks(self, tracks: list[dict], active_ids: Optional[list[int]] = None) -> None:
+        """Reload the current item with updated text tracks preserving position, pause state, and DRM."""
+        with self._lock:
+            session = self._session
+            if not session:
+                raise RuntimeError("No active media session")
+            session.position = self._extrapolated_position()
+            session.autoplay = self._state is not State.PAUSED
+            self._restore_paused = not session.autoplay
+            session.tracks = copy.deepcopy(tracks) if tracks else []
+            session.active_track_ids = list(active_ids) if active_ids is not None else []
+            if session.queue_items and 0 <= session.queue_index < len(session.queue_items):
+                item = session.queue_items[session.queue_index]
+                item.setdefault("media", {})["tracks"] = copy.deepcopy(tracks) if tracks else []
+                item["activeTrackIds"] = list(active_ids) if active_ids is not None else []
+            self.status.text_tracks = len(session.tracks)
+            self.status.has_text_tracks = bool(session.tracks)
+            self.status.active_track_ids = session.active_track_ids
+            self._pending_restore = True
+        self._try_load()
+        self._emit("media", self.snapshot())
 
     def stop_media(self) -> None:
         self._media_command({"type": "STOP"})
@@ -434,10 +468,17 @@ class Supervisor:
         if not session or not pending:
             return
 
+        if transport and self.status.app_id and self.status.app_id != session.receiver_app_id:
+            with self._lock:
+                self._app_transport_id = ""
+                self._media_session_id = None
+            transport = ""
+            state = State.CONNECTED
+
         if state is State.CONNECTED and not transport:
-            self._log(f"launching receiver app {DEFAULT_MEDIA_RECEIVER_APP_ID}")
+            self._log(f"launching receiver app {session.receiver_app_id}")
             if self._send_receiver({"type": "LAUNCH",
-                                    "appId": DEFAULT_MEDIA_RECEIVER_APP_ID}) is not None:
+                                    "appId": session.receiver_app_id}) is not None:
                 # Deliberately not via _set_state: we do not want to re-enter
                 # _try_load from here.
                 with self._lock:
@@ -445,7 +486,8 @@ class Supervisor:
                     self.status.state = State.LAUNCHING.value
             return
 
-        if state not in (State.READY, State.CONNECTED) or not transport:
+        if state in (State.DISCONNECTED, State.CONNECTING, State.AUTHENTICATING,
+                     State.LAUNCHING, State.DEAD) or not transport:
             return
 
         channel = self._channel
@@ -453,13 +495,19 @@ class Supervisor:
             return
 
         if session.queue_items:
+            items = copy.deepcopy(session.queue_items)
+            for item in items:
+                item.pop("itemId", None)
+            if 0 <= session.queue_index < len(items):
+                items[session.queue_index]["autoplay"] = session.autoplay
             payload = {
                 "type": "QUEUE_LOAD",
                 "requestId": self._next_request_id("QUEUE_LOAD"),
                 "sessionId": None,
-                "items": session.queue_items,
+                "items": items,
                 "repeatMode": "REPEAT_OFF",
                 "startIndex": session.queue_index,
+                "currentTime": session.position,
             }
         else:
             payload = {
@@ -650,12 +698,23 @@ class Supervisor:
 
         transport = ""
         app_id = ""
-        for app in status.get("applications") or []:
-            if app.get("appId") == DEFAULT_MEDIA_RECEIVER_APP_ID or \
-                    NS_MEDIA in [ns.get("name") for ns in (app.get("namespaces") or [])]:
-                transport = app.get("transportId") or app.get("sessionId") or ""
-                app_id = app.get("appId") or ""
-                break
+        apps = status.get("applications") or []
+        target_app_id = self._session.receiver_app_id if self._session else None
+        matched_app = None
+        if target_app_id:
+            for app in apps:
+                if app.get("appId") == target_app_id:
+                    matched_app = app
+                    break
+        if not matched_app:
+            for app in apps:
+                if app.get("appId") in (DEFAULT_MEDIA_RECEIVER_APP_ID, SHAKA_RECEIVER_APP_ID) or \
+                        NS_MEDIA in [ns.get("name") for ns in (app.get("namespaces") or [])]:
+                    matched_app = app
+                    break
+        if matched_app:
+            transport = matched_app.get("transportId") or matched_app.get("sessionId") or ""
+            app_id = matched_app.get("appId") or ""
 
         with self._lock:
             self.status.app_id = app_id
@@ -793,8 +852,12 @@ class Supervisor:
         idle_reason = entry.get("idleReason") or ""
 
         if player_state == "PLAYING":
+            if getattr(self, "_restore_paused", False):
+                self._restore_paused = False
+                self._media_command({"type": "PAUSE"})
             self._set_state(State.PLAYING)
         elif player_state == "PAUSED":
+            self._restore_paused = False
             self._set_state(State.PAUSED)
         elif player_state == "BUFFERING":
             self._set_state(State.BUFFERING)
