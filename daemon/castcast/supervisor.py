@@ -465,7 +465,16 @@ class Supervisor:
                     self.status.state = State.LAUNCHING.value
             return
 
-        if state not in (State.READY, State.CONNECTED) or not transport:
+        active_states = (
+            State.READY,
+            State.CONNECTED,
+            State.LOADING,
+            State.PLAYING,
+            State.PAUSED,
+            State.BUFFERING,
+            State.LOAD_FAILED,
+        )
+        if state not in active_states or not transport:
             return
 
         channel = self._channel
@@ -573,7 +582,7 @@ class Supervisor:
                 payload["activeTrackIds"] = session.active_track_ids
 
         try:
-            channel.send_json(NS_MEDIA, self._app_transport_id, payload)
+            channel.send_json(NS_MEDIA, transport, payload)
         except ChannelClosed as exc:
             self._set_state(State.DEAD, error=str(exc))
             return
@@ -729,6 +738,8 @@ class Supervisor:
                         self._media_session_id = None
                         self.status.media_session_id = None
                     self._media_command_without_session({"type": "GET_STATUS"})
+                else:
+                    self._media_command({"type": "GET_STATUS"})
                 self._emit("command_failed", {"reason": str(reason), "request": request_kind})
             return True
 
@@ -974,15 +985,21 @@ class Supervisor:
 
     def _maybe_poll_status(self) -> None:
         with self._lock:
-            active = self._state in (State.PLAYING, State.BUFFERING)
+            active = self._state in (State.PLAYING, State.BUFFERING, State.PAUSED)
             transport = self._app_transport_id
             session_id = self._media_session_id
-        if not active or not transport or session_id is None:
+        if not active or not transport:
             return
         now = time.time()
         if now - self._last_status_poll < STATUS_POLL_INTERVAL:
             return
         self._last_status_poll = now
+
+        # If we have an active transport but no session_id (e.g. temporary desync),
+        # query status without session to recover mediaSessionId.
+        if session_id is None:
+            self._media_command_without_session({"type": "GET_STATUS"})
+            return
 
         # Stall detection: we are nominally PLAYING but the clock has not
         # advanced between two polls.  Usually means our HTTP server stopped

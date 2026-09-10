@@ -147,5 +147,84 @@ class TestSupervisor(unittest.TestCase):
         self.assertEqual(parsed["coords"], [0.0, 0.0, 42.0])
         self.assertEqual(parsed["nested"][0]["val"], [0.0, 1.0])
 
+    def test_load_while_playing_sends_load_to_active_transport(self):
+        from castcast.supervisor import State, NS_MEDIA
+        supervisor = Supervisor("127.0.0.1")
+        supervisor._channel = MagicMock()
+        supervisor._channel.connected = True
+        supervisor._app_transport_id = "transport-123"
+        supervisor._media_session_id = 42
+        supervisor._state = State.PLAYING
+
+        supervisor.load("http://example.com/next.mpd", title="Next Video")
+
+        # Verify LOAD was sent to transport-123 instead of being dropped
+        sent_calls = [
+            c for c in supervisor._channel.send_json.call_args_list
+            if c.args[0] == NS_MEDIA and c.args[1] == "transport-123" and c.args[2].get("type") == "LOAD"
+        ]
+        self.assertEqual(len(sent_calls), 1)
+        self.assertEqual(supervisor._state, State.LOADING)
+
+    def test_poll_media_status_recovers_missing_session_id(self):
+        from castcast.supervisor import State, NS_MEDIA
+        supervisor = Supervisor("127.0.0.1")
+        supervisor._channel = MagicMock()
+        supervisor._channel.connected = True
+        supervisor._app_transport_id = "transport-123"
+        supervisor._media_session_id = None
+        supervisor._state = State.PLAYING
+        supervisor._last_status_poll = 0.0
+
+        supervisor._maybe_poll_status()
+
+        # Should send GET_STATUS without requiring mediaSessionId
+        sent_calls = [
+            c for c in supervisor._channel.send_json.call_args_list
+            if c.args[0] == NS_MEDIA and c.args[1] == "transport-123" and c.args[2].get("type") == "GET_STATUS"
+        ]
+        self.assertEqual(len(sent_calls), 1)
+
+
+    def test_load_while_loading_sends_load_to_active_transport(self):
+        from castcast.supervisor import State, NS_MEDIA
+        supervisor = Supervisor("127.0.0.1")
+        supervisor._channel = MagicMock()
+        supervisor._channel.connected = True
+        supervisor._app_transport_id = "transport-123"
+        supervisor._media_session_id = None
+        supervisor._state = State.LOADING
+
+        supervisor.load("http://example.com/rapid_tap.mpd", title="Rapid Tap Replacement")
+
+        # Verify LOAD was sent to transport-123 instead of being dropped
+        sent_calls = [
+            c for c in supervisor._channel.send_json.call_args_list
+            if c.args[0] == NS_MEDIA and c.args[1] == "transport-123" and c.args[2].get("type") == "LOAD"
+        ]
+        self.assertEqual(len(sent_calls), 1)
+        self.assertEqual(supervisor._state, State.LOADING)
+
+    def test_poll_media_status_recovers_missing_session_id_when_paused(self):
+        from castcast.supervisor import State, NS_MEDIA
+        supervisor = Supervisor("127.0.0.1")
+        supervisor._channel = MagicMock()
+        supervisor._channel.connected = True
+        supervisor._app_transport_id = "transport-123"
+        supervisor._media_session_id = None
+        supervisor._state = State.PAUSED
+        supervisor._last_status_poll = 0.0
+
+        supervisor._maybe_poll_status()
+
+        # Should send GET_STATUS without requiring mediaSessionId even when paused
+        sent_calls = [
+            c for c in supervisor._channel.send_json.call_args_list
+            if c.args[0] == NS_MEDIA and c.args[1] == "transport-123" and c.args[2].get("type") == "GET_STATUS"
+        ]
+        self.assertEqual(len(sent_calls), 1)
+
+
 if __name__ == '__main__':
     unittest.main()
+

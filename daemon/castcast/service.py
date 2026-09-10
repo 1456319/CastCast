@@ -1041,6 +1041,7 @@ class CastService:
                 self.log(f"DEBUG-ONLY: Failed to fetch Amazon MPD manifest for subtitles: {exc}", "warn")
                 manifest_text = ""
 
+        tracks = []
         if manifest_text:
             try:
                 self.log("DEBUG-ONLY: Parsing MPD subtitles from Amazon manifest", "debug")
@@ -1050,6 +1051,9 @@ class CastService:
                 self.log(f"Discovered {len(tracks)} Amazon subtitle tracks from manifest", "info")
             except Exception as exc:
                 self.log(f"Error parsing MPD subtitles: {exc}", "warn")
+                tracks = []
+
+        caf_tracks, active_track_ids = self._tracks_for_load(tracks)
 
         content_type = "application/dash+xml"
         if resume_pos is None:
@@ -1075,7 +1079,9 @@ class CastService:
             title=title,
             source_path=path,
             license_url=license_url,
-            position=resume_pos
+            position=resume_pos,
+            tracks=caf_tracks,
+            active_track_ids=active_track_ids
         )
         return {"casting": True, "url": proxied_path, "drm": True}
 
@@ -1607,7 +1613,9 @@ class CastService:
         default_active_id = None
 
         for t in tracks:
-            track_id = t["track_id"]
+            track_id = t.get("track_id", t.get("trackId"))
+            if track_id is None:
+                continue
             lang = t.get("language") or "und"
             vtt_path = t.get("vtt_path")
             if vtt_path:
@@ -1623,8 +1631,8 @@ class CastService:
                 "trackId": track_id,
                 "type": "TEXT",
                 "trackContentId": url,
-                "trackContentType": "text/vtt",
-                "name": t.get("label") or LANGUAGE_NAMES.get(lang, lang.upper()),
+                "trackContentType": t.get("mime_type") or t.get("trackContentType") or "text/vtt",
+                "name": t.get("label") or t.get("name") or LANGUAGE_NAMES.get(lang, lang.upper()),
                 "language": lang,
                 "subtype": "SUBTITLES",
             })
