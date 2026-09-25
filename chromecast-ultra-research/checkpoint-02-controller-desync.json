@@ -1,0 +1,823 @@
+{
+  "time": "2026-09-10T19:14:44.724Z",
+  "value": {
+    "status": {
+      "connected": true,
+      "device": {
+        "name": "",
+        "friendly_name": "192.168.1.6",
+        "model": "",
+        "uuid": "",
+        "host": "192.168.1.6",
+        "port": 8009,
+        "source": "manual",
+        "is_ultra": false
+      },
+      "media_server": {
+        "base_url": "[URL]",
+        "lan_ip": "192.168.1.12",
+        "port": 41643,
+        "roots": [
+          "/storage/emulated/0/Download/CastCast/Chromecast"
+        ]
+      },
+      "tools": {
+        "ffmpeg": true,
+        "ffprobe": true,
+        "yt_dlp": true
+      },
+      "remux": null,
+      "cast": {
+        "state": "playing",
+        "host": "192.168.1.6",
+        "app_id": "07AEE832",
+        "media_session_id": null,
+        "position": 379.86,
+        "duration": 0,
+        "volume": 1,
+        "muted": false,
+        "idle_reason": "",
+        "title": "Hazbin Hotel - Season 2 - Ep 7: Weapon of Mass Distraction",
+        "content_url": "[URL]",
+        "source_path": "[URL]",
+        "reconnects": 0,
+        "connected_since": 1789067128.727373,
+        "last_error": "",
+        "stream_stalls": 0,
+        "active_track_ids": [],
+        "text_tracks": 0,
+        "has_text_tracks": false
+      }
+    },
+    "queue": {
+      "items": [
+        {
+          "url": "[URL]",
+          "title": "Hazbin Hotel - Season 2 - Ep 7: Weapon of Mass Distraction",
+          "gti": "amzn1.dv.gti.cfb776a7-3e66-400f-bcf2-89a61616d0ad"
+        },
+        {
+          "url": "[URL]",
+          "title": "Hazbin Hotel - Season 2 - Ep 8: Curtain Call",
+          "gti": "amzn1.dv.gti.5ef0ebcd-ce37-4f68-9438-82e9bde9cd00"
+        }
+      ]
+    },
+    "subtitles": {
+      "source_type": "amazon",
+      "active_track_ids": [],
+      "tracks": [
+        {
+          "track_id": 1,
+          "language": "zho",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "Chinese [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 2,
+          "language": "hi-",
+          "mime_type": "application/mp4",
+          "role": "forced-subtitle",
+          "label": "HI- (Forced) [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 3,
+          "language": "hu-",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "HU- [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 4,
+          "language": "ita",
+          "mime_type": "application/mp4",
+          "role": "forced-subtitle",
+          "label": "Italian (Forced) [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 5,
+          "language": "nl-",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "NL- [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 6,
+          "language": "da-",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "DA- [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 7,
+          "language": "fre",
+          "mime_type": "application/mp4",
+          "role": "forced-subtitle",
+          "label": "French (Forced) [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 8,
+          "language": "eng",
+          "mime_type": "application/mp4",
+          "role": "caption",
+          "label": "English (SDH) [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 9,
+          "language": "por",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "Portuguese [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 10,
+          "language": "ms-",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "MS- [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 11,
+          "language": "he-",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "HE- [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 12,
+          "language": "nb-",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "NB- [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 13,
+          "language": "por",
+          "mime_type": "application/mp4",
+          "role": "forced-subtitle",
+          "label": "Portuguese (Forced) [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 14,
+          "language": "spa",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "Spanish [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 15,
+          "language": "ar-",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "AR- [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 16,
+          "language": "pl-",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "PL- [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 17,
+          "language": "id-",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "ID- [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 18,
+          "language": "zho",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "Chinese [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 19,
+          "language": "tr-",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "TR- [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 20,
+          "language": "jpn",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "Japanese [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 21,
+          "language": "tr-",
+          "mime_type": "application/mp4",
+          "role": "forced-subtitle",
+          "label": "TR- (Forced) [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 22,
+          "language": "por",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "Portuguese [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 23,
+          "language": "ro-",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "RO- [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 24,
+          "language": "ger",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "German [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 25,
+          "language": "spa",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "Spanish [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 26,
+          "language": "hi-",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "HI- [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 27,
+          "language": "ita",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "Italian [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 28,
+          "language": "th-",
+          "mime_type": "application/mp4",
+          "role": "forced-subtitle",
+          "label": "TH- (Forced) [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 29,
+          "language": "cs-",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "CS- [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 30,
+          "language": "pl-",
+          "mime_type": "application/mp4",
+          "role": "forced-subtitle",
+          "label": "PL- (Forced) [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 31,
+          "language": "el-",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "EL- [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 32,
+          "language": "fre",
+          "mime_type": "application/mp4",
+          "role": "forced-subtitle",
+          "label": "French (Forced) [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 33,
+          "language": "sv-",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "SV- [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 34,
+          "language": "fre",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "French [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 35,
+          "language": "spa",
+          "mime_type": "application/mp4",
+          "role": "forced-subtitle",
+          "label": "Spanish (Forced) [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 36,
+          "language": "fi-",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "FI- [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 37,
+          "language": "th-",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "TH- [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 38,
+          "language": "spa",
+          "mime_type": "application/mp4",
+          "role": "forced-subtitle",
+          "label": "Spanish (Forced) [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 39,
+          "language": "jpn",
+          "mime_type": "application/mp4",
+          "role": "forced-subtitle",
+          "label": "Japanese (Forced) [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 40,
+          "language": "fre",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "French [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 41,
+          "language": "kor",
+          "mime_type": "application/mp4",
+          "role": "subtitle",
+          "label": "Korean [Amazon]",
+          "source": "amazon"
+        },
+        {
+          "track_id": 42,
+          "language": "ger",
+          "mime_type": "application/mp4",
+          "role": "forced-subtitle",
+          "label": "German (Forced) [Amazon]",
+          "source": "amazon"
+        }
+      ],
+      "remote_supported": false
+    },
+    "logs": {
+      "lines": [
+        {
+          "seq": 1,
+          "ts": 1789066864.943951,
+          "level": "info",
+          "message": "media server listening on [URL]"
+        },
+        {
+          "seq": 2,
+          "ts": 1789066864.9480286,
+          "level": "info",
+          "message": "media roots: /storage/emulated/0/Download/CastCast/Chromecast"
+        },
+        {
+          "seq": 3,
+          "ts": 1789066864.9618704,
+          "level": "info",
+          "message": "control API on [URL]"
+        },
+        {
+          "seq": 4,
+          "ts": 1789066864.9619868,
+          "level": "info",
+          "message": "media server on [URL]"
+        },
+        {
+          "seq": 5,
+          "ts": 1789066866.3036423,
+          "level": "info",
+          "message": "Established public HTTPS tunnel for DRM: [URL]"
+        },
+        {
+          "seq": 6,
+          "ts": 1789066869.903702,
+          "level": "info",
+          "message": "browsing _googlecast._tcp.local ..."
+        },
+        {
+          "seq": 7,
+          "ts": 1789066874.008179,
+          "level": "info",
+          "message": "discovery finished: 1 device(s)"
+        },
+        {
+          "seq": 8,
+          "ts": 1789067128.569743,
+          "level": "info",
+          "message": "state disconnected -> connecting"
+        },
+        {
+          "seq": 9,
+          "ts": 1789067128.5711765,
+          "level": "info",
+          "message": "connecting to 192.168.1.6:8009"
+        },
+        {
+          "seq": 10,
+          "ts": 1789067128.727427,
+          "level": "info",
+          "message": "TLS connection established to 192.168.1.6:8009"
+        },
+        {
+          "seq": 11,
+          "ts": 1789067128.728663,
+          "level": "info",
+          "message": "state connecting -> connected"
+        },
+        {
+          "seq": 12,
+          "ts": 1789067387.473843,
+          "level": "debug",
+          "message": "DEBUG-ONLY: _cast_amazon processing path: [URL]"
+        },
+        {
+          "seq": 13,
+          "ts": 1789067388.6892812,
+          "level": "info",
+          "message": "Detected Amazon Title ID: amzn1.dv.gti.cfb776a7-3e66-400f-bcf2-89a61616d0ad (Hazbin Hotel - Season 2 - Ep 7: Weapon of Mass Distraction)"
+        },
+        {
+          "seq": 14,
+          "ts": 1789067388.6900513,
+          "level": "info",
+          "message": "Fetching Amazon 4K playback resources for amzn1.dv.gti.cfb776a7-3e66-400f-bcf2-89a61616d0ad..."
+        },
+        {
+          "seq": 15,
+          "ts": 1789067389.2240663,
+          "level": "warn",
+          "message": "GET [URL] failed: HTTP 403"
+        },
+        {
+          "seq": 16,
+          "ts": 1789067389.2247195,
+          "level": "info",
+          "message": "Amazon access token expired, refreshing via refresh_token..."
+        },
+        {
+          "seq": 17,
+          "ts": 1789067389.8640926,
+          "level": "info",
+          "message": "Amazon access token refreshed successfully"
+        },
+        {
+          "seq": 18,
+          "ts": 1789067391.0588818,
+          "level": "info",
+          "message": "Amazon 4K manifest URL successfully retrieved"
+        },
+        {
+          "seq": 19,
+          "ts": 1789067391.05939,
+          "level": "info",
+          "message": "Amazon 4K Manifest (Proxied): [URL]"
+        },
+        {
+          "seq": 20,
+          "ts": 1789067391.0594428,
+          "level": "info",
+          "message": "Using public HTTPS proxy for DRM: [URL]"
+        },
+        {
+          "seq": 21,
+          "ts": 1789067391.0594757,
+          "level": "debug",
+          "message": "DEBUG-ONLY: Fetching Amazon MPD manifest for subtitle parsing: [URL]"
+        },
+        {
+          "seq": 22,
+          "ts": 1789067392.42352,
+          "level": "debug",
+          "message": "DEBUG-ONLY: Parsing MPD subtitles from Amazon manifest"
+        },
+        {
+          "seq": 23,
+          "ts": 1789067394.4615865,
+          "level": "info",
+          "message": "Parsed 42 subtitle tracks from Amazon MPD manifest"
+        },
+        {
+          "seq": 24,
+          "ts": 1789067394.7249112,
+          "level": "info",
+          "message": "Discovered 42 Amazon subtitle tracks from manifest"
+        },
+        {
+          "seq": 25,
+          "ts": 1789067394.7260036,
+          "level": "info",
+          "message": "queued LOAD Hazbin Hotel - Season 2 - Ep 7: Weapon of Mass Distraction"
+        },
+        {
+          "seq": 26,
+          "ts": 1789067394.7261524,
+          "level": "info",
+          "message": "launching receiver app 07AEE832"
+        },
+        {
+          "seq": 27,
+          "ts": 1789067398.5394368,
+          "level": "info",
+          "message": "media app up, transportId=b8e91741-44ef-4593-8829-535130d3285f"
+        },
+        {
+          "seq": 28,
+          "ts": 1789067398.5448973,
+          "level": "info",
+          "message": "state launching -> ready"
+        },
+        {
+          "seq": 29,
+          "ts": 1789067398.55074,
+          "level": "info",
+          "message": "LOAD sent @ 1641.3s: [URL]"
+        },
+        {
+          "seq": 30,
+          "ts": 1789067398.5510206,
+          "level": "info",
+          "message": "state ready -> loading"
+        },
+        {
+          "seq": 31,
+          "ts": 1789067398.6292071,
+          "level": "info",
+          "message": "state loading -> ready"
+        },
+        {
+          "seq": 32,
+          "ts": 1789067398.8557906,
+          "level": "info",
+          "message": "state ready -> buffering"
+        },
+        {
+          "seq": 33,
+          "ts": 1789067400.2018366,
+          "level": "debug",
+          "message": "http 192.168.1.6 \"HEAD /proxy/?[query omitted] HTTP/1.1\" 200 -"
+        },
+        {
+          "seq": 34,
+          "ts": 1789067402.1549323,
+          "level": "debug",
+          "message": "http 192.168.1.6 \"GET /proxy/?[query omitted] HTTP/1.1\" 200 -"
+        },
+        {
+          "seq": 35,
+          "ts": 1789067410.5409274,
+          "level": "debug",
+          "message": "Received POST: /amazon/license?title_id=amzn1.dv.gti.cfb776a7-3e66-400f-bcf2-89a61616d0ad"
+        },
+        {
+          "seq": 36,
+          "ts": 1789067410.5422816,
+          "level": "info",
+          "message": "Proxying Amazon Widevine License for amzn1.dv.gti.cfb776a7-3e66-400f-bcf2-89a61616d0ad"
+        },
+        {
+          "seq": 37,
+          "ts": 1789067410.8624349,
+          "level": "info",
+          "message": "Amazon Widevine DRM license acquired successfully (741 bytes)"
+        },
+        {
+          "seq": 38,
+          "ts": 1789067410.86325,
+          "level": "info",
+          "message": "Amazon Widevine License served successfully (741 bytes)"
+        },
+        {
+          "seq": 39,
+          "ts": 1789067410.863494,
+          "level": "debug",
+          "message": "http 127.0.0.1 \"POST /amazon/license?title_id=amzn1.dv.gti.cfb776a7-3e66-400f-bcf2-89a61616d0ad HTTP/1.1\" 200 -"
+        },
+        {
+          "seq": 40,
+          "ts": 1789067415.192257,
+          "level": "info",
+          "message": "state buffering -> playing"
+        },
+        {
+          "seq": 41,
+          "ts": 1789067445.3537886,
+          "level": "debug",
+          "message": "DEBUG-ONLY: selecting subtitle track 8"
+        },
+        {
+          "seq": 42,
+          "ts": 1789067445.3545058,
+          "level": "info",
+          "message": "DEBUG-ONLY: Supervisor.set_active_tracks activeTrackIds=[8]"
+        },
+        {
+          "seq": 43,
+          "ts": 1789067445.402945,
+          "level": "info",
+          "message": "media command failed: EDIT_TRACKS_INFO rejected with INVALID_COMMAND; refreshing receiver status instead of marking the load failed"
+        },
+        {
+          "seq": 44,
+          "ts": 1789067527.1214566,
+          "level": "debug",
+          "message": "DEBUG-ONLY: selecting subtitle track 8"
+        },
+        {
+          "seq": 45,
+          "ts": 1789067527.121858,
+          "level": "info",
+          "message": "DEBUG-ONLY: Supervisor.set_active_tracks activeTrackIds=[8]"
+        },
+        {
+          "seq": 46,
+          "ts": 1789067527.1397169,
+          "level": "info",
+          "message": "media command failed: EDIT_TRACKS_INFO rejected with INVALID_COMMAND; refreshing receiver status instead of marking the load failed"
+        },
+        {
+          "seq": 47,
+          "ts": 1789067527.3264282,
+          "level": "debug",
+          "message": "DEBUG-ONLY: selecting subtitle track 8"
+        },
+        {
+          "seq": 48,
+          "ts": 1789067527.3265698,
+          "level": "info",
+          "message": "DEBUG-ONLY: Supervisor.set_active_tracks activeTrackIds=[8]"
+        },
+        {
+          "seq": 49,
+          "ts": 1789067527.3449628,
+          "level": "info",
+          "message": "media command failed: EDIT_TRACKS_INFO rejected with INVALID_COMMAND; refreshing receiver status instead of marking the load failed"
+        },
+        {
+          "seq": 50,
+          "ts": 1789067527.5646276,
+          "level": "debug",
+          "message": "DEBUG-ONLY: selecting subtitle track 9"
+        },
+        {
+          "seq": 51,
+          "ts": 1789067527.565484,
+          "level": "info",
+          "message": "DEBUG-ONLY: Supervisor.set_active_tracks activeTrackIds=[9]"
+        },
+        {
+          "seq": 52,
+          "ts": 1789067527.6147325,
+          "level": "info",
+          "message": "media command failed: EDIT_TRACKS_INFO rejected with INVALID_COMMAND; refreshing receiver status instead of marking the load failed"
+        },
+        {
+          "seq": 53,
+          "ts": 1789067536.9620235,
+          "level": "debug",
+          "message": "DEBUG-ONLY: _cast_amazon processing path: [URL]"
+        },
+        {
+          "seq": 54,
+          "ts": 1789067536.9644942,
+          "level": "info",
+          "message": "Detected Amazon Title ID: amzn1.dv.gti.cfb776a7-3e66-400f-bcf2-89a61616d0ad (Hazbin Hotel - Season 2 - Ep 7: Weapon of Mass Distraction)"
+        },
+        {
+          "seq": 55,
+          "ts": 1789067536.9647918,
+          "level": "info",
+          "message": "Fetching Amazon 4K playback resources for amzn1.dv.gti.cfb776a7-3e66-400f-bcf2-89a61616d0ad..."
+        },
+        {
+          "seq": 56,
+          "ts": 1789067538.7919116,
+          "level": "info",
+          "message": "Amazon 4K manifest URL successfully retrieved"
+        },
+        {
+          "seq": 57,
+          "ts": 1789067538.7925935,
+          "level": "info",
+          "message": "Amazon 4K Manifest (Proxied): [URL]"
+        },
+        {
+          "seq": 58,
+          "ts": 1789067538.792764,
+          "level": "info",
+          "message": "Using public HTTPS proxy for DRM: [URL]"
+        },
+        {
+          "seq": 59,
+          "ts": 1789067538.7928157,
+          "level": "debug",
+          "message": "DEBUG-ONLY: Fetching Amazon MPD manifest for subtitle parsing: [URL]"
+        },
+        {
+          "seq": 60,
+          "ts": 1789067539.8674903,
+          "level": "debug",
+          "message": "DEBUG-ONLY: Parsing MPD subtitles from Amazon manifest"
+        },
+        {
+          "seq": 61,
+          "ts": 1789067540.7534292,
+          "level": "info",
+          "message": "Parsed 42 subtitle tracks from Amazon MPD manifest"
+        },
+        {
+          "seq": 62,
+          "ts": 1789067540.788491,
+          "level": "info",
+          "message": "Discovered 42 Amazon subtitle tracks from manifest"
+        },
+        {
+          "seq": 63,
+          "ts": 1789067540.7886696,
+          "level": "info",
+          "message": "queued LOAD Hazbin Hotel - Season 2 - Ep 7: Weapon of Mass Distraction"
+        },
+        {
+          "seq": 64,
+          "ts": 1789067544.7990162,
+          "level": "info",
+          "message": "dropping STOP: no active media session"
+        },
+        {
+          "seq": 65,
+          "ts": 1789067546.8786378,
+          "level": "info",
+          "message": "dropping STOP: no active media session"
+        },
+        {
+          "seq": 66,
+          "ts": 1789067547.3524513,
+          "level": "info",
+          "message": "dropping STOP: no active media session"
+        },
+        {
+          "seq": 67,
+          "ts": 1789067547.7267072,
+          "level": "info",
+          "message": "dropping STOP: no active media session"
+        },
+        {
+          "seq": 68,
+          "ts": 1789067547.9235358,
+          "level": "info",
+          "message": "dropping STOP: no active media session"
+        }
+      ]
+    },
+    "ui": "castcast\nDiscovery Mode\n192.168.1.12:41643\nDEVICE\nplaying\n192.168.1.6\n192.168.1.6\ndisconnect\nHazbin Hotel - Season 2 - Ep 7: Weapon of Mass Distraction\n6:19\n0:00\npause\nSubtitles: Off\nstop\nQUEUE - LOCAL, YOUTUBE\ncast queue\nscan\nno files loaded — tap scan\nQUEUE - AMAZON\nclear\nHazbin Hotel - Season 2 - Ep 7: Weapon of Mass Distraction\nHazbin Hotel - Season 2 - Ep 8: Curtain Call\nTRASH\nempty trash\ntrash is empty\n"
+  }
+}

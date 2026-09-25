@@ -1,0 +1,71 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Install Dependencies & Build Web App
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+
+      - name: Install & Sync Capacitor
+        run: |
+          pnpm exec cap sync android
+          node scripts/configure-android-loopback.mjs
+
+      - name: Patch Gradle Duplicate Classes
+        working-directory: ./android/app
+        run: |
+          cat << 'EOF_GRADLE' >> build.gradle
+
+          configurations.all {
+              resolutionStrategy {
+                  exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
+                  exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
+              }
+          }
+          EOF_GRADLE
+
+      - name: Build APK with Gradle
+        working-directory: ./android
+        run: ./gradlew assembleDebug
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish APK to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-build
+          name: Latest Android Build
+          body: "Automated APK build compiled via GitHub Actions."
+          files: android/app/build/outputs/apk/debug/app-debug.apk
+          prerelease: true
