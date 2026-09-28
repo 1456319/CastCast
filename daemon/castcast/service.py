@@ -887,24 +887,29 @@ class CastService:
                 rendered_dir = os.path.join(self.media_roots[0], ".castcast", "rendered")
                 os.makedirs(rendered_dir, exist_ok=True)
                 stem = os.path.splitext(os.path.basename(path))[0]
-                is_ultra = bool(getattr(self.supervisor, "is_ultra", True))
+                is_ultra = bool(getattr(self.supervisor, "is_ultra", getattr(self.device, "is_ultra", True)))
 
-                if content_type == ContentType.BINARY:
-                    out_video = os.path.join(rendered_dir, f"{stem}_dots.mp4")
-                    self.log(f"Synthesizing binary dot matrix video for {path}")
-                    synthesize_dots_video(path, out_video, is_ultra=is_ultra, repeat=8)
-                    mode = "binary"
-                else:
-                    out_video = os.path.join(rendered_dir, f"{stem}_slides.mp4")
-                    self.log(f"Synthesizing code slide video for {path}")
-                    synthesize_text_video(path, out_video, hold_per_page=6.0)
-                    mode = "text"
+                try:
+                    if content_type == ContentType.BINARY:
+                        out_video = os.path.join(rendered_dir, f"{stem}_dots.mp4")
+                        self.log(f"Synthesizing binary dot matrix video for {path}")
+                        synthesize_dots_video(path, out_video, is_ultra=is_ultra, repeat=8)
+                        mode = "binary"
+                    else:
+                        out_video = os.path.join(rendered_dir, f"{stem}_slides.mp4")
+                        self.log(f"Synthesizing code slide video for {path}")
+                        synthesize_text_video(path, out_video, hold_per_page=6.0)
+                        mode = "text"
+                except Exception as exc:
+                    self.log(f"Failed to synthesize video for {path}: {exc}", "error")
+                    return {"error": f"Synthesis failed: {exc}"}
 
                 url = self.media_server.url_for(out_video)
+                stream_title = title or f"[Data Stream] {os.path.basename(path)}"
                 self.supervisor.load(
                     url,
                     content_type="video/mp4",
-                    title=f"[Data Stream] {os.path.basename(path)}",
+                    title=stream_title,
                     source_path=path,
                     position=0.0
                 )

@@ -296,7 +296,16 @@ class TestServiceQueue(unittest.TestCase):
         res = self.svc.cast("/home/deck/test.zip")
         self.assertEqual(res.get("synthesized"), True)
         self.assertEqual(res.get("mode"), "binary")
+        mock_synth_dots.assert_called_once()
+        _, kw = mock_synth_dots.call_args
+        self.assertEqual(kw.get("is_ultra"), True)
+        self.assertEqual(kw.get("repeat"), 8)
         self.svc.supervisor.load.assert_called_once()
+        load_kw = self.svc.supervisor.load.call_args[1]
+        self.assertEqual(load_kw.get("content_type"), "video/mp4")
+        self.assertEqual(load_kw.get("position"), 0.0)
+        self.assertEqual(load_kw.get("source_path"), "/home/deck/test.zip")
+        self.assertEqual(load_kw.get("title"), "[Data Stream] test.zip")
 
     @patch('os.path.isfile', return_value=True)
     @patch('castcast.service.synthesize_text_video')
@@ -308,7 +317,40 @@ class TestServiceQueue(unittest.TestCase):
         res = self.svc.cast("/home/deck/hello.py")
         self.assertEqual(res.get("synthesized"), True)
         self.assertEqual(res.get("mode"), "text")
+        mock_synth_text.assert_called_once()
+        _, kw = mock_synth_text.call_args
+        self.assertEqual(kw.get("hold_per_page"), 6.0)
         self.svc.supervisor.load.assert_called_once()
+        load_kw = self.svc.supervisor.load.call_args[1]
+        self.assertEqual(load_kw.get("content_type"), "video/mp4")
+        self.assertEqual(load_kw.get("position"), 0.0)
+        self.assertEqual(load_kw.get("source_path"), "/home/deck/hello.py")
+        self.assertEqual(load_kw.get("title"), "[Data Stream] hello.py")
+
+    @patch('os.path.isfile', return_value=True)
+    @patch('castcast.service.synthesize_text_video')
+    @patch('castcast.service.inspect_file_content')
+    def test_cast_synthesizes_custom_title(self, mock_inspect, mock_synth_text, mock_isfile):
+        from castcast.inspect_content import ContentType
+        mock_inspect.return_value = ContentType.TEXT_CODE
+        mock_synth_text.side_effect = lambda inp, out, **kw: out
+        res = self.svc.cast("/home/deck/script.sh", title="Custom Presentation Title")
+        self.assertEqual(res.get("synthesized"), True)
+        self.svc.supervisor.load.assert_called_once()
+        load_kw = self.svc.supervisor.load.call_args[1]
+        self.assertEqual(load_kw.get("title"), "Custom Presentation Title")
+
+    @patch('os.path.isfile', return_value=True)
+    @patch('castcast.service.synthesize_dots_video')
+    @patch('castcast.service.inspect_file_content')
+    def test_cast_synthesizes_handles_synthesis_failure(self, mock_inspect, mock_synth_dots, mock_isfile):
+        from castcast.inspect_content import ContentType
+        mock_inspect.return_value = ContentType.BINARY
+        mock_synth_dots.side_effect = RuntimeError("FFmpeg crashed out of memory")
+        res = self.svc.cast("/home/deck/huge_archive.zip")
+        self.assertIn("error", res)
+        self.assertIn("Synthesis failed: FFmpeg crashed out of memory", res["error"])
+        self.svc.supervisor.load.assert_not_called()
 
 if __name__ == '__main__':
     unittest.main()
