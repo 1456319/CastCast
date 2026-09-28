@@ -134,6 +134,11 @@ files:
     role: content-inspector
     boundaries:
     - core-service
+  daemon/castcast/dots_synthesizer.py:
+    section: media-routing
+    role: dots-synthesizer
+    boundaries:
+    - core-service
   src/app/lib/discovery-browser.ts:
     section: web-client
     role: browser-mdns
