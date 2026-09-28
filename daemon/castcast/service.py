@@ -30,6 +30,9 @@ from .subtitles_remote import (
     SubDLClient,
     download_subtitle_to_vtt,
 )
+from .inspect_content import inspect_file_content, ContentType
+from .dots_synthesizer import synthesize_dots_video
+from .text_synthesizer import synthesize_text_video
 
 DEFAULT_MEDIA_ROOT = "/storage/emulated/0/Download/CastCast/Chromecast"
 
@@ -876,6 +879,36 @@ class CastService:
                 import threading
                 threading.Thread(target=download_worker, daemon=True).start()
                 return {"converting": True, "description": "Downloading to Queue..."}
+
+        if not is_url and os.path.isfile(path):
+            ext = os.path.splitext(path)[1].lower()
+            if ext not in VIDEO_EXTENSIONS:
+                content_type = inspect_file_content(path)
+                rendered_dir = os.path.join(self.media_roots[0], ".castcast", "rendered")
+                os.makedirs(rendered_dir, exist_ok=True)
+                stem = os.path.splitext(os.path.basename(path))[0]
+                is_ultra = bool(getattr(self.supervisor, "is_ultra", True))
+
+                if content_type == ContentType.BINARY:
+                    out_video = os.path.join(rendered_dir, f"{stem}_dots.mp4")
+                    self.log(f"Synthesizing binary dot matrix video for {path}")
+                    synthesize_dots_video(path, out_video, is_ultra=is_ultra, repeat=8)
+                    mode = "binary"
+                else:
+                    out_video = os.path.join(rendered_dir, f"{stem}_slides.mp4")
+                    self.log(f"Synthesizing code slide video for {path}")
+                    synthesize_text_video(path, out_video, hold_per_page=6.0)
+                    mode = "text"
+
+                url = self.media_server.url_for(out_video)
+                self.supervisor.load(
+                    url,
+                    content_type="video/mp4",
+                    title=f"[Data Stream] {os.path.basename(path)}",
+                    source_path=path,
+                    position=0.0
+                )
+                return {"casting": True, "synthesized": True, "mode": mode, "url": url}
 
         report = self.preflight(path)
         if report.get("error") and not allow_unsafe:

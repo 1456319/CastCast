@@ -286,5 +286,30 @@ class TestServiceQueue(unittest.TestCase):
             # Verify that cancelling was not overwritten to "failed"
             self.assertTrue(any("download cancelled" in log.get("message", "") for log in self.svc.log_buffer._lines))
 
+    @patch('os.path.isfile', return_value=True)
+    @patch('castcast.service.synthesize_dots_video')
+    @patch('castcast.service.inspect_file_content')
+    def test_cast_synthesizes_binary_file(self, mock_inspect, mock_synth_dots, mock_isfile):
+        from castcast.inspect_content import ContentType
+        mock_inspect.return_value = ContentType.BINARY
+        mock_synth_dots.side_effect = lambda inp, out, **kw: out
+        res = self.svc.cast("/home/deck/test.zip")
+        self.assertEqual(res.get("synthesized"), True)
+        self.assertEqual(res.get("mode"), "binary")
+        self.svc.supervisor.load.assert_called_once()
+
+    @patch('os.path.isfile', return_value=True)
+    @patch('castcast.service.synthesize_text_video')
+    @patch('castcast.service.inspect_file_content')
+    def test_cast_synthesizes_text_code_file(self, mock_inspect, mock_synth_text, mock_isfile):
+        from castcast.inspect_content import ContentType
+        mock_inspect.return_value = ContentType.TEXT_CODE
+        mock_synth_text.side_effect = lambda inp, out, **kw: out
+        res = self.svc.cast("/home/deck/hello.py")
+        self.assertEqual(res.get("synthesized"), True)
+        self.assertEqual(res.get("mode"), "text")
+        self.svc.supervisor.load.assert_called_once()
+
 if __name__ == '__main__':
     unittest.main()
+
