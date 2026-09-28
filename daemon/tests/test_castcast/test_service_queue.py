@@ -202,5 +202,89 @@ class TestServiceQueue(unittest.TestCase):
         mock_exists.side_effect = lambda p: p == "/data/data/com.termux/files/usr/bin/yt-dlp"
         self.assertTrue(have_ytdlp())
 
+    @patch('castcast.service.have_ytdlp', return_value=True)
+    @patch('threading.Thread')
+    @patch('shutil.which')
+    @patch('os.path.exists')
+    def test_download_worker_command_composition(self, mock_exists, mock_which, mock_thread, mock_have_ytdlp):
+        mock_which.side_effect = lambda binary: "/usr/bin/node" if binary == "node" else f"/usr/bin/{binary}"
+        mock_exists.return_value = True
+
+        worker_func = None
+        def fake_start():
+            nonlocal worker_func
+            pass
+
+        def capture_target(*args, **kwargs):
+            nonlocal worker_func
+            worker_func = kwargs.get('target')
+            mock_t = MagicMock()
+            mock_t.start = fake_start
+            return mock_t
+
+        mock_thread.side_effect = capture_target
+
+        res = self.svc.cast("https://www.youtube.com/watch?v=test12345")
+        self.assertEqual(res, {"converting": True, "description": "Downloading to Queue..."})
+        self.assertIsNotNone(worker_func)
+
+        # Now mock subprocess.Popen and time.sleep to run worker_func
+        with patch('subprocess.Popen') as mock_popen, patch('time.sleep'):
+            proc_mock = MagicMock()
+            proc_mock.stdout = ["ERROR: [youtube] test12345: This video is unavailable\n"]
+            proc_mock.returncode = 1
+            mock_popen.return_value = proc_mock
+
+            worker_func()
+
+            cmd = mock_popen.call_args[0][0]
+            # Ensure invalid compat-options is not present
+            self.assertNotIn("embed-subs", cmd[cmd.index("--compat-options"):] if "--compat-options" in cmd else [])
+            self.assertNotIn("--compat-options", cmd)
+            # Ensure IPv4 and Node JS runtime args are present
+            self.assertIn("-4", cmd)
+            self.assertIn("--no-abort-on-error", cmd)
+            self.assertIn("--remote-components", cmd)
+            self.assertIn("ejs:github", cmd)
+            self.assertIn("--js-runtimes", cmd)
+            self.assertIn("node:/usr/bin/node", cmd)
+            self.assertIn("--extractor-args", cmd)
+            self.assertIn("youtube:player_client=mweb,web", cmd)
+            self.assertIn("--", cmd)
+            self.assertIn("https://www.youtube.com/watch?v=test12345", cmd)
+
+            # Check that job failed with exact captured error
+            self.assertTrue(any("This video is unavailable" in log.get("message", "") for log in self.svc.log_buffer._lines))
+
+    @patch('castcast.service.have_ytdlp', return_value=True)
+    @patch('threading.Thread')
+    def test_download_worker_preserves_cancelled_state(self, mock_thread, mock_have_ytdlp):
+        worker_func = None
+        def capture_target(*args, **kwargs):
+            nonlocal worker_func
+            worker_func = kwargs.get('target')
+            mock_t = MagicMock()
+            mock_t.start = lambda: None
+            return mock_t
+
+        mock_thread.side_effect = capture_target
+        self.svc.cast("https://www.youtube.com/watch?v=cancel_test")
+
+        with patch('subprocess.Popen') as mock_popen, patch('time.sleep'):
+            proc_mock = MagicMock()
+            proc_mock.stdout = []
+            proc_mock.returncode = -15  # Process killed via SIGTERM
+            mock_popen.return_value = proc_mock
+
+            # Pre-set job state to cancelled before proc.wait()
+            def fake_wait():
+                self.svc._remuxer.job.state = "cancelled"
+            proc_mock.wait.side_effect = fake_wait
+
+            worker_func()
+
+            # Verify that cancelling was not overwritten to "failed"
+            self.assertTrue(any("download cancelled" in log.get("message", "") for log in self.svc.log_buffer._lines))
+
 if __name__ == '__main__':
     unittest.main()

@@ -265,7 +265,7 @@ class CastService:
                     self._current_scavenged_tracks = self._scavenge_all_local_subtitles(source_path)
                     self._current_source_type = "local"
 
-    def _emit(self, kind: str, payload: dict) -> None:
+    def _emit(self, kind: str, payload: Optional[dict] = None) -> None:
         if kind == "media" and isinstance(payload, dict):
             self._on_media_status(payload)
         for listener in list(self._events):
@@ -791,9 +791,12 @@ class CastService:
                         else "yt-dlp"
                     )
 
-                    js_args = []
-                    if shutil.which("node") or os.path.exists("/data/data/com.termux/files/usr/bin/node"):
-                        js_args = ["--remote-components", "ejs:github", "--js-runtimes", "node"]
+                    node_bin = shutil.which("node") or (
+                        "/data/data/com.termux/files/usr/bin/node"
+                        if os.path.exists("/data/data/com.termux/files/usr/bin/node")
+                        else None
+                    )
+                    js_args = ["--remote-components", "ejs:github", "--js-runtimes", f"node:{node_bin}"] if node_bin else []
 
                     cmd = [
                         ytdlp_bin, "--newline", "--no-continue",
@@ -807,6 +810,7 @@ class CastService:
                         "-o", os.path.join(youtube_dir, "%(title)s.%(ext)s"),
                         "-f", "bestvideo[vcodec^=vp9]+bestaudio/bestvideo[vcodec^=avc]+bestaudio/best",
                         "--merge-output-format", "mkv",
+                        "--",
                         path
                     ]
 
@@ -835,33 +839,33 @@ class CastService:
                                 last_lines.append(line_s)
                                 if len(last_lines) > 10:
                                     last_lines.pop(0)
-                            if line_s.lower().startswith(("error:", "warning:", "yt-dlp: error:", "yt-dlp: warning:")):
+                            if line_s.lower().startswith(("error:", "yt-dlp: error:")):
                                 self.log(f"[yt-dlp] {line_s}", "warn")
-                                if "error" in line_s.lower():
-                                    last_error = line_s
+                                last_error = line_s
+                            elif line_s.lower().startswith(("warning:", "yt-dlp: warning:")):
+                                self.log(f"[yt-dlp] {line_s}", "warn")
                             m = re.search(r'\[download\]\s+([\d\.]+)%', line)
                             if m:
                                 job.progress = float(m.group(1)) / 100.0
                                 self._on_remux_update(job)
                         proc.wait()
-                        if proc.returncode != 0:
-                            job.state = "failed"
-                            job.error = last_error or (last_lines[-1] if last_lines else "yt-dlp returned non-zero exit code")
-                        else:
-                            job.state = "done"
-                            job.progress = 1.0
+                        if job.state != "cancelled":
+                            if proc.returncode != 0:
+                                job.state = "failed"
+                                job.error = last_error or (last_lines[-1] if last_lines else "yt-dlp returned non-zero exit code")
+                            else:
+                                job.state = "done"
+                                job.progress = 1.0
                     except Exception as exc:
-                        job.state = "failed"
-                        job.error = str(exc)
+                        if job.state != "cancelled":
+                            job.state = "failed"
+                            job.error = str(exc)
                     finally:
                         job.finished_at = time.time()
                         self._on_remux_update(job)
                         if job.state == "done":
                             self.log("Download complete! Refresh the queue to cast it.")
-                            time.sleep(4)
-                        else:
-                            self.log(f"Download failed: {job.error}", "warn")
-                            time.sleep(4)
+                        time.sleep(4)
 
                         with self._remuxer._lock:
                             if self._remuxer.job is job:
