@@ -44,26 +44,36 @@ def synthesize_dots_video(
         "-pix_fmt", "yuv420p", "-movflags", "+faststart", output_path
     ]
 
-    ff = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+    ff = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     assert ff.stdin is not None
 
+    stderr_output = b""
     try:
+        last_src_f = None
+        cached_frame_bytes = None
         for f in range(1, n_video + 1):
             src_f = (f - 1) // repeat + 1
-            if src_f == 1:
-                wa, wb = wires[0], None
-            else:
-                i0 = 2 * src_f - 3
-                wa = wires[i0] if i0 < len(wires) else None
-                wb = wires[i0 + 1] if i0 + 1 < len(wires) else None
-            g = D._cell_grid(wa, wb)
-            frame_bytes = D.render_frame(g, scale=scale).tobytes()
-            ff.stdin.write(frame_bytes)
+            if src_f != last_src_f:
+                if src_f == 1:
+                    wa, wb = wires[0], None
+                else:
+                    i0 = 2 * src_f - 3
+                    wa = wires[i0] if i0 < len(wires) else None
+                    wb = wires[i0 + 1] if i0 + 1 < len(wires) else None
+                g = D._cell_grid(wa, wb)
+                cached_frame_bytes = D.render_frame(g, scale=scale).tobytes()
+                last_src_f = src_f
+            ff.stdin.write(cached_frame_bytes)
     finally:
         ff.stdin.close()
+        if ff.stderr is not None:
+            stderr_output = ff.stderr.read()
+            ff.stderr.close()
         ff.wait()
 
     if ff.returncode != 0:
-        raise RuntimeError(f"FFmpeg failed with exit code {ff.returncode} synthesizing dots video")
+        err_msg = stderr_output.decode("utf-8", errors="replace").strip()
+        detail = f": {err_msg}" if err_msg else ""
+        raise RuntimeError(f"FFmpeg failed with exit code {ff.returncode} synthesizing dots video{detail}")
 
     return output_path
