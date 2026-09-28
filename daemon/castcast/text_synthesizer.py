@@ -21,9 +21,12 @@ def _render_page(lines: List[str], start_line: int, filename: str, page_idx: int
     img = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
     img[:] = BG_COLOR
 
+    # Truncate filename if too long for header bar
+    display_filename = (filename[:35] + "...") if len(filename) > 38 else filename
+
     # Header bar
     cv2.rectangle(img, (0, 0), (WIDTH, 70), (28, 28, 28), -1)
-    header_text = f"FILE: {filename} | SHA256: {sha_prefix}... | PAGE: {page_idx}/{total_pages}"
+    header_text = f"FILE: {display_filename} | SHA256: {sha_prefix}... | PAGE: {page_idx}/{total_pages}"
     cv2.putText(img, header_text, (50, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.8, HEADER_COLOR, 2, cv2.LINE_AA)
 
     # Content
@@ -31,7 +34,8 @@ def _render_page(lines: List[str], start_line: int, filename: str, page_idx: int
     for idx, line in enumerate(lines):
         line_no = f"{start_line + idx:04d} | "
         cv2.putText(img, line_no, (50, y), cv2.FONT_HERSHEY_PLAIN, 1.2, LINE_NO_COLOR, 1, cv2.LINE_AA)
-        cv2.putText(img, line[:CHARS_PER_LINE], (140, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, TEXT_COLOR, 1, cv2.LINE_AA)
+        expanded_line = line.expandtabs(4)[:CHARS_PER_LINE]
+        cv2.putText(img, expanded_line, (140, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, TEXT_COLOR, 1, cv2.LINE_AA)
         y += 30
 
     return img
@@ -60,7 +64,7 @@ def synthesize_text_video(
         pages.append((chunk, i + 1))
 
     total_pages = len(pages)
-    frames_per_page = int(hold_per_page * fps)
+    frames_per_page = max(1, int(hold_per_page * fps))
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
@@ -82,8 +86,13 @@ def synthesize_text_video(
             frame_bytes = frame.tobytes()
             for _ in range(frames_per_page):
                 ff.stdin.write(frame_bytes)
+    except (BrokenPipeError, OSError):
+        pass
     finally:
-        ff.stdin.close()
+        try:
+            ff.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
         if ff.stderr is not None:
             stderr_output = ff.stderr.read()
             ff.stderr.close()

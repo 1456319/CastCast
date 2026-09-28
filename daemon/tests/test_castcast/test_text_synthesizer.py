@@ -108,3 +108,26 @@ class TestTextSynthesizer(unittest.TestCase):
                 synthesize_text_video(in_f.name, out_path)
             self.assertIn("FFmpeg failed with exit code 1", str(ctx.exception))
             self.assertIn("Cannot open video encoder", str(ctx.exception))
+
+    @patch('subprocess.Popen')
+    def test_broken_pipe_surfaces_ffmpeg_error(self, mock_popen):
+        proc_mock = MagicMock()
+        proc_mock.returncode = 1
+        proc_mock.stdin = MagicMock()
+        proc_mock.stdin.write.side_effect = BrokenPipeError("Broken pipe")
+        proc_mock.stderr = MagicMock()
+        proc_mock.stderr.read.return_value = b"Option not found: -invalid"
+        mock_popen.return_value = proc_mock
+
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as in_f:
+            in_f.write("test content\n")
+            in_f.flush()
+            out_path = in_f.name + ".mp4"
+            self.addCleanup(os.unlink, in_f.name)
+            self.addCleanup(lambda: os.unlink(out_path) if os.path.exists(out_path) else None)
+
+            with self.assertRaises(RuntimeError) as ctx:
+                synthesize_text_video(in_f.name, out_path)
+            self.assertIn("FFmpeg failed with exit code 1", str(ctx.exception))
+            self.assertIn("Option not found: -invalid", str(ctx.exception))
+

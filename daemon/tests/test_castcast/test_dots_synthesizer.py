@@ -113,3 +113,26 @@ class TestDotsSynthesizer(unittest.TestCase):
             self.assertEqual(mock_render_frame.call_count, 2)
             self.assertEqual(proc_mock.stdin.write.call_count, 10)
 
+    @patch('subprocess.Popen')
+    def test_broken_pipe_surfaces_ffmpeg_error(self, mock_popen):
+        proc_mock = MagicMock()
+        proc_mock.returncode = 1
+        proc_mock.stdin = MagicMock()
+        proc_mock.stdin.write.side_effect = BrokenPipeError("Broken pipe")
+        proc_mock.stderr = MagicMock()
+        proc_mock.stderr.read.return_value = b"Invalid resolution: 3840x2160"
+        mock_popen.return_value = proc_mock
+
+        with tempfile.NamedTemporaryFile("wb", delete=False) as in_f:
+            in_f.write(b"SAMPLE" * 5)
+            in_f.flush()
+            out_path = in_f.name + ".mp4"
+            self.addCleanup(os.unlink, in_f.name)
+            self.addCleanup(lambda: os.unlink(out_path) if os.path.exists(out_path) else None)
+
+            with self.assertRaises(RuntimeError) as ctx:
+                synthesize_dots_video(in_f.name, out_path)
+            self.assertIn("FFmpeg failed with exit code 1", str(ctx.exception))
+            self.assertIn("Invalid resolution: 3840x2160", str(ctx.exception))
+
+

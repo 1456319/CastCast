@@ -64,8 +64,13 @@ def synthesize_dots_video(
                 cached_frame_bytes = D.render_frame(g, scale=scale).tobytes()
                 last_src_f = src_f
             ff.stdin.write(cached_frame_bytes)
+    except (BrokenPipeError, OSError):
+        pass
     finally:
-        ff.stdin.close()
+        try:
+            ff.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
         if ff.stderr is not None:
             stderr_output = ff.stderr.read()
             ff.stderr.close()
