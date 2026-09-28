@@ -1,8 +1,15 @@
 // synchronization-map: section=android-bridge; role=termux-launch-plugin; boundaries=web-client,config-state,operations-release; doc=docs/SYNCHRONIZATION_MAP.md
 package app.videoqualitychecker.castcast;
 
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
+import android.net.Uri;
+import android.net.wifi.WifiManager;
+import android.os.PowerManager;
+import android.provider.OpenableColumns;
+import android.provider.Settings;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -12,15 +19,14 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 
 import java.io.BufferedReader;
 import java.io.DataOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.concurrent.TimeUnit;
-import android.os.PowerManager;
-import android.net.wifi.WifiManager;
-import android.content.Context;
-import android.content.Intent;
-import android.net.Uri;
-import android.provider.Settings;
 
 @CapacitorPlugin(name = "TermuxDaemon")
 public class TermuxDaemonPlugin extends Plugin {
@@ -40,6 +46,15 @@ public class TermuxDaemonPlugin extends Plugin {
 
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
+
+    @Override
+    protected void handleOnNewIntent(Intent intent) {
+        super.handleOnNewIntent(intent);
+        if (getActivity() != null) {
+            getActivity().setIntent(intent);
+        }
+        notifyListeners("onSharedIntent", new JSObject());
+    }
 
     @PluginMethod
     public void launch(PluginCall call) {
@@ -145,19 +160,112 @@ public class TermuxDaemonPlugin extends Plugin {
 
     @PluginMethod
     public void getSharedUrl(PluginCall call) {
-        Intent intent = getActivity().getIntent();
-        String action = intent.getAction();
-        String type = intent.getType();
+        if (getActivity() == null) {
+            call.resolve(new JSObject());
+            return;
+        }
 
+        Intent intent = getActivity().getIntent();
+        if (intent == null) {
+            call.resolve(new JSObject());
+            return;
+        }
+
+        String action = intent.getAction();
         JSObject ret = new JSObject();
-        if (Intent.ACTION_SEND.equals(action) && type != null && "text/plain".equals(type)) {
+
+        if (Intent.ACTION_SEND.equals(action) && intent.hasExtra(Intent.EXTRA_TEXT)) {
             String sharedText = intent.getStringExtra(Intent.EXTRA_TEXT);
-            if (sharedText != null) {
+            if (sharedText != null && !sharedText.trim().isEmpty()) {
                 ret.put("url", sharedText);
-                // Clear the extra so we don't process it multiple times on resume
+                ret.put("isFile", false);
                 intent.removeExtra(Intent.EXTRA_TEXT);
+                intent.setAction(null);
+                call.resolve(ret);
+                return;
             }
         }
+
+        Uri fileUri = null;
+        if (Intent.ACTION_SEND.equals(action) && intent.hasExtra(Intent.EXTRA_STREAM)) {
+            fileUri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+        } else if (Intent.ACTION_VIEW.equals(action)) {
+            fileUri = intent.getData();
+        } else if (Intent.ACTION_SEND_MULTIPLE.equals(action) && intent.hasExtra(Intent.EXTRA_STREAM)) {
+            ArrayList<Uri> uris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+            if (uris != null && !uris.isEmpty()) {
+                fileUri = uris.get(0);
+            }
+        } else if (fileUri == null && Intent.ACTION_SEND.equals(action)) {
+            fileUri = intent.getData();
+        }
+
+        if (fileUri != null) {
+            String fileName = null;
+            if ("content".equalsIgnoreCase(fileUri.getScheme())) {
+                try (Cursor cursor = getContext().getContentResolver().query(
+                        fileUri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+                    if (cursor != null && cursor.moveToFirst()) {
+                        int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                        if (nameIndex >= 0) {
+                            fileName = cursor.getString(nameIndex);
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+
+            if (fileName == null || fileName.trim().isEmpty()) {
+                fileName = fileUri.getLastPathSegment();
+            }
+            if (fileName == null || fileName.trim().isEmpty()) {
+                fileName = "shared_file_" + System.currentTimeMillis();
+            }
+            fileName = new File(fileName).getName();
+
+            File inboxDir = new File("/storage/emulated/0/Download/CastCast/Chromecast/inbox");
+            if (!inboxDir.exists()) {
+                inboxDir.mkdirs();
+            }
+            if (!inboxDir.canWrite()) {
+                File extFilesDir = getContext().getExternalFilesDir(null);
+                if (extFilesDir != null) {
+                    inboxDir = new File(extFilesDir, "inbox");
+                } else {
+                    inboxDir = new File(getContext().getCacheDir(), "inbox");
+                }
+                inboxDir.mkdirs();
+            }
+
+            File targetFile = new File(inboxDir, fileName);
+            try (InputStream in = getContext().getContentResolver().openInputStream(fileUri);
+                 OutputStream out = new FileOutputStream(targetFile)) {
+                if (in != null) {
+                    byte[] buffer = new byte[65536];
+                    int len;
+                    while ((len = in.read(buffer)) != -1) {
+                        out.write(buffer, 0, len);
+                    }
+                    out.flush();
+                    targetFile.setReadable(true, false);
+                    targetFile.setWritable(true, false);
+
+                    ret.put("url", targetFile.getAbsolutePath());
+                    ret.put("isFile", true);
+                    ret.put("fileName", fileName);
+
+                    intent.removeExtra(Intent.EXTRA_STREAM);
+                    intent.setData(null);
+                    intent.setAction(null);
+                    call.resolve(ret);
+                    return;
+                }
+            } catch (Exception e) {
+                call.reject("Failed to stage shared file: " + e.getMessage(), e);
+                return;
+            }
+        }
+
         call.resolve(ret);
     }
 

@@ -983,6 +983,8 @@ class CastService:
             self._current_scavenged_tracks = scavenged_tracks
 
         try:
+            if hasattr(self.media_server, "add_root") and os.path.isfile(target):
+                self.media_server.add_root(os.path.dirname(os.path.realpath(target)))
             url = self.media_server.url_for(target)
         except ValueError as exc:
             return {**report, "error": str(exc)}

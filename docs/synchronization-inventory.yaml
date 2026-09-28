@@ -4,6 +4,8 @@ defaults:
   - dist/**
   - node_modules/**
   - android/.gradle/**
+  - android/app/build/**
+  - android/build/**
   - '**/*.lock'
   - src/app/components/ui/**
   - src/app/components/figma/**

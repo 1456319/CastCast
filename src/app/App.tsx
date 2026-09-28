@@ -35,7 +35,7 @@ import {
 } from "./lib/daemon";
 import { PreflightPanel } from "./components/preflight-panel";
 import SubtitlesDrawer from "./components/SubtitlesDrawer";
-import { TERMUX_MANUAL_COMMAND, TERMUX_KILL_COMMAND, launchTermuxDaemon, stopTermuxDaemon, canLaunchTermuxDaemon, getSharedUrl } from "./lib/termux-daemon";
+import { TERMUX_MANUAL_COMMAND, TERMUX_KILL_COMMAND, launchTermuxDaemon, stopTermuxDaemon, canLaunchTermuxDaemon, getSharedUrl, onSharedIntent } from "./lib/termux-daemon";
 import { DiscoveryBrowser } from "./lib/discovery-browser";
 import { SeekController } from "./lib/seek-controller";
 import {
@@ -249,22 +249,27 @@ export default function App() {
       const result = await getSharedUrl();
       if (result.url) {
         let urlStr = result.url as string;
-        if (urlStr.startsWith("intent://") || urlStr.startsWith("intent:")) {
-          const schemeMatch = urlStr.match(/;scheme=([a-zA-Z0-9+.-]+)/);
-          const scheme = schemeMatch ? schemeMatch[1] : "https";
-          const prefix = urlStr.startsWith("intent://") ? "intent://" : "intent:";
-          const bodyAndFragment = urlStr.slice(prefix.length);
-          const body = bodyAndFragment.split("#")[0];
-          if (body) {
-            urlStr = `${scheme}://${body}`;
-          } else {
-            const fallbackMatch = urlStr.match(/[;?&]S\.browser_fallback_url=([^;]+)/);
-            if (fallbackMatch) {
-              urlStr = decodeURIComponent(fallbackMatch[1]);
+        const isLocalFile = Boolean(result.isFile || urlStr.startsWith("/"));
+
+        if (!isLocalFile) {
+          if (urlStr.startsWith("intent://") || urlStr.startsWith("intent:")) {
+            const schemeMatch = urlStr.match(/;scheme=([a-zA-Z0-9+.-]+)/);
+            const scheme = schemeMatch ? schemeMatch[1] : "https";
+            const prefix = urlStr.startsWith("intent://") ? "intent://" : "intent:";
+            const bodyAndFragment = urlStr.slice(prefix.length);
+            const body = bodyAndFragment.split("#")[0];
+            if (body) {
+              urlStr = `${scheme}://${body}`;
+            } else {
+              const fallbackMatch = urlStr.match(/[;?&]S\.browser_fallback_url=([^;]+)/);
+              if (fallbackMatch) {
+                urlStr = decodeURIComponent(fallbackMatch[1]);
+              }
             }
           }
         }
-        const isAmazon = urlStr.includes("amazon.com") || urlStr.includes("primevideo.com") || urlStr.includes("gti=");
+
+        const isAmazon = !isLocalFile && (urlStr.includes("amazon.com") || urlStr.includes("primevideo.com") || urlStr.includes("gti="));
         const isPlaying = statusRef.current?.cast?.state && statusRef.current.cast.state !== "idle" && statusRef.current.cast.state !== "IDLE" && statusRef.current.cast.state !== "unknown" && statusRef.current.cast.state !== "dead" && statusRef.current.cast.state !== "disconnected";
         
         if (isAmazon && isPlaying) {
@@ -275,6 +280,17 @@ export default function App() {
             await loadLibrary();
           } catch (err) {
             setNotice(`Failed to add to queue: ${err}`);
+          }
+        } else if (isLocalFile) {
+          const displayName = result.fileName || urlStr.split("/").pop() || "file";
+          setNotice(`Casting shared file: ${displayName}...`);
+          try {
+            await daemon.cast(urlStr, true);
+            setNotice(`Success! Sending ${displayName} to TV...`);
+            await loadLibrary();
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            setNotice(`Failed to cast shared file: ${msg}`);
           }
         } else {
           setNotice(`Extracting streams, please wait...`);
@@ -302,7 +318,15 @@ export default function App() {
     checkSharedUrl();
     const handleVis = () => { if (document.visibilityState === "visible") checkSharedUrl(); };
     document.addEventListener("visibilitychange", handleVis);
-    return () => document.removeEventListener("visibilitychange", handleVis);
+    const intentSub = onSharedIntent(() => checkSharedUrl());
+    return () => {
+      document.removeEventListener("visibilitychange", handleVis);
+      if (intentSub && typeof (intentSub as any).then === "function") {
+        (intentSub as any).then((h: any) => h?.remove?.());
+      } else if ((intentSub as any)?.remove) {
+        (intentSub as any).remove();
+      }
+    };
   }, [checkSharedUrl]);
 
   useEffect(() => {

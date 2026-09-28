@@ -1,5 +1,5 @@
 // synchronization-map: section=web-client; role=termux-client; boundaries=android-bridge; doc=docs/SYNCHRONIZATION_MAP.md
-import { Capacitor, registerPlugin } from "@capacitor/core";
+import { Capacitor, registerPlugin, PluginListenerHandle } from "@capacitor/core";
 
 export interface LaunchDaemonResult {
   started: boolean;
@@ -8,10 +8,17 @@ export interface LaunchDaemonResult {
   rootConfigured?: boolean;
 }
 
+export interface SharedContentResult {
+  url?: string;
+  isFile?: boolean;
+  fileName?: string;
+}
+
 interface TermuxDaemonPlugin {
   launch(): Promise<LaunchDaemonResult>;
   stopDaemon(): Promise<{ stopped: boolean }>;
-  getSharedUrl(): Promise<{ url?: string }>;
+  getSharedUrl(): Promise<SharedContentResult>;
+  addListener(eventName: "onSharedIntent", listenerFunc: () => void): Promise<PluginListenerHandle> & PluginListenerHandle;
 }
 
 const TermuxDaemon = registerPlugin<TermuxDaemonPlugin>("TermuxDaemon");
@@ -34,9 +41,14 @@ export async function stopTermuxDaemon() {
   return TermuxDaemon.stopDaemon();
 }
 
-export async function getSharedUrl() {
+export async function getSharedUrl(): Promise<SharedContentResult> {
   if (!canLaunchTermuxDaemon()) return { url: undefined };
   return TermuxDaemon.getSharedUrl();
+}
+
+export function onSharedIntent(callback: () => void) {
+  if (!canLaunchTermuxDaemon()) return { remove: () => {} };
+  return TermuxDaemon.addListener("onSharedIntent", callback);
 }
 
 export const TERMUX_KILL_COMMAND = "pkill -9 -f castcast; pkill -9 -f mediaserver.py; pkill -9 -f 'localhost.run|pinggy.io' || true";
