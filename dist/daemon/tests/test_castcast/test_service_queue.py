@@ -352,6 +352,29 @@ class TestServiceQueue(unittest.TestCase):
         self.assertIn("Synthesis failed: FFmpeg crashed out of memory", res["error"])
         self.svc.supervisor.load.assert_not_called()
 
+    @patch('castcast.service.CastService.preflight')
+    @patch('castcast.service.CastService._scavenge_all_local_subtitles')
+    def test_cast_registers_external_parent_directory_in_media_server_roots(self, mock_scavenge, mock_preflight):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ext_file = Path(tmp_dir) / "shared_movie.mp4"
+            ext_file.write_bytes(b"dummy mp4 content")
+            ext_dir = str(Path(tmp_dir).resolve())
+
+            self.svc.media_server.roots = ["/default/root"]
+            self.svc.media_server.add_root = MagicMock(side_effect=lambda r: self.svc.media_server.roots.append(r) if r not in self.svc.media_server.roots else None)
+            mock_preflight.return_value = {
+                "verdict": {"needs_processing": False},
+                "media": {"duration_s": 120.0, "subtitles": []},
+            }
+            mock_scavenge.return_value = []
+            self.svc.media_server.url_for = MagicMock(return_value="http://127.0.0.1:8765/tok/shared_movie.mp4")
+
+            res = self.svc.cast(str(ext_file))
+            self.svc.media_server.add_root.assert_called()
+            self.assertIn(ext_dir, self.svc.media_server.roots)
+
 if __name__ == '__main__':
     unittest.main()
 

@@ -7,6 +7,7 @@ import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.net.wifi.WifiManager;
+import android.os.Environment;
 import android.os.PowerManager;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
@@ -26,6 +27,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 @CapacitorPlugin(name = "TermuxDaemon")
@@ -159,32 +161,20 @@ public class TermuxDaemonPlugin extends Plugin {
     }
 
     @PluginMethod
-    public void getSharedUrl(PluginCall call) {
+    public synchronized void getSharedUrl(PluginCall call) {
         if (getActivity() == null) {
             call.resolve(new JSObject());
             return;
         }
 
         Intent intent = getActivity().getIntent();
-        if (intent == null) {
+        if (intent == null || intent.getAction() == null) {
             call.resolve(new JSObject());
             return;
         }
 
         String action = intent.getAction();
         JSObject ret = new JSObject();
-
-        if (Intent.ACTION_SEND.equals(action) && intent.hasExtra(Intent.EXTRA_TEXT)) {
-            String sharedText = intent.getStringExtra(Intent.EXTRA_TEXT);
-            if (sharedText != null && !sharedText.trim().isEmpty()) {
-                ret.put("url", sharedText);
-                ret.put("isFile", false);
-                intent.removeExtra(Intent.EXTRA_TEXT);
-                intent.setAction(null);
-                call.resolve(ret);
-                return;
-            }
-        }
 
         Uri fileUri = null;
         if (Intent.ACTION_SEND.equals(action) && intent.hasExtra(Intent.EXTRA_STREAM)) {
@@ -196,9 +186,15 @@ public class TermuxDaemonPlugin extends Plugin {
             if (uris != null && !uris.isEmpty()) {
                 fileUri = uris.get(0);
             }
-        } else if (fileUri == null && Intent.ACTION_SEND.equals(action)) {
+        } else if (Intent.ACTION_SEND.equals(action) && intent.getData() != null) {
             fileUri = intent.getData();
         }
+
+        // Clean intent action and extras immediately to prevent duplicate execution from concurrent triggers
+        intent.removeExtra(Intent.EXTRA_STREAM);
+        intent.removeExtra(Intent.EXTRA_TEXT);
+        intent.setData(null);
+        intent.setAction(null);
 
         if (fileUri != null) {
             String fileName = null;
@@ -218,12 +214,24 @@ public class TermuxDaemonPlugin extends Plugin {
             if (fileName == null || fileName.trim().isEmpty()) {
                 fileName = fileUri.getLastPathSegment();
             }
-            if (fileName == null || fileName.trim().isEmpty()) {
+            if (fileName != null) {
+                fileName = new File(fileName).getName();
+            }
+            if (fileName == null || fileName.trim().isEmpty() || ".".equals(fileName) || "..".equals(fileName)) {
                 fileName = "shared_file_" + System.currentTimeMillis();
             }
-            fileName = new File(fileName).getName();
 
-            File inboxDir = new File("/storage/emulated/0/Download/CastCast/Chromecast/inbox");
+            File inboxDir = null;
+            try {
+                File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                if (downloadDir != null) {
+                    inboxDir = new File(downloadDir, "CastCast/Chromecast/inbox");
+                }
+            } catch (Exception ignored) {
+            }
+            if (inboxDir == null) {
+                inboxDir = new File("/storage/emulated/0/Download/CastCast/Chromecast/inbox");
+            }
             if (!inboxDir.exists()) {
                 inboxDir.mkdirs();
             }
@@ -237,9 +245,30 @@ public class TermuxDaemonPlugin extends Plugin {
                 inboxDir.mkdirs();
             }
 
+            // Check if file is already a direct local file inside inbox to avoid truncation
+            if ("file".equalsIgnoreCase(fileUri.getScheme()) && fileUri.getPath() != null) {
+                File sourceFile = new File(fileUri.getPath());
+                try {
+                    if (sourceFile.exists()) {
+                        File destCanonical = new File(inboxDir, fileName).getCanonicalFile();
+                        if (sourceFile.getCanonicalFile().equals(destCanonical) ||
+                            sourceFile.getCanonicalPath().startsWith(inboxDir.getCanonicalPath())) {
+                            ret.put("url", sourceFile.getAbsolutePath());
+                            ret.put("isFile", true);
+                            ret.put("fileName", sourceFile.getName());
+                            call.resolve(ret);
+                            return;
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+
+            File tmpFile = new File(inboxDir, ".tmp_" + System.currentTimeMillis() + "_" + UUID.randomUUID().toString().substring(0, 8));
             File targetFile = new File(inboxDir, fileName);
+
             try (InputStream in = getContext().getContentResolver().openInputStream(fileUri);
-                 OutputStream out = new FileOutputStream(targetFile)) {
+                 OutputStream out = new FileOutputStream(tmpFile)) {
                 if (in != null) {
                     byte[] buffer = new byte[65536];
                     int len;
@@ -247,21 +276,36 @@ public class TermuxDaemonPlugin extends Plugin {
                         out.write(buffer, 0, len);
                     }
                     out.flush();
+                    tmpFile.setReadable(true, false);
+                    tmpFile.setWritable(true, false);
+
+                    if (targetFile.exists()) {
+                        targetFile.delete();
+                    }
+                    if (!tmpFile.renameTo(targetFile)) {
+                        targetFile = tmpFile;
+                    }
                     targetFile.setReadable(true, false);
-                    targetFile.setWritable(true, false);
 
                     ret.put("url", targetFile.getAbsolutePath());
                     ret.put("isFile", true);
-                    ret.put("fileName", fileName);
-
-                    intent.removeExtra(Intent.EXTRA_STREAM);
-                    intent.setData(null);
-                    intent.setAction(null);
+                    ret.put("fileName", targetFile.getName());
                     call.resolve(ret);
                     return;
                 }
             } catch (Exception e) {
+                if (tmpFile.exists()) {
+                    tmpFile.delete();
+                }
                 call.reject("Failed to stage shared file: " + e.getMessage(), e);
+                return;
+            }
+        } else if (Intent.ACTION_SEND.equals(action) && intent.hasExtra(Intent.EXTRA_TEXT)) {
+            String sharedText = intent.getStringExtra(Intent.EXTRA_TEXT);
+            if (sharedText != null && !sharedText.trim().isEmpty()) {
+                ret.put("url", sharedText);
+                ret.put("isFile", false);
+                call.resolve(ret);
                 return;
             }
         }

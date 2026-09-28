@@ -956,6 +956,12 @@ class CastService:
         if language_note:
             self.log(language_note, "debug")
 
+        if hasattr(self.media_server, "add_root"):
+            if os.path.isfile(path):
+                self.media_server.add_root(os.path.dirname(os.path.realpath(path)))
+            if os.path.isfile(target):
+                self.media_server.add_root(os.path.dirname(os.path.realpath(target)))
+
         # Local subtitle scavenging (Tier 1: embedded streams + directory sidecars)
         media_info = original_info if (original_info.get("subtitles")) else info
         scavenged_tracks = self._scavenge_all_local_subtitles(path, media_info)
@@ -983,8 +989,6 @@ class CastService:
             self._current_scavenged_tracks = scavenged_tracks
 
         try:
-            if hasattr(self.media_server, "add_root") and os.path.isfile(target):
-                self.media_server.add_root(os.path.dirname(os.path.realpath(target)))
             url = self.media_server.url_for(target)
         except ValueError as exc:
             return {**report, "error": str(exc)}

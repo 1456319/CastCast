@@ -86,6 +86,7 @@ export default function App() {
   const logRef = useRef<HTMLDivElement>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const pollTimerRef = useRef<number | null>(null);
+  const isCheckingSharedRef = useRef(false);
 
   const [anomaly, setAnomaly] = useState<any | null>(null);
 
@@ -245,6 +246,8 @@ export default function App() {
   };
 
   const checkSharedUrl = useCallback(async () => {
+    if (isCheckingSharedRef.current) return;
+    isCheckingSharedRef.current = true;
     try {
       const result = await getSharedUrl();
       if (result.url) {
@@ -311,6 +314,8 @@ export default function App() {
       }
     } catch (e) {
       console.error(e);
+    } finally {
+      isCheckingSharedRef.current = false;
     }
   }, []);
 
