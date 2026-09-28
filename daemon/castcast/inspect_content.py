@@ -28,8 +28,17 @@ def inspect_file_content(path: str, sample_size: int = 4096) -> ContentType:
     # Test UTF-8 decoding
     try:
         decoded = sample.decode("utf-8")
-    except UnicodeDecodeError:
-        return ContentType.BINARY
+    except UnicodeDecodeError as e:
+        if e.reason == "unexpected end of data" and e.start > 0:
+            try:
+                decoded = sample[:e.start].decode("utf-8")
+            except UnicodeDecodeError:
+                return ContentType.BINARY
+        else:
+            return ContentType.BINARY
+
+    if not decoded:
+        return ContentType.TEXT_CODE
 
     # Ratio of printable ASCII and standard whitespace
     printable = sum(1 for c in decoded if c.isprintable() or c in "\r\n\t")
