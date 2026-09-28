@@ -281,6 +281,19 @@ class TestAmazonSubtitlesServiceIntegration(unittest.TestCase):
             self.assertEqual(self.svc._current_source_type, "amazon")
             self.assertEqual(len(self.svc._current_scavenged_tracks), 2)
 
+            # Ensure supervisor.load was called with the discovered tracks in CAF format
+            self.svc.supervisor.load.assert_called_once()
+            load_kwargs = self.svc.supervisor.load.call_args.kwargs
+            self.assertIn("tracks", load_kwargs)
+            self.assertEqual(len(load_kwargs["tracks"]), 2)
+            self.assertEqual(load_kwargs["tracks"][0]["trackId"], 2)
+            self.assertEqual(load_kwargs["tracks"][0]["type"], "TEXT")
+            self.assertEqual(load_kwargs["tracks"][0]["subtype"], "SUBTITLES")
+            self.assertEqual(load_kwargs["tracks"][0]["name"], "English [Amazon]")
+            self.assertEqual(load_kwargs["tracks"][1]["trackId"], 3)
+            self.assertEqual(load_kwargs["tracks"][1]["name"], "Spanish [Amazon]")
+            self.assertEqual(load_kwargs["active_track_ids"], [2])
+
             # Check get_available_subtitles
             avail = self.svc.get_available_subtitles()
             self.assertEqual(avail["source_type"], "amazon")

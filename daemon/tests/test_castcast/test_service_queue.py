@@ -173,5 +173,34 @@ class TestServiceQueue(unittest.TestCase):
         self.assertEqual(self.svc._current_media_path, "/media/item2.mp4")
         self.assertEqual(self.svc._current_scavenged_tracks, tracks_item2)
 
+    def test_on_remux_update_logging_and_deduplication(self):
+        logs = []
+        self.svc.log = lambda msg, level="info": logs.append((msg, level))
+
+        # 1. Download job failure
+        dl_plan = RemuxPlan(input_path="https://example.com/video", output_path="/out/video.mp4", description="Downloading https://example.com/video to Queue")
+        dl_job = RemuxJob(plan=dl_plan, state="failed", error="Network unreachable")
+        self.svc._on_remux_update(dl_job)
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0], ("download failed: Network unreachable", "warn"))
+
+        # Second update on same job object should not log duplicate
+        self.svc._on_remux_update(dl_job)
+        self.assertEqual(len(logs), 1)
+
+        # 2. Conversion job success
+        conv_plan = RemuxPlan(input_path="/media/in.mkv", output_path="/out/in.mp4", description="Transcoding video")
+        conv_job = RemuxJob(plan=conv_plan, state="done")
+        self.svc._on_remux_update(conv_job)
+        self.assertEqual(len(logs), 2)
+        self.assertEqual(logs[1], ("conversion done", "info"))
+
+    @patch('shutil.which', return_value=None)
+    @patch('os.path.exists')
+    def test_have_ytdlp_termux_fallback(self, mock_exists, mock_which):
+        from castcast.service import have_ytdlp
+        mock_exists.side_effect = lambda p: p == "/data/data/com.termux/files/usr/bin/yt-dlp"
+        self.assertTrue(have_ytdlp())
+
 if __name__ == '__main__':
     unittest.main()

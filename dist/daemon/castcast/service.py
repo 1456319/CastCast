@@ -53,7 +53,7 @@ VIDEO_EXTENSIONS = {
 }
 
 def have_ytdlp() -> bool:
-    return bool(shutil.which("yt-dlp"))
+    return bool(shutil.which("yt-dlp") or os.path.exists("/data/data/com.termux/files/usr/bin/yt-dlp"))
 
 
 class LogBuffer:
@@ -550,12 +550,15 @@ class CastService:
 
     def _on_remux_update(self, job: remux.RemuxJob) -> None:
         if job.state in ("done", "failed", "cancelled"):
-            level = "info" if job.state == "done" else "warn"
-            self.log(f"conversion {job.state}"
-                     + (f": {job.error}" if job.error else ""), level)
+            if not getattr(job, "_logged_terminal_state", False):
+                job._logged_terminal_state = True
+                level = "info" if job.state == "done" else "warn"
+                action = "download" if (job.plan and "download" in (job.plan.description or "").lower()) else "conversion"
+                self.log(f"{action} {job.state}"
+                         + (f": {job.error}" if job.error else ""), level)
         self._emit("remux", job.to_dict())
 
-        if job.state == "done" and job.plan.input_path in self._queued_for_later:
+        if job.state == "done" and job.plan and job.plan.input_path in self._queued_for_later:
             self._queued_for_later.remove(job.plan.input_path)
             if self.supervisor and self.supervisor._state.value != "disconnected":
                 self._insert_queued_item(job.plan.input_path)
@@ -777,14 +780,30 @@ class CastService:
                     from .remux import RemuxJob, RemuxPlan
                     from .probe import FFMPEG
 
-                    ffmpeg_path = shutil.which(FFMPEG) or FFMPEG
+                    ffmpeg_path = shutil.which(FFMPEG) or (
+                        "/data/data/com.termux/files/usr/bin/ffmpeg"
+                        if os.path.exists("/data/data/com.termux/files/usr/bin/ffmpeg")
+                        else FFMPEG
+                    )
+                    ytdlp_bin = shutil.which("yt-dlp") or (
+                        "/data/data/com.termux/files/usr/bin/yt-dlp"
+                        if os.path.exists("/data/data/com.termux/files/usr/bin/yt-dlp")
+                        else "yt-dlp"
+                    )
+
+                    js_args = []
+                    if shutil.which("node") or os.path.exists("/data/data/com.termux/files/usr/bin/node"):
+                        js_args = ["--remote-components", "ejs:github", "--js-runtimes", "node"]
 
                     cmd = [
-                        "yt-dlp", "--newline", "--no-continue",
+                        ytdlp_bin, "--newline", "--no-continue",
                         "--ffmpeg-location", ffmpeg_path,
+                        "-4",
+                        *js_args,
+                        "--extractor-args", "youtube:player_client=mweb,web",
                         "--sponsorblock-remove", "sponsor,intro,outro,selfpromo,interaction",
-                        "--write-subs", "--write-auto-subs", "--sub-langs", "en.*,eng,en-US,en-GB", "--embed-subs",
-                        "--compat-options", "embed-subs",
+                        "--write-subs", "--write-auto-subs", "--sub-langs", "en,en-US,en-GB,eng,en-orig", "--embed-subs",
+                        "--no-abort-on-error",
                         "-o", os.path.join(youtube_dir, "%(title)s.%(ext)s"),
                         "-f", "bestvideo[vcodec^=vp9]+bestaudio/bestvideo[vcodec^=avc]+bestaudio/best",
                         "--merge-output-format", "mkv",
@@ -808,11 +827,18 @@ class CastService:
                         with self._remuxer._lock:
                             self._remuxer._proc = proc
 
+                        last_lines: List[str] = []
                         last_error = ""
                         for line in proc.stdout:
-                            if line.startswith("ERROR:") or line.startswith("WARNING:"):
-                                self.log(f"[yt-dlp] {line.strip()}", "warn")
-                                last_error = line.strip()
+                            line_s = line.strip()
+                            if line_s:
+                                last_lines.append(line_s)
+                                if len(last_lines) > 10:
+                                    last_lines.pop(0)
+                            if line_s.lower().startswith(("error:", "warning:", "yt-dlp: error:", "yt-dlp: warning:")):
+                                self.log(f"[yt-dlp] {line_s}", "warn")
+                                if "error" in line_s.lower():
+                                    last_error = line_s
                             m = re.search(r'\[download\]\s+([\d\.]+)%', line)
                             if m:
                                 job.progress = float(m.group(1)) / 100.0
@@ -820,7 +846,7 @@ class CastService:
                         proc.wait()
                         if proc.returncode != 0:
                             job.state = "failed"
-                            job.error = last_error or "yt-dlp returned non-zero exit code"
+                            job.error = last_error or (last_lines[-1] if last_lines else "yt-dlp returned non-zero exit code")
                         else:
                             job.state = "done"
                             job.progress = 1.0
@@ -841,7 +867,7 @@ class CastService:
                             if self._remuxer.job is job:
                                 self._remuxer.job = None
                                 self._remuxer._proc = None
-                        self._on_remux_update(job)
+                        self._emit("remux", None)
 
                 import threading
                 threading.Thread(target=download_worker, daemon=True).start()
@@ -1041,6 +1067,7 @@ class CastService:
                 self.log(f"DEBUG-ONLY: Failed to fetch Amazon MPD manifest for subtitles: {exc}", "warn")
                 manifest_text = ""
 
+        tracks = []
         if manifest_text:
             try:
                 self.log("DEBUG-ONLY: Parsing MPD subtitles from Amazon manifest", "debug")
@@ -1050,6 +1077,9 @@ class CastService:
                 self.log(f"Discovered {len(tracks)} Amazon subtitle tracks from manifest", "info")
             except Exception as exc:
                 self.log(f"Error parsing MPD subtitles: {exc}", "warn")
+                tracks = []
+
+        caf_tracks, active_track_ids = self._tracks_for_load(tracks)
 
         content_type = "application/dash+xml"
         if resume_pos is None:
@@ -1075,7 +1105,9 @@ class CastService:
             title=title,
             source_path=path,
             license_url=license_url,
-            position=resume_pos
+            position=resume_pos,
+            tracks=caf_tracks,
+            active_track_ids=active_track_ids
         )
         return {"casting": True, "url": proxied_path, "drm": True}
 
@@ -1607,7 +1639,9 @@ class CastService:
         default_active_id = None
 
         for t in tracks:
-            track_id = t["track_id"]
+            track_id = t.get("track_id", t.get("trackId"))
+            if track_id is None:
+                continue
             lang = t.get("language") or "und"
             vtt_path = t.get("vtt_path")
             if vtt_path:
@@ -1623,8 +1657,8 @@ class CastService:
                 "trackId": track_id,
                 "type": "TEXT",
                 "trackContentId": url,
-                "trackContentType": "text/vtt",
-                "name": t.get("label") or LANGUAGE_NAMES.get(lang, lang.upper()),
+                "trackContentType": t.get("mime_type") or t.get("trackContentType") or "text/vtt",
+                "name": t.get("label") or t.get("name") or LANGUAGE_NAMES.get(lang, lang.upper()),
                 "language": lang,
                 "subtype": "SUBTITLES",
             })
