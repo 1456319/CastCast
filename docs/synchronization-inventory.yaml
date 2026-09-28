@@ -139,6 +139,11 @@ files:
     role: dots-synthesizer
     boundaries:
     - core-service
+  daemon/castcast/text_synthesizer.py:
+    section: media-routing
+    role: text-synthesizer
+    boundaries:
+    - core-service
   src/app/lib/discovery-browser.ts:
     section: web-client
     role: browser-mdns
