@@ -106,6 +106,42 @@ public class TermuxDaemonPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void checkRoot(PluginCall call) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("su", "-M");
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            try (DataOutputStream stdin = new DataOutputStream(process.getOutputStream())) {
+                stdin.writeBytes("echo ROOT_OK\nexit\n");
+                stdin.flush();
+            }
+            boolean finished = process.waitFor(5, TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                call.reject("Root check timed out. Is your root manager (Magisk, KernelSU, etc.) running?");
+                return;
+            }
+            String output = readStream(process.getInputStream());
+            int exitCode = process.exitValue();
+            JSObject result = new JSObject();
+            result.put("hasRoot", exitCode == 0 && output.contains("ROOT_OK"));
+            result.put("exitCode", exitCode);
+            result.put("output", output);
+            if (exitCode == 0 && output.contains("ROOT_OK")) {
+                call.resolve(result);
+            } else {
+                result.put("hasRoot", false);
+                call.resolve(result);
+            }
+        } catch (Exception e) {
+            JSObject result = new JSObject();
+            result.put("hasRoot", false);
+            result.put("output", e.getMessage() != null ? e.getMessage() : "su binary not found");
+            call.resolve(result);
+        }
+    }
+
+    @PluginMethod
     public void stopDaemon(PluginCall call) {
         try {
             if (wakeLock != null && wakeLock.isHeld()) {

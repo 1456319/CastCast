@@ -85,10 +85,6 @@ if ! command -v ffmpeg &> /dev/null; then
     pkg install -y ffmpeg || abort "Failed to install FFmpeg"
 fi
 
-if ! command -v node &> /dev/null; then
-    log_action "NodeJS not found. Installing nodejs..."
-    pkg install -y nodejs || abort "Failed to install NodeJS"
-fi
 log_action "[OK] Dependencies verified."
 
 # 4. Kill any old daemon instances and orphan SSH tunnels
@@ -101,10 +97,6 @@ sleep 1
 # 5. Launch the Daemon
 log_action "Booting castcast daemon..."
 cd "$(dirname "$0")" || abort "Failed to navigate to daemon directory"
-cd .. || abort "Failed to navigate to project root"
-log_action "Pulling latest code from GitHub..."
-git pull origin main >> "$AUDIT_LOG" 2>&1
-cd daemon || abort "Failed to navigate back to daemon directory"
 
 # Run the daemon in the background and pipe output to the audit log
 python3 -m castcast --media-root "$CHROMECAST_DIR" serve >> "$AUDIT_LOG" 2>&1 &
