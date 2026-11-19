@@ -115,14 +115,16 @@ def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str,
                      "-pix_fmt", "yuv420p10le" if ten_bit else "yuv420p",
                      "-tag:v", "hvc1"]
         else:
-            # Standard/non-HEVC Chromecast: transcode to H.264 at the tier's max.
+            # Non-4K Chromecast tier.  This app's purpose is 4K streaming --
+            # silently downscaling 4K to 1080p would produce a broken result.
+            # Refuse to build a plan; the caller should surface the
+            # capability mismatch to the user.
+            if v and v.is_4k:
+                return None
             tier_codecs = _TIER_VIDEO_CODECS.get(tier, _VIDEO_CODECS_4K)
             h264_caps = tier_codecs.get("h264", (1920, 1080, 60, ""))
-            max_w, max_h = h264_caps[0], h264_caps[1]
             args += ["-c:v", "libx264", "-preset", "superfast", "-crf", "18",
                      "-profile:v", "high", "-level", "4.1", "-pix_fmt", "yuv420p"]
-            if v and (v.width > max_w or v.height > max_h):
-                args += ["-vf", f"scale=-2:{max_h}"]
         lossless_video = False
     else:
         args += ["-c:v", "copy"]

@@ -455,10 +455,12 @@ def evaluate(info: MediaInfo, *, prefer_fmp4: bool = False,
 
     if v and v.is_4k and tier not in _4K_TIERS:
         issues.append(Issue(
-            "info", "device_not_4k_capable",
-            f"Source is 4K but this device tier ({tier.value}) does not support 4K output. "
-            "The video will be downscaled to 1080p.",
-            "Use a 4K-capable device (Chromecast Ultra or Google TV 4K) for full resolution.",
+            "fatal", "device_not_4k_capable",
+            f"Source is 4K but this device tier ({tier.value}) does not support 4K. "
+            "This app streams 4K exclusively -- casting 4K content to a non-4K "
+            "device would silently downscale to 1080p, which is a broken result.",
+            "Use a 4K-capable device (Chromecast Ultra or Google TV 4K) "
+            "for 4K content, or cast 1080p source files to this device.",
         ))
 
     if will_be_4k and v and v.codec in CODECS_FOR_4K60 and (v.fps or 0) > 30:
