@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from typing import Callable, List, Optional
 
-from .capability import Verdict
+from .capability import Verdict, DeviceTier, HEVC_TIERS, _TIER_VIDEO_CODECS, _VIDEO_CODECS_4K
 from .probe import FFMPEG, MediaInfo, have_ffmpeg, probe
 
 COLOR_PRIMARIES = {
@@ -83,13 +83,21 @@ def output_path_for(input_path: str, work_dir: str, container: str, video_codec:
     suffix = f".cast{codec_tag}.fmp4.mp4" if container == "fmp4" else f".cast{codec_tag}.{ext}"
     return os.path.join(work_dir, stem + suffix)
 
-def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str, is_ultra: bool = True) -> Optional[RemuxPlan]:
+def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str,
+               is_ultra: bool = True,
+               tier: Optional[DeviceTier] = None) -> Optional[RemuxPlan]:
     """Return the plan needed to make ``info`` castable, or ``None`` if it already is."""
     if not verdict.needs_processing:
         return None
 
+    if tier is None:
+        tier = DeviceTier.ULTRA if is_ultra else DeviceTier.GEN_3
+    supports_hevc = tier in HEVC_TIERS
+
     container = verdict.target_container or "mp4"
-    out = output_path_for(info.path, work_dir, container, "hevc" if is_ultra and verdict.video_action == "transcode" else "h264" if verdict.video_action == "transcode" else "")
+    out = output_path_for(info.path, work_dir, container,
+                          "hevc" if supports_hevc and verdict.video_action == "transcode"
+                          else "h264" if verdict.video_action == "transcode" else "")
 
     args: List[str] = ["-map", "0:v:0"]
     lossless_video = True
@@ -99,7 +107,7 @@ def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str, is_ultra: bool 
     if verdict.video_action == "transcode":
         v = info.primary_video
 
-        if is_ultra:
+        if supports_hevc:
             # Preserve HDR by staying 10-bit when the source is; otherwise the
             # picture comes back washed out.
             ten_bit = bool(v and v.bit_depth >= 10)
@@ -107,11 +115,14 @@ def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str, is_ultra: bool 
                      "-pix_fmt", "yuv420p10le" if ten_bit else "yuv420p",
                      "-tag:v", "hvc1"]
         else:
-            # Standard Chromecast maxes out at 1080p H.264
+            # Standard/non-HEVC Chromecast: transcode to H.264 at the tier's max.
+            tier_codecs = _TIER_VIDEO_CODECS.get(tier, _VIDEO_CODECS_4K)
+            h264_caps = tier_codecs.get("h264", (1920, 1080, 60, ""))
+            max_w, max_h = h264_caps[0], h264_caps[1]
             args += ["-c:v", "libx264", "-preset", "superfast", "-crf", "18",
                      "-profile:v", "high", "-level", "4.1", "-pix_fmt", "yuv420p"]
-            if v and v.width > 1920:
-                args += ["-vf", "scale=-2:1080"]
+            if v and (v.width > max_w or v.height > max_h):
+                args += ["-vf", f"scale=-2:{max_h}"]
         lossless_video = False
     else:
         args += ["-c:v", "copy"]
