@@ -440,5 +440,12 @@ def main(argv=None) -> int:
     return 0
 
 
+def main_embedded(*cmd_args):
+    """Entry point for Android embedded execution via Chaquopy."""
+    if cmd_args:
+        return main(list(cmd_args))
+    return main(["serve", "--bind", "127.0.0.1", "--port", "8765"])
+
+
 if __name__ == "__main__":
     sys.exit(main())

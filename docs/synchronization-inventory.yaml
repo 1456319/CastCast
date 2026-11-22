@@ -57,6 +57,13 @@ files:
     - web-client
     - config-state
     - operations-release
+  android/app/src/main/java/app/videoqualitychecker/castcast/DaemonForegroundService.java:
+    section: android-bridge
+    role: foreground-daemon-service
+    boundaries:
+    - core-service
+    - config-state
+    - operations-release
   daemon/castcast/rules.py:
     section: media-routing
     role: media-rules

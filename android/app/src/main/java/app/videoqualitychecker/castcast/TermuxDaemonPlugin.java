@@ -43,19 +43,30 @@ public class TermuxDaemonPlugin extends Plugin {
 
     @PluginMethod
     public void launch(PluginCall call) {
+        // 1. Start the native Foreground Service with Chaquopy embedded runtime
+        boolean embeddedStarted = false;
+        try {
+            Intent serviceIntent = new Intent(getContext(), DaemonForegroundService.class);
+            serviceIntent.setAction(DaemonForegroundService.ACTION_START);
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                getContext().startForegroundService(serviceIntent);
+            } else {
+                getContext().startService(serviceIntent);
+            }
+            embeddedStarted = true;
+        } catch (Exception e) {
+            // Will fallback to Termux if available
+        }
+
         PackageManager packageManager = getContext().getPackageManager();
-        if (packageManager.getLaunchIntentForPackage(TERMUX_PACKAGE) == null) {
-            call.reject("Termux is not installed. Install Termux, copy the project to Download/CastCast, then retry.");
+        boolean hasTermux = packageManager.getLaunchIntentForPackage(TERMUX_PACKAGE) != null;
+
+        if (!embeddedStarted && !hasTermux) {
+            call.reject("Neither embedded service nor Termux is available. Grant root permissions and retry.");
             return;
         }
 
         RootResult rootResult = configureTermuxWithRoot();
-        if (!rootResult.success) {
-            call.reject(
-                "Root automation could not configure Termux. Open your root manager, grant root to this app, then retry. Details: " + rootResult.summary()
-            );
-            return;
-        }
 
         Intent intent = new Intent(ACTION_RUN_COMMAND);
         intent.setClassName(TERMUX_PACKAGE, RUN_COMMAND_SERVICE);
@@ -76,10 +87,12 @@ public class TermuxDaemonPlugin extends Plugin {
                 }
             }
 
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                getContext().startForegroundService(intent);
-            } else {
-                getContext().startService(intent);
+            if (hasTermux && rootResult.success) {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    getContext().startForegroundService(intent);
+                } else {
+                    getContext().startService(intent);
+                }
             }
 
             if (wakeLock == null) {
@@ -94,14 +107,20 @@ public class TermuxDaemonPlugin extends Plugin {
 
             JSObject result = new JSObject();
             result.put("started", true);
-            result.put("rootConfigured", true);
+            result.put("embeddedService", embeddedStarted);
+            result.put("rootConfigured", rootResult.success);
             result.put("auditLog", "/storage/emulated/0/Download/CastCast/Chromecast/.castcast/audit.log");
-            result.put("note", "Root configured Termux allow-external-apps and granted RUN_COMMAND. If the daemon stays offline, check that the repo exists at " + DAEMON_DIR + " and inspect the audit log.");
+            result.put("note", embeddedStarted ? "Native foreground service started with loopback media server." : "Termux background service started.");
             call.resolve(result);
-        } catch (SecurityException e) {
-            call.reject("Android blocked Termux RUN_COMMAND even after root configuration. Reopen your root manager, grant root to this app, and retry.", e);
         } catch (Exception e) {
-            call.reject("Unable to start Termux RunCommandService: " + e.getMessage(), e);
+            if (embeddedStarted) {
+                JSObject result = new JSObject();
+                result.put("started", true);
+                result.put("embeddedService", true);
+                call.resolve(result);
+            } else {
+                call.reject("Unable to start daemon: " + e.getMessage(), e);
+            }
         }
     }
 
@@ -122,7 +141,18 @@ public class TermuxDaemonPlugin extends Plugin {
         wifiLock = null;
 
         try {
-            ProcessBuilder pb = new ProcessBuilder("su", "-M");
+            Intent serviceIntent = new Intent(getContext(), DaemonForegroundService.class);
+            serviceIntent.setAction(DaemonForegroundService.ACTION_STOP);
+            getContext().startService(serviceIntent);
+        } catch (Exception ignored) {}
+
+        try {
+            ProcessBuilder pb;
+            try {
+                pb = new ProcessBuilder("su", "-M");
+            } catch (Exception e) {
+                pb = new ProcessBuilder("su");
+            }
             pb.redirectErrorStream(true);
             Process process = pb.start();
             try (DataOutputStream stdin = new DataOutputStream(process.getOutputStream())) {

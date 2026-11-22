@@ -477,6 +477,16 @@ def _extract_amazon_share_info(raw_text):
     return extracted_url, extracted_title
 
 
+_active_api_instances = []
+
+def stop_embedded():
+    for inst in list(_active_api_instances):
+        try:
+            inst.stop()
+        except Exception:
+            pass
+
+
 class ApiServer:
     def __init__(self, service: CastService, host: str = "127.0.0.1", port: int = API_PORT):
         self.service = service
@@ -490,6 +500,7 @@ class ApiServer:
         httpd.daemon_threads = True
         httpd.service = self.service  # type: ignore[attr-defined]
         self._httpd = httpd
+        _active_api_instances.append(self)
         self._thread = threading.Thread(target=httpd.serve_forever,
                                         kwargs={"poll_interval": 0.5},
                                         name="castcast-api", daemon=True)
