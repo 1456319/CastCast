@@ -8,10 +8,20 @@ import subprocess
 from typing import List, Optional
 try:
     import cv2
-    import numpy as np
 except (ImportError, ModuleNotFoundError):
     cv2 = None
+
+try:
+    import numpy as np
+except (ImportError, ModuleNotFoundError):
     np = None
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except (ImportError, ModuleNotFoundError):
+    Image = None
+    ImageDraw = None
+    ImageFont = None
 
 WIDTH, HEIGHT = 1920, 1080
 LINES_PER_PAGE = 30
@@ -22,27 +32,43 @@ HEADER_COLOR = (0, 200, 255)    # Cyan
 LINE_NO_COLOR = (120, 120, 120) # Grey
 
 def _render_page(lines: List[str], start_line: int, filename: str, page_idx: int, total_pages: int, sha_prefix: str) -> np.ndarray:
-    img = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
-    img[:] = BG_COLOR
-
-    # Truncate filename if too long for header bar
     display_filename = (filename[:35] + "...") if len(filename) > 38 else filename
-
-    # Header bar
-    cv2.rectangle(img, (0, 0), (WIDTH, 70), (28, 28, 28), -1)
     header_text = f"FILE: {display_filename} | SHA256: {sha_prefix}... | PAGE: {page_idx}/{total_pages}"
-    cv2.putText(img, header_text, (50, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.8, HEADER_COLOR, 2, cv2.LINE_AA)
 
-    # Content
-    y = 120
-    for idx, line in enumerate(lines):
-        line_no = f"{start_line + idx:04d} | "
-        cv2.putText(img, line_no, (50, y), cv2.FONT_HERSHEY_PLAIN, 1.2, LINE_NO_COLOR, 1, cv2.LINE_AA)
-        expanded_line = line.expandtabs(4)[:CHARS_PER_LINE]
-        cv2.putText(img, expanded_line, (140, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, TEXT_COLOR, 1, cv2.LINE_AA)
-        y += 30
+    if cv2 is not None and np is not None:
+        img = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        img[:] = BG_COLOR
 
-    return img
+        # Header bar
+        cv2.rectangle(img, (0, 0), (WIDTH, 70), (28, 28, 28), -1)
+        cv2.putText(img, header_text, (50, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.8, HEADER_COLOR, 2, cv2.LINE_AA)
+
+        # Content
+        y = 120
+        for idx, line in enumerate(lines):
+            line_no = f"{start_line + idx:04d} | "
+            cv2.putText(img, line_no, (50, y), cv2.FONT_HERSHEY_PLAIN, 1.2, LINE_NO_COLOR, 1, cv2.LINE_AA)
+            expanded_line = line.expandtabs(4)[:CHARS_PER_LINE]
+            cv2.putText(img, expanded_line, (140, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, TEXT_COLOR, 1, cv2.LINE_AA)
+            y += 30
+
+        return img
+    elif Image is not None and np is not None:
+        im = Image.new("RGB", (WIDTH, HEIGHT), BG_COLOR)
+        draw = ImageDraw.Draw(im)
+        draw.rectangle([(0, 0), (WIDTH, 70)], fill=(28, 28, 28))
+        draw.text((50, 25), header_text, fill=HEADER_COLOR)
+        y = 120
+        for idx, line in enumerate(lines):
+            line_no = f"{start_line + idx:04d} | "
+            draw.text((50, y), line_no, fill=LINE_NO_COLOR)
+            expanded_line = line.expandtabs(4)[:CHARS_PER_LINE]
+            draw.text((140, y), expanded_line, fill=TEXT_COLOR)
+            y += 30
+        img_rgb = np.array(im, dtype=np.uint8)
+        return img_rgb[:, :, ::-1]
+    else:
+        raise RuntimeError("Neither OpenCV nor Pillow is available for text rendering.")
 
 def synthesize_text_video(
     input_path: str,

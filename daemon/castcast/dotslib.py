@@ -109,7 +109,9 @@ def render_frame(g, scale=SCALE):
     t = np.zeros((scale, scale), dtype=np.uint8)
     t[2:scale - 2, 2:scale - 2] = 1          # 20 px dot in the 24 px cell
     img = np.kron(g.astype(np.uint8), t) * 255
-    return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    if cv2 is not None:
+        return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    return np.repeat(img[:, :, np.newaxis], 3, axis=2)
 
 
 def _fix_orientation(g):
