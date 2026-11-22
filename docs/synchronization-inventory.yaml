@@ -64,6 +64,12 @@ files:
     - core-service
     - config-state
     - operations-release
+  android/app/src/main/java/app/videoqualitychecker/castcast/TermuxSetupResultReceiver.java:
+    section: android-bridge
+    role: setup-result-receiver
+    boundaries:
+    - web-client
+    - operations-release
   daemon/castcast/rules.py:
     section: media-routing
     role: media-rules

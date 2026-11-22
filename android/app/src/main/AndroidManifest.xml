@@ -45,6 +45,14 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <receiver
+            android:name=".TermuxSetupResultReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="app.videoqualitychecker.castcast.TERMUX_SETUP_RESULT" />
+            </intent-filter>
+        </receiver>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

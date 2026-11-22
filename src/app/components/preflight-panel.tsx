@@ -1,6 +1,8 @@
-import { AlertTriangle, CheckCircle2, Info, Terminal, XCircle } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, CheckCircle2, Info, ShieldCheck, Terminal, XCircle } from "lucide-react";
 import type { Preflight } from "../lib/daemon";
 import { formatDuration } from "../lib/daemon";
+import { checkRoot, requestRoot, canLaunchTermuxDaemon } from "../lib/termux-daemon";
 
 const SEVERITY = {
   fatal: { Icon: XCircle, tone: "text-rose-400", border: "border-rose-500/30", bg: "bg-rose-500/5" },
@@ -52,6 +54,21 @@ export function PreflightPanel({
   const audio = media.audio[0];
   const clean = verdict.castable && !verdict.needs_processing;
 
+  const [rootProvisioning, setRootProvisioning] = useState(false);
+  const [provisionMessage, setProvisionMessage] = useState<string | null>(null);
+
+  const handleProvisionRoot = async () => {
+    try {
+      setRootProvisioning(true);
+      const res = await requestRoot();
+      setProvisionMessage(res.success ? "Root permissions & system environment verified" : `Provisioning status: ${res.output || "exit " + res.exitCode}`);
+    } catch (e: any) {
+      setProvisionMessage(e.message || "Failed to provision root");
+    } finally {
+      setRootProvisioning(false);
+    }
+  };
+
   const renderTrackOption = (t: any) => {
     const lang = (t.language || "und").toLowerCase();
     const isTarget = lang === "eng" || lang === "jpn" || lang === "en" || lang === "ja";
@@ -62,6 +79,26 @@ export function PreflightPanel({
 
   return (
     <div className="space-y-3">
+      {canLaunchTermuxDaemon() && (
+        <div className="flex items-center justify-between rounded border border-emerald-500/20 bg-black/40 p-2.5 text-xs text-emerald-300">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4 text-emerald-400" />
+            <span>Root Permissions & System Requisitions</span>
+          </div>
+          <button
+            onClick={handleProvisionRoot}
+            disabled={rootProvisioning}
+            className="rounded border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 font-semibold text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
+          >
+            {rootProvisioning ? "Provisioning..." : "One-Click Provision"}
+          </button>
+        </div>
+      )}
+      {provisionMessage && (
+        <div className="rounded border border-emerald-500/30 bg-black/60 p-2 text-xs text-emerald-300 font-mono">
+          {provisionMessage}
+        </div>
+      )}
       {/* verdict banner */}
       <div
         className={`rounded border p-3 ${

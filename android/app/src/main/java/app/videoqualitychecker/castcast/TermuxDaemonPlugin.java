@@ -3,6 +3,8 @@ package app.videoqualitychecker.castcast;
 
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.app.PendingIntent;
+import android.os.Build;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -75,6 +77,17 @@ public class TermuxDaemonPlugin extends Plugin {
         intent.putExtra(EXTRA_WORKDIR, DAEMON_DIR);
         intent.putExtra(EXTRA_BACKGROUND, true);
         intent.putExtra(EXTRA_SESSION_ACTION, "0");
+
+        try {
+            Intent resultIntent = new Intent(getContext(), TermuxSetupResultReceiver.class);
+            resultIntent.setAction(TermuxSetupResultReceiver.ACTION_SETUP_RESULT);
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                flags |= PendingIntent.FLAG_IMMUTABLE;
+            }
+            PendingIntent pendingIntent = PendingIntent.getBroadcast(getContext(), 0, resultIntent, flags);
+            intent.putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", pendingIntent);
+        } catch (Exception ignored) {}
 
         try {
             PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
@@ -189,6 +202,42 @@ public class TermuxDaemonPlugin extends Plugin {
             }
         }
         call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void getSetupStatus(PluginCall call) {
+        JSObject res = new JSObject();
+        res.put("received", TermuxSetupResultReceiver.hasReceived());
+        res.put("exitCode", TermuxSetupResultReceiver.getLastExitCode());
+        res.put("stdout", TermuxSetupResultReceiver.getLastStdout());
+        res.put("stderr", TermuxSetupResultReceiver.getLastStderr());
+        call.resolve(res);
+    }
+
+    @PluginMethod
+    public void checkRoot(PluginCall call) {
+        boolean hasRoot = false;
+        try {
+            Process process = new ProcessBuilder("su", "-c", "id").start();
+            boolean finished = process.waitFor(3, TimeUnit.SECONDS);
+            hasRoot = finished && process.exitValue() == 0;
+            process.destroy();
+        } catch (Exception e) {
+            hasRoot = false;
+        }
+        JSObject res = new JSObject();
+        res.put("hasRoot", hasRoot);
+        call.resolve(res);
+    }
+
+    @PluginMethod
+    public void requestRoot(PluginCall call) {
+        RootResult rr = configureTermuxWithRoot();
+        JSObject res = new JSObject();
+        res.put("success", rr.success);
+        res.put("exitCode", rr.exitCode);
+        res.put("output", rr.summary());
+        call.resolve(res);
     }
 
     private RootResult configureTermuxWithRoot() {

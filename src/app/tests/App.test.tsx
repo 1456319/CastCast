@@ -19,6 +19,8 @@ vi.mock('../lib/daemon', async (importOriginal) => {
       preflight: vi.fn(),
       getAvailableSubtitles: vi.fn(),
       selectSubtitle: vi.fn(),
+      getAmazonAuth: vi.fn(),
+      pollAmazonAuth: vi.fn(),
     },
     subscribe: vi.fn()
   };
@@ -40,6 +42,20 @@ describe('App', () => {
       tracks: [],
       remote_supported: false
     });
+    vi.mocked(daemonLib.daemon.getAmazonAuth).mockResolvedValue({
+      response: {
+        success: {
+          public_code: 'TEST-CODE',
+          private_code: 'PRIV-123',
+          verification_url: 'https://amazon.com/mytv'
+        }
+      }
+    });
+    vi.mocked(daemonLib.daemon.pollAmazonAuth).mockResolvedValue({
+      response: {
+        success: { status: 'SUCCESS' }
+      }
+    });
     vi.mocked(daemonLib.subscribe).mockReturnValue(vi.fn());
   });
 
@@ -54,7 +70,7 @@ describe('App', () => {
 
     // Should initially show the disconnected view
     expect(screen.getByText('daemon unreachable')).toBeInTheDocument();
-    expect(screen.getByText('Launch Daemon (Termux)')).toBeInTheDocument();
+    expect(screen.getByText(/Launch Daemon/i)).toBeInTheDocument();
 
     // Verify it polls for status
     expect(daemonLib.daemon.status).toHaveBeenCalled();
@@ -85,7 +101,7 @@ describe('App', () => {
     });
 
     await waitFor(() => {
-      expect(screen.queryByText('Launch Daemon (Termux)')).not.toBeInTheDocument();
+      expect(screen.queryByText(/Launch Daemon/i)).not.toBeInTheDocument();
     });
   });
 
@@ -160,7 +176,7 @@ describe('App', () => {
      });
 
      await waitFor(() => {
-       expect(screen.queryByText('Launch Daemon (Termux)')).not.toBeInTheDocument();
+       expect(screen.queryByText(/Launch Daemon/i)).not.toBeInTheDocument();
      });
 
      act(() => {
@@ -362,6 +378,41 @@ describe('App', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Subtitles: Off')).toBeInTheDocument();
+    });
+  });
+
+  it('triggers amazon pairing flow on button click', async () => {
+    vi.mocked(daemonLib.daemon.status).mockResolvedValue({
+      connected: true,
+      device: null,
+      media_server: { base_url: '', lan_ip: '', port: 0, roots: [] },
+      tools: { ffmpeg: true, ffprobe: true, yt_dlp: true },
+      remux: null,
+      cast: {
+        state: 'idle', position: 0, duration: 0, volume: 1, muted: false,
+        title: '', reconnects: 0, stream_stalls: 0, last_error: '',
+        idle_reason: '', source_path: ''
+      }
+    });
+
+    render(<App />);
+
+    await act(async () => {
+      vi.advanceTimersByTime(100);
+    });
+
+    const pairBtn = screen.getByRole('button', { name: /pair amazon/i });
+    expect(pairBtn).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(pairBtn);
+    });
+
+    expect(daemonLib.daemon.getAmazonAuth).toHaveBeenCalled();
+
+    await waitFor(() => {
+      expect(screen.getByText('TEST-CODE')).toBeInTheDocument();
+      expect(screen.getByText('Amazon Prime Registration')).toBeInTheDocument();
     });
   });
 });

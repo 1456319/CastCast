@@ -226,6 +226,30 @@ export const daemon = {
   getAmazonQueue: () => request<{ items: any[] }>("/amazon/queue"),
   reorderAmazonQueue: (items: any[]) => post<any>("/amazon/queue/reorder", { items }),
   addAmazonQueue: (url: string) => post<any>("/amazon/queue/add", { url }),
+  getAmazonAuth: () =>
+    request<{
+      response?: {
+        success?: {
+          public_code?: string;
+          private_code?: string;
+          user_code?: string;
+          verification_url?: string;
+          device_code?: string;
+        };
+      };
+      user_code?: string;
+      verification_url?: string;
+      public_code?: string;
+      private_code?: string;
+      device_code?: string;
+      error?: string;
+    }>("/amazon/auth"),
+  pollAmazonAuth: (publicCode: string, privateCode?: string) => {
+    const url = privateCode
+      ? `/amazon/poll?public_code=${encodeURIComponent(publicCode)}&private_code=${encodeURIComponent(privateCode)}`
+      : `/amazon/poll?device_code=${encodeURIComponent(publicCode)}&public_code=${encodeURIComponent(publicCode)}`;
+    return request<any>(url);
+  },
   reorderLibrary: (items: any[]) => post<any>("/library/reorder", { items }),
   getDiagnosticsLogs: async () => {
     const res = await fetch(`${DAEMON_BASE}/diagnostics/logs`);

@@ -83,6 +83,17 @@ export default function App() {
   const [subtitlesDrawerOpen, setSubtitlesDrawerOpen] = useState(false);
   const [activeSubtitleLang, setActiveSubtitleLang] = useState<string | null>(null);
 
+  const [amazonPairing, setAmazonPairing] = useState(false);
+  const [amazonAuthData, setAmazonAuthData] = useState<{
+    userCode?: string;
+    publicCode?: string;
+    privateCode?: string;
+    verificationUrl?: string;
+  } | null>(null);
+  const [amazonPairingBusy, setAmazonPairingBusy] = useState(false);
+  const [amazonPairingMessage, setAmazonPairingMessage] = useState<string | null>(null);
+  const amazonPollTimerRef = useRef<any>(null);
+
   const logRef = useRef<HTMLDivElement>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const pollTimerRef = useRef<number | null>(null);
@@ -265,7 +276,8 @@ export default function App() {
           }
         }
         const isAmazon = urlStr.includes("amazon.com") || urlStr.includes("primevideo.com") || urlStr.includes("gti=");
-        const isPlaying = statusRef.current?.cast?.state && statusRef.current.cast.state !== "idle" && statusRef.current.cast.state !== "IDLE" && statusRef.current.cast.state !== "unknown" && statusRef.current.cast.state !== "dead" && statusRef.current.cast.state !== "disconnected";
+        const castState = (statusRef.current?.cast?.state || "").toLowerCase();
+        const isPlaying = castState === "playing" || castState === "buffering" || castState === "casting";
         
         if (isAmazon && isPlaying) {
           setNotice(`Adding Amazon video to queue...`);
@@ -347,6 +359,66 @@ export default function App() {
       setNotice("Daemon terminated. You can relaunch it now.");
       setLaunchMessage("");
     });
+
+  const startAmazonPairing = async () => {
+    try {
+      setAmazonPairingBusy(true);
+      setAmazonPairingMessage("Requesting device code from Amazon...");
+      setAmazonPairing(true);
+      const res = await daemon.getAmazonAuth();
+      const codeData = res?.response?.success || res;
+      const pubCode = codeData?.public_code || codeData?.user_code || "";
+      const privCode = codeData?.private_code || "";
+      const verifyUrl = codeData?.verification_url || "https://amazon.com/mytv";
+
+      if (!pubCode) {
+        setAmazonPairingMessage(res?.error || "Failed to obtain Amazon pairing code.");
+        setAmazonPairingBusy(false);
+        return;
+      }
+
+      setAmazonAuthData({
+        userCode: pubCode,
+        publicCode: pubCode,
+        privateCode: privCode,
+        verificationUrl: verifyUrl,
+      });
+      setAmazonPairingMessage(`Visit ${verifyUrl} and enter code: ${pubCode}`);
+      setAmazonPairingBusy(false);
+
+      if (amazonPollTimerRef.current) clearInterval(amazonPollTimerRef.current);
+      amazonPollTimerRef.current = setInterval(async () => {
+        try {
+          const pollRes = await daemon.pollAmazonAuth(pubCode, privCode);
+          if (pollRes?.response?.success || pollRes?.registered) {
+            clearInterval(amazonPollTimerRef.current);
+            amazonPollTimerRef.current = null;
+            setAmazonPairingMessage("Successfully registered Amazon Prime Video!");
+            setTimeout(() => {
+              setAmazonPairing(false);
+              setAmazonAuthData(null);
+              setAmazonPairingMessage(null);
+            }, 3000);
+          }
+        } catch {
+          // Continue polling
+        }
+      }, 3000);
+    } catch (err: any) {
+      setAmazonPairingMessage(err?.message || "Failed to initiate Amazon pairing.");
+      setAmazonPairingBusy(false);
+    }
+  };
+
+  const cancelAmazonPairing = () => {
+    if (amazonPollTimerRef.current) {
+      clearInterval(amazonPollTimerRef.current);
+      amazonPollTimerRef.current = null;
+    }
+    setAmazonPairing(false);
+    setAmazonAuthData(null);
+    setAmazonPairingMessage(null);
+  };
 
   const loadLibrary = () =>
     run("library", async () => {
@@ -535,7 +607,7 @@ export default function App() {
             disabled={busy === "launch-daemon" || busy === "force-kill"}
             className="block w-full rounded border border-emerald-500/50 bg-emerald-500/20 px-4 py-3 text-center font-bold tracking-wide text-emerald-100 shadow-lg hover:bg-emerald-500/30 disabled:cursor-wait disabled:opacity-60"
           >
-            {busy === "launch-daemon" ? "Launching Termux…" : "Launch Daemon (Termux)"}
+            {busy === "launch-daemon" ? "Launching Daemon…" : "Launch Daemon"}
           </button>
           <button
             type="button"
@@ -865,18 +937,68 @@ export default function App() {
         <section className="rounded border border-emerald-500/20 bg-black/40 p-3">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-emerald-500/50 uppercase tracking-wider">Queue - Amazon</span>
-            {amazonQueue.length > 0 && (
+            <div className="flex items-center gap-2">
               <button
-                onClick={() => {
-                  setAmazonQueue([]);
-                  daemon.reorderAmazonQueue([]).catch(console.error);
-                }}
-                className="text-xs text-emerald-500/50 hover:text-red-400"
+                type="button"
+                onClick={startAmazonPairing}
+                disabled={amazonPairingBusy}
+                className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
               >
-                clear
+                {amazonPairingBusy ? "Pairing…" : "Pair Amazon"}
               </button>
-            )}
+              {amazonQueue.length > 0 && (
+                <button
+                  onClick={() => {
+                    setAmazonQueue([]);
+                    daemon.reorderAmazonQueue([]).catch(console.error);
+                  }}
+                  className="text-xs text-emerald-500/50 hover:text-red-400"
+                >
+                  clear
+                </button>
+              )}
+            </div>
           </div>
+
+          {amazonPairing && (
+            <div className="mb-3 rounded border border-emerald-500/40 bg-emerald-950/40 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-emerald-200 text-sm">Amazon Prime Registration</span>
+                <button
+                  onClick={cancelAmazonPairing}
+                  className="text-xs text-emerald-500/60 hover:text-emerald-300"
+                >
+                  Cancel
+                </button>
+              </div>
+              {amazonAuthData?.userCode ? (
+                <div className="space-y-2">
+                  <div className="text-xs text-emerald-300/80">
+                    Visit{" "}
+                    <a
+                      href={amazonAuthData.verificationUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline text-emerald-400 font-mono"
+                    >
+                      {amazonAuthData.verificationUrl}
+                    </a>{" "}
+                    and enter code:
+                  </div>
+                  <div className="text-xl font-mono tracking-widest text-emerald-100 font-bold bg-black/60 rounded p-2 text-center border border-emerald-500/30">
+                    {amazonAuthData.userCode}
+                  </div>
+                  <div className="text-xs text-emerald-500/60 animate-pulse text-center">
+                    Waiting for authorization…
+                  </div>
+                </div>
+              ) : (
+                <div className="text-xs text-emerald-400 font-mono">
+                  {amazonPairingMessage || "Connecting to Amazon…"}
+                </div>
+              )}
+            </div>
+          )}
 
           {amazonQueue.length === 0 ? (
             <div className="py-4 text-center text-emerald-500/40">
@@ -1052,6 +1174,10 @@ export default function App() {
                   if (pollTimerRef.current !== null) {
                     window.clearInterval(pollTimerRef.current);
                     pollTimerRef.current = null;
+                  }
+                  if (amazonPollTimerRef.current !== null) {
+                    window.clearInterval(amazonPollTimerRef.current);
+                    amazonPollTimerRef.current = null;
                   }
                   daemon.shutdown().catch(() => {});
                   setOnline(false);
