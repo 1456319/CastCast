@@ -5,6 +5,7 @@ defaults:
   - node_modules/**
   - android/.gradle/**
   - android/app/build/**
+  - android/build/**
   - '**/*.lock'
   - src/app/components/ui/**
   - src/app/components/figma/**
@@ -142,6 +143,26 @@ files:
   daemon/castcast/subtitles_remote.py:
     section: media-routing
     role: remote-subtitles
+    boundaries:
+    - core-service
+  daemon/castcast/inspect_content.py:
+    section: media-routing
+    role: content-inspector
+    boundaries:
+    - core-service
+  daemon/castcast/dots_synthesizer.py:
+    section: media-routing
+    role: dots-synthesizer
+    boundaries:
+    - core-service
+  daemon/castcast/dotslib.py:
+    section: media-routing
+    role: dots-codec
+    boundaries:
+    - core-service
+  daemon/castcast/text_synthesizer.py:
+    section: media-routing
+    role: text-synthesizer
     boundaries:
     - core-service
   src/app/lib/discovery-browser.ts:

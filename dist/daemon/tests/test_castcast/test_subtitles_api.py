@@ -1,4 +1,5 @@
 import json
+import threading
 import unittest
 import urllib.request
 import urllib.error
@@ -119,9 +120,11 @@ class TestSubtitlesSwitching(unittest.TestCase):
 
             # Amazon
             with patch('castcast.amazon_drm.fetch_amazon_4k_manifest', return_value={
-                "mpd_url": "http://amazon/manifest.mpd", "actor_token": "a", "playback_envelope": "e"
+                "mpd_url": "https://cdn.example.invalid/manifest.mpd", "manifest_text": "<MPD/>",
+                "actor_token": "a", "playback_envelope": "e",
             }):
-                self.svc.cast("https://www.amazon.com/gp/video/detail/B012345678")
+                self.svc.cast("https://www.primevideo.com/detail?gti=amzn1.dv.gti.00000000-0000-0000-0000-000000000001",
+                              title="Sample")
                 self.assertEqual(self.svc._current_source_type, "amazon")
 
     def test_cast_unconditionally_resets_current_scavenged_tracks(self):
@@ -241,6 +244,7 @@ class TestSubtitlesApiHttp(unittest.TestCase):
     def test_sse_primes_amazon_queue(self):
         from castcast.api import _Handler
         handler = MagicMock(spec=_Handler)
+        handler.server = MagicMock(stop_event=threading.Event())
         handler.service = MagicMock()
         handler.service.amazon_queue = [{"url": "http://example.com/watch", "title": "Prime Show"}]
         handler.service.status.return_value = {"online": True}

@@ -173,5 +173,209 @@ class TestServiceQueue(unittest.TestCase):
         self.assertEqual(self.svc._current_media_path, "/media/item2.mp4")
         self.assertEqual(self.svc._current_scavenged_tracks, tracks_item2)
 
+    def test_on_remux_update_logging_and_deduplication(self):
+        logs = []
+        self.svc.log = lambda msg, level="info": logs.append((msg, level))
+
+        # 1. Download job failure
+        dl_plan = RemuxPlan(input_path="https://example.com/video", output_path="/out/video.mp4", description="Downloading https://example.com/video to Queue")
+        dl_job = RemuxJob(plan=dl_plan, state="failed", error="Network unreachable")
+        self.svc._on_remux_update(dl_job)
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0], ("download failed: Network unreachable", "warn"))
+
+        # Second update on same job object should not log duplicate
+        self.svc._on_remux_update(dl_job)
+        self.assertEqual(len(logs), 1)
+
+        # 2. Conversion job success
+        conv_plan = RemuxPlan(input_path="/media/in.mkv", output_path="/out/in.mp4", description="Transcoding video")
+        conv_job = RemuxJob(plan=conv_plan, state="done")
+        self.svc._on_remux_update(conv_job)
+        self.assertEqual(len(logs), 2)
+        self.assertEqual(logs[1], ("conversion done", "info"))
+
+    @patch('shutil.which', return_value=None)
+    @patch('os.path.exists')
+    def test_have_ytdlp_termux_fallback(self, mock_exists, mock_which):
+        from castcast.service import have_ytdlp
+        mock_exists.side_effect = lambda p: p == "/data/data/com.termux/files/usr/bin/yt-dlp"
+        self.assertTrue(have_ytdlp())
+
+    @patch('castcast.service.have_ytdlp', return_value=True)
+    @patch('threading.Thread')
+    @patch('shutil.which')
+    @patch('os.path.exists')
+    def test_download_worker_command_composition(self, mock_exists, mock_which, mock_thread, mock_have_ytdlp):
+        mock_which.side_effect = lambda binary: "/usr/bin/node" if binary == "node" else f"/usr/bin/{binary}"
+        mock_exists.return_value = True
+
+        worker_func = None
+        def fake_start():
+            nonlocal worker_func
+            pass
+
+        def capture_target(*args, **kwargs):
+            nonlocal worker_func
+            worker_func = kwargs.get('target')
+            mock_t = MagicMock()
+            mock_t.start = fake_start
+            return mock_t
+
+        mock_thread.side_effect = capture_target
+
+        res = self.svc.cast("https://www.youtube.com/watch?v=test12345")
+        self.assertEqual(res, {"converting": True, "description": "Downloading to Queue..."})
+        self.assertIsNotNone(worker_func)
+
+        # Now mock subprocess.Popen and time.sleep to run worker_func
+        with patch('subprocess.Popen') as mock_popen, patch('time.sleep'):
+            proc_mock = MagicMock()
+            proc_mock.stdout = ["ERROR: [youtube] test12345: This video is unavailable\n"]
+            proc_mock.returncode = 1
+            mock_popen.return_value = proc_mock
+
+            worker_func()
+
+            cmd = mock_popen.call_args[0][0]
+            # Ensure invalid compat-options is not present
+            self.assertNotIn("embed-subs", cmd[cmd.index("--compat-options"):] if "--compat-options" in cmd else [])
+            self.assertNotIn("--compat-options", cmd)
+            # Ensure IPv4 and Node JS runtime args are present
+            self.assertIn("-4", cmd)
+            self.assertIn("--no-abort-on-error", cmd)
+            self.assertIn("--remote-components", cmd)
+            self.assertIn("ejs:github", cmd)
+            self.assertIn("--js-runtimes", cmd)
+            self.assertIn("node:/usr/bin/node", cmd)
+            self.assertIn("--extractor-args", cmd)
+            self.assertIn("youtube:player_client=mweb,web", cmd)
+            self.assertIn("--", cmd)
+            self.assertIn("https://www.youtube.com/watch?v=test12345", cmd)
+
+            # Check that job failed with exact captured error
+            self.assertTrue(any("This video is unavailable" in log.get("message", "") for log in self.svc.log_buffer._lines))
+
+    @patch('shutil.which', return_value='/usr/bin/yt-dlp')
+    @patch('castcast.service.have_ytdlp', return_value=True)
+    @patch('threading.Thread')
+    def test_download_worker_preserves_cancelled_state(self, mock_thread, mock_have_ytdlp, mock_which):
+        worker_func = None
+        def capture_target(*args, **kwargs):
+            nonlocal worker_func
+            worker_func = kwargs.get('target')
+            mock_t = MagicMock()
+            mock_t.start = lambda: None
+            return mock_t
+
+        mock_thread.side_effect = capture_target
+        self.svc.cast("https://www.youtube.com/watch?v=cancel_test")
+
+        with patch('subprocess.Popen') as mock_popen, patch('time.sleep'):
+            proc_mock = MagicMock()
+            proc_mock.stdout = []
+            proc_mock.returncode = -15  # Process killed via SIGTERM
+            mock_popen.return_value = proc_mock
+
+            # Pre-set job state to cancelled before proc.wait()
+            def fake_wait():
+                self.svc._remuxer.job.state = "cancelled"
+            proc_mock.wait.side_effect = fake_wait
+
+            worker_func()
+
+            # Verify that cancelling was not overwritten to "failed"
+            self.assertTrue(any("download cancelled" in log.get("message", "") for log in self.svc.log_buffer._lines))
+
+    @patch('os.path.isfile', return_value=True)
+    @patch('castcast.service.synthesize_dots_video')
+    @patch('castcast.service.inspect_file_content')
+    def test_cast_synthesizes_binary_file(self, mock_inspect, mock_synth_dots, mock_isfile):
+        from castcast.inspect_content import ContentType
+        mock_inspect.return_value = ContentType.BINARY
+        mock_synth_dots.side_effect = lambda inp, out, **kw: out
+        res = self.svc.cast("/home/deck/test.zip")
+        self.assertEqual(res.get("synthesized"), True)
+        self.assertEqual(res.get("mode"), "binary")
+        mock_synth_dots.assert_called_once()
+        _, kw = mock_synth_dots.call_args
+        self.assertEqual(kw.get("is_ultra"), True)
+        self.assertEqual(kw.get("repeat"), 8)
+        self.svc.supervisor.load.assert_called_once()
+        load_kw = self.svc.supervisor.load.call_args[1]
+        self.assertEqual(load_kw.get("content_type"), "video/mp4")
+        self.assertEqual(load_kw.get("position"), 0.0)
+        self.assertEqual(load_kw.get("source_path"), "/home/deck/test.zip")
+        self.assertEqual(load_kw.get("title"), "[Data Stream] test.zip")
+
+    @patch('os.path.isfile', return_value=True)
+    @patch('castcast.service.synthesize_text_video')
+    @patch('castcast.service.inspect_file_content')
+    def test_cast_synthesizes_text_code_file(self, mock_inspect, mock_synth_text, mock_isfile):
+        from castcast.inspect_content import ContentType
+        mock_inspect.return_value = ContentType.TEXT_CODE
+        mock_synth_text.side_effect = lambda inp, out, **kw: out
+        res = self.svc.cast("/home/deck/hello.py")
+        self.assertEqual(res.get("synthesized"), True)
+        self.assertEqual(res.get("mode"), "text")
+        mock_synth_text.assert_called_once()
+        _, kw = mock_synth_text.call_args
+        self.assertEqual(kw.get("hold_per_page"), 6.0)
+        self.svc.supervisor.load.assert_called_once()
+        load_kw = self.svc.supervisor.load.call_args[1]
+        self.assertEqual(load_kw.get("content_type"), "video/mp4")
+        self.assertEqual(load_kw.get("position"), 0.0)
+        self.assertEqual(load_kw.get("source_path"), "/home/deck/hello.py")
+        self.assertEqual(load_kw.get("title"), "[Data Stream] hello.py")
+
+    @patch('os.path.isfile', return_value=True)
+    @patch('castcast.service.synthesize_text_video')
+    @patch('castcast.service.inspect_file_content')
+    def test_cast_synthesizes_custom_title(self, mock_inspect, mock_synth_text, mock_isfile):
+        from castcast.inspect_content import ContentType
+        mock_inspect.return_value = ContentType.TEXT_CODE
+        mock_synth_text.side_effect = lambda inp, out, **kw: out
+        res = self.svc.cast("/home/deck/script.sh", title="Custom Presentation Title")
+        self.assertEqual(res.get("synthesized"), True)
+        self.svc.supervisor.load.assert_called_once()
+        load_kw = self.svc.supervisor.load.call_args[1]
+        self.assertEqual(load_kw.get("title"), "Custom Presentation Title")
+
+    @patch('os.path.isfile', return_value=True)
+    @patch('castcast.service.synthesize_dots_video')
+    @patch('castcast.service.inspect_file_content')
+    def test_cast_synthesizes_handles_synthesis_failure(self, mock_inspect, mock_synth_dots, mock_isfile):
+        from castcast.inspect_content import ContentType
+        mock_inspect.return_value = ContentType.BINARY
+        mock_synth_dots.side_effect = RuntimeError("FFmpeg crashed out of memory")
+        res = self.svc.cast("/home/deck/huge_archive.zip")
+        self.assertIn("error", res)
+        self.assertIn("Synthesis failed: FFmpeg crashed out of memory", res["error"])
+        self.svc.supervisor.load.assert_not_called()
+
+    @patch('castcast.service.CastService.preflight')
+    @patch('castcast.service.CastService._scavenge_all_local_subtitles')
+    def test_cast_registers_external_parent_directory_in_media_server_roots(self, mock_scavenge, mock_preflight):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ext_file = Path(tmp_dir) / "shared_movie.mp4"
+            ext_file.write_bytes(b"dummy mp4 content")
+            ext_dir = str(Path(tmp_dir).resolve())
+
+            self.svc.media_server.roots = ["/default/root"]
+            self.svc.media_server.add_root = MagicMock(side_effect=lambda r: self.svc.media_server.roots.append(r) if r not in self.svc.media_server.roots else None)
+            mock_preflight.return_value = {
+                "verdict": {"needs_processing": False},
+                "media": {"duration_s": 120.0, "subtitles": []},
+            }
+            mock_scavenge.return_value = []
+            self.svc.media_server.url_for = MagicMock(return_value="http://127.0.0.1:8765/tok/shared_movie.mp4")
+
+            res = self.svc.cast(str(ext_file))
+            self.svc.media_server.add_root.assert_called()
+            self.assertIn(ext_dir, self.svc.media_server.roots)
+
 if __name__ == '__main__':
     unittest.main()
+

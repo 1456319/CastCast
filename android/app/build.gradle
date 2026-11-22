@@ -36,6 +36,9 @@ chaquopy {
             install "yt-dlp==2026.10.26"
             install "asyncssh==2.22.0"
             install "cryptography==42.0.8"
+            install "numpy"
+            install "opencv-python-headless"
+            install "reedsolo"
         }
     }
     sourceSets {

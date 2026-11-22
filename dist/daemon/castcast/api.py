@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import urllib.parse
 import urllib.request
@@ -22,6 +23,33 @@ from .service import CastService
 from .metadata import resolve_title
 
 API_PORT = 8765
+
+
+AUDIT_TAIL_BYTES = 64 * 1024
+
+
+def _audit_log_tail(work_dir: str, path: str | None = None) -> str:
+    candidates = (
+        path,
+        os.environ.get("CASTCAST_AUDIT_LOG"),
+        os.path.join(work_dir, "audit.log"),
+        "/var/log/audit/audit.log",
+        "/tmp/castcast.log",
+    )
+    for path in candidates:
+        if not path:
+            continue
+        try:
+            with open(path, "rb") as audit:
+                start = max(0, audit.seek(0, os.SEEK_END) - AUDIT_TAIL_BYTES)
+                audit.seek(start)
+                tail = audit.read(AUDIT_TAIL_BYTES)
+            if start and b"\n" in tail:
+                tail = tail.split(b"\n", 1)[1]
+            return tail.decode("utf-8", errors="replace")
+        except OSError:
+            continue
+    return ""
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -127,21 +155,6 @@ class _Handler(BaseHTTPRequestHandler):
                 else:
                     self._json({"subtitles": self.service.list_remote_subtitles()})
             elif route == "/diagnostics/logs":
-                import os
-                audit_log = ""
-                if os.path.exists("/var/log/audit/audit.log"):
-                    try:
-                        with open("/var/log/audit/audit.log", "r") as f:
-                            audit_log = f.read()
-                    except Exception:
-                        pass
-                elif os.path.exists("/tmp/castcast.log"):
-                    try:
-                        with open("/tmp/castcast.log", "r") as f:
-                            audit_log = f.read()
-                    except Exception:
-                        pass
-                
                 last_error = ""
                 if self.service.supervisor:
                     last_error = self.service.supervisor.status.last_error
@@ -149,7 +162,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({
                     "log_buffer": self.service.log_buffer.recent(),
                     "last_error": last_error,
-                    "audit_log": audit_log
+                    "audit_log": _audit_log_tail(self.service.work_dir, getattr(self.service, "audit_log_path", None)),
                 })
             elif route == "/preflight":
                 path = one("path")
@@ -188,7 +201,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(svc.queue(paths))
             
             elif route == "/amazon/inject":
-                import os, json
+                import json
                 from .amazon import get_config_path
                 auth_file = get_config_path("amazon_auth.json")
                 os.makedirs(os.path.dirname(auth_file), exist_ok=True)
@@ -304,20 +317,15 @@ class _Handler(BaseHTTPRequestHandler):
             elif route == "/mute":
                 self._json(svc.set_muted(bool(body.get("muted"))))
             elif route == "/shutdown":
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(b'{"status": "ok"}')
-
-                # Graceful cleanup of all processes and threads
-                try:
-                    if hasattr(svc, "_remuxer") and svc._remuxer:
-                        svc._remuxer.cancel()
+                on_shutdown = getattr(self.server, "on_shutdown", None)
+                if on_shutdown is not None:
+                    self._json({"status": "ok"})
+                    on_shutdown()
+                else:
+                    self._json({"status": "ok"})
+                    svc.cancel_prepare()
                     svc.stop()
-                except Exception as e:
-                    print(f"Error during shutdown cleanup: {e}")
-
-                import os
-                os._exit(0)
+                    os._exit(0)
             elif route == "/discovery/intercept":
                 self._json(svc.handle_intercept(body))
             else:
@@ -357,9 +365,9 @@ class _Handler(BaseHTTPRequestHandler):
                     queue_items = list(self.service.amazon_queue)
                 self._write_event("amazon_queue", {"items": queue_items})
 
-            while True:
+            while not self.server.stop_event.is_set():
                 try:
-                    kind, payload = outbox.get(timeout=5.0)
+                    kind, payload = outbox.get(timeout=2.0)
                     self._write_event(kind, payload)
                 except queue.Empty:
                     # Keepalive comment: proves the socket is still good.
@@ -398,6 +406,7 @@ _ROUTES = {
     "GET /subtitles/remote": "list remote subtitle tracks (YouTube yt-dlp or SubDL/OpenSubtitles)",
     "GET /preflight?path=": "probe + castability verdict + ffmpeg plan",
     "GET /logs?since=N": "recent log lines",
+    "GET /diagnostics/logs": "recent log lines, last error and audit tail",
     "GET /events": "SSE stream of logs, state changes, media status",
     "POST /connect": "{host, port?}",
     "POST /disconnect": "",
@@ -461,7 +470,8 @@ def _extract_amazon_share_info(raw_text):
 
 
 class ApiServer:
-    def __init__(self, service: CastService, host: str = "127.0.0.1", port: int = API_PORT):
+    def __init__(self, service: CastService, host: str = "127.0.0.1", port: int = API_PORT, on_shutdown=None):
+        self._on_shutdown = on_shutdown
         self.service = service
         self._host = host
         self._port = port
@@ -472,6 +482,8 @@ class ApiServer:
         httpd = ThreadingHTTPServer((self._host, self._port), _Handler)
         httpd.daemon_threads = True
         httpd.service = self.service  # type: ignore[attr-defined]
+        httpd.on_shutdown = self._on_shutdown
+        httpd.stop_event = threading.Event()
         self._httpd = httpd
         self._thread = threading.Thread(target=httpd.serve_forever,
                                         kwargs={"poll_interval": 0.5},
@@ -484,6 +496,7 @@ class ApiServer:
 
     def stop(self) -> None:
         if self._httpd:
+            self._httpd.stop_event.set()
             self._httpd.shutdown()
             self._httpd.server_close()
             self._httpd = None

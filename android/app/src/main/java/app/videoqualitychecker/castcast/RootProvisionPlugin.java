@@ -4,10 +4,12 @@ package app.videoqualitychecker.castcast;
 import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.os.PowerManager;
+import android.provider.OpenableColumns;
 import android.provider.Settings;
 
 import androidx.core.content.ContextCompat;
@@ -23,6 +25,11 @@ import com.getcapacitor.annotation.PermissionCallback;
 import com.topjohnwu.superuser.Shell;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.UUID;
 
 @CapacitorPlugin(name = "RootProvision", permissions = {
     @Permission(alias = "notifications", strings = {Manifest.permission.POST_NOTIFICATIONS}),
@@ -111,23 +118,163 @@ public final class RootProvisionPlugin extends Plugin {
 
     @Override
     protected void handleOnNewIntent(Intent intent) {
-        if (Intent.ACTION_SEND.equals(intent.getAction())) {
-            notifyListeners("sharedUrl", new JSObject());
+        super.handleOnNewIntent(intent);
+        if (getActivity() != null) {
+            getActivity().setIntent(intent);
         }
+        notifyListeners("sharedUrl", new JSObject());
     }
 
     @PluginMethod
-    public void getSharedUrl(PluginCall call) {
+    public synchronized void getSharedUrl(PluginCall call) {
+        if (getActivity() == null) {
+            call.resolve(new JSObject());
+            return;
+        }
+
         Intent intent = getActivity().getIntent();
-        JSObject result = new JSObject();
-        if (intent != null && Intent.ACTION_SEND.equals(intent.getAction())) {
-            String value = intent.getStringExtra(Intent.EXTRA_TEXT);
-            if (value != null) {
-                result.put("url", value);
-                intent.removeExtra(Intent.EXTRA_TEXT);
+        if (intent == null || intent.getAction() == null) {
+            call.resolve(new JSObject());
+            return;
+        }
+
+        String action = intent.getAction();
+        JSObject ret = new JSObject();
+
+        Uri fileUri = null;
+        if (Intent.ACTION_SEND.equals(action) && intent.hasExtra(Intent.EXTRA_STREAM)) {
+            fileUri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+        } else if (Intent.ACTION_VIEW.equals(action)) {
+            fileUri = intent.getData();
+        } else if (Intent.ACTION_SEND_MULTIPLE.equals(action) && intent.hasExtra(Intent.EXTRA_STREAM)) {
+            ArrayList<Uri> uris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+            if (uris != null && !uris.isEmpty()) {
+                fileUri = uris.get(0);
+            }
+        } else if (Intent.ACTION_SEND.equals(action) && intent.getData() != null) {
+            fileUri = intent.getData();
+        }
+
+        // Clean intent action and extras immediately to prevent duplicate execution
+        intent.removeExtra(Intent.EXTRA_STREAM);
+        intent.removeExtra(Intent.EXTRA_TEXT);
+        intent.setData(null);
+        intent.setAction(null);
+
+        if (fileUri != null) {
+            String fileName = null;
+            if ("content".equalsIgnoreCase(fileUri.getScheme())) {
+                try (Cursor cursor = getContext().getContentResolver().query(
+                        fileUri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+                    if (cursor != null && cursor.moveToFirst()) {
+                        int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                        if (nameIndex >= 0) {
+                            fileName = cursor.getString(nameIndex);
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+
+            if (fileName == null || fileName.trim().isEmpty()) {
+                fileName = fileUri.getLastPathSegment();
+            }
+            if (fileName != null) {
+                fileName = new File(fileName).getName();
+            }
+            if (fileName == null || fileName.trim().isEmpty() || ".".equals(fileName) || "..".equals(fileName)) {
+                fileName = "shared_file_" + System.currentTimeMillis();
+            }
+
+            File inboxDir = null;
+            try {
+                File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                if (downloadDir != null) {
+                    inboxDir = new File(downloadDir, "CastCast/Chromecast/inbox");
+                }
+            } catch (Exception ignored) {
+            }
+            if (inboxDir == null) {
+                inboxDir = new File("/storage/emulated/0/Download/CastCast/Chromecast/inbox");
+            }
+            if (!inboxDir.exists()) {
+                inboxDir.mkdirs();
+            }
+            if (!inboxDir.canWrite()) {
+                File extFilesDir = getContext().getExternalFilesDir(null);
+                if (extFilesDir != null) {
+                    inboxDir = new File(extFilesDir, "inbox");
+                } else {
+                    inboxDir = new File(getContext().getCacheDir(), "inbox");
+                }
+                inboxDir.mkdirs();
+            }
+
+            if ("file".equalsIgnoreCase(fileUri.getScheme()) && fileUri.getPath() != null) {
+                File sourceFile = new File(fileUri.getPath());
+                try {
+                    if (sourceFile.exists()) {
+                        File destCanonical = new File(inboxDir, fileName).getCanonicalFile();
+                        if (sourceFile.getCanonicalFile().equals(destCanonical) ||
+                            sourceFile.getCanonicalPath().startsWith(inboxDir.getCanonicalPath())) {
+                            ret.put("url", sourceFile.getAbsolutePath());
+                            ret.put("isFile", true);
+                            ret.put("fileName", sourceFile.getName());
+                            call.resolve(ret);
+                            return;
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+
+            File tmpFile = new File(inboxDir, ".tmp_" + System.currentTimeMillis() + "_" + UUID.randomUUID().toString().substring(0, 8));
+            File targetFile = new File(inboxDir, fileName);
+
+            try (InputStream in = getContext().getContentResolver().openInputStream(fileUri);
+                 OutputStream out = new FileOutputStream(tmpFile)) {
+                if (in != null) {
+                    byte[] buffer = new byte[65536];
+                    int len;
+                    while ((len = in.read(buffer)) != -1) {
+                        out.write(buffer, 0, len);
+                    }
+                    out.flush();
+                    tmpFile.setReadable(true, false);
+                    tmpFile.setWritable(true, false);
+
+                    if (targetFile.exists()) {
+                        targetFile.delete();
+                    }
+                    if (!tmpFile.renameTo(targetFile)) {
+                        targetFile = tmpFile;
+                    }
+                    targetFile.setReadable(true, false);
+
+                    ret.put("url", targetFile.getAbsolutePath());
+                    ret.put("isFile", true);
+                    ret.put("fileName", targetFile.getName());
+                    call.resolve(ret);
+                    return;
+                }
+            } catch (Exception e) {
+                if (tmpFile.exists()) {
+                    tmpFile.delete();
+                }
+                call.reject("Failed to stage shared file: " + e.getMessage(), e);
+                return;
+            }
+        } else if (Intent.ACTION_SEND.equals(action) && intent.hasExtra(Intent.EXTRA_TEXT)) {
+            String sharedText = intent.getStringExtra(Intent.EXTRA_TEXT);
+            if (sharedText != null && !sharedText.trim().isEmpty()) {
+                ret.put("url", sharedText);
+                ret.put("isFile", false);
+                call.resolve(ret);
+                return;
             }
         }
-        call.resolve(result);
+
+        call.resolve(ret);
     }
 
     private JSObject report() {

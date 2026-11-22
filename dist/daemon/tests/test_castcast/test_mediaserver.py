@@ -1,8 +1,10 @@
 import unittest
 import unittest.mock
 import base64
+import importlib.util
+import re
 import urllib.parse
-from castcast.mediaserver import guess_mime, transform_dash_manifest
+from castcast.mediaserver import guess_mime, transform_dash_manifest, TUNNEL_URL_RE
 
 class TestGuessMime(unittest.TestCase):
     """
@@ -153,6 +155,115 @@ class TestTransformDashManifest(unittest.TestCase):
 
 
 class TestTunnelSupervisor(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec("asyncssh"), "requires the Android AsyncSSH dependency")
+    def test_tunnel_output_arrives_without_a_shell_acknowledgment(self):
+        import asyncio
+        import asyncssh
+        from castcast.mediaserver import _open_localhost_run_output
+
+        class TunnelSession(asyncssh.SSHServerSession):
+            def connection_made(self, channel):
+                self.channel = channel
+
+            def shell_requested(self):
+                return True
+
+            def session_started(self):
+                self.channel.write_stderr("https://example.lhr.life forwarded\n")
+
+        class TunnelServer(asyncssh.SSHServer):
+            def connection_made(self, conn):
+                self.conn = conn
+
+            def begin_auth(self, _username):
+                return False
+
+            def session_requested(self):
+                channel = self.conn.create_server_channel()
+                report_response = channel._report_response
+
+                def report_without_shell_reply(result):
+                    request, packet, want_reply = channel._request_queue[0]
+                    channel._request_queue[0] = (request, packet, want_reply and request != "shell")
+                    report_response(result)
+
+                channel._report_response = report_without_shell_reply
+                return channel, TunnelSession()
+
+        async def verify():
+            host_key = asyncssh.generate_private_key("ssh-ed25519")
+            async with asyncssh.listen("127.0.0.1", 0, server_factory=TunnelServer,
+                                       server_host_keys=[host_key]) as listener:
+                async with asyncssh.connect("127.0.0.1", listener.get_port(), username="test",
+                                            known_hosts=([host_key.convert_to_public()], [], [])) as conn:
+                    with self.assertRaises(TimeoutError):
+                        await asyncio.wait_for(conn.create_process(), 0.2)
+                async with asyncssh.connect("127.0.0.1", listener.get_port(), username="test",
+                                            known_hosts=([host_key.convert_to_public()], [], [])) as conn:
+                    process = await asyncio.wait_for(_open_localhost_run_output(conn), 2)
+                    line = await asyncio.wait_for(process.stderr.readline(), 2)
+                    self.assertEqual(line, "https://example.lhr.life forwarded\n")
+
+        asyncio.run(verify())
+
+    def test_tunnel_url_regex_accepts_nested_subdomains(self):
+        lines_to_test = [
+            ("800035c81c1631.app.lhr.life tunneled with tls termination, https://800035c81c1631.app.lhr.life\r\n", "https://800035c81c1631.app.lhr.life"),
+            ("https://simple.lhr.life forwarded\n", "https://simple.lhr.life"),
+            ("https://nested.sub.lhrtunnel.pro\n", "https://nested.sub.lhrtunnel.pro"),
+            ("https://alpha.beta.lhr.rocks/path", "https://alpha.beta.lhr.rocks"),
+            ("Active tunnel at https://sample.app.lhr.life.", "https://sample.app.lhr.life"),
+        ]
+        for raw_line, expected_url in lines_to_test:
+            with self.subTest(line=raw_line):
+                match = TUNNEL_URL_RE.search(raw_line)
+                self.assertIsNotNone(match)
+                self.assertEqual(match.group(0), expected_url)
+
+        negative_cases = [
+            "https://evil.lhr.life.attacker.com",
+            "http://800035c81c1631.app.lhr.life",
+            "https://attacker.com",
+            "https://fake-lhr.life.other.net",
+        ]
+        for raw_line in negative_cases:
+            with self.subTest(negative_line=raw_line):
+                self.assertIsNone(TUNNEL_URL_RE.search(raw_line))
+
+    @unittest.mock.patch("castcast.mediaserver.detect_lan_ip", return_value="127.0.0.1")
+    def test_embedded_tunnel_reports_stage_and_exception_for_empty_timeout(self, _detect_lan_ip):
+        import asyncio
+        import sys
+        from tempfile import TemporaryDirectory
+        from types import SimpleNamespace
+        from castcast.mediaserver import MediaServer
+
+        def log(message, level):
+            messages.append((message, level))
+            server._tunnel_stop.set()
+
+        with TemporaryDirectory() as root:
+            for connected, stage in (
+                (False, "connecting to localhost.run:22"),
+                (True, "SSH handshake and authentication"),
+            ):
+                with self.subTest(stage=stage):
+                    messages = []
+                    server = MediaServer(roots=[root], logger=log)
+
+                    def connect(*args, client_factory, **kwargs):
+                        if connected:
+                            client_factory().connection_made(None)
+                        raise TimeoutError()
+
+                    asyncssh = SimpleNamespace(connect=connect, Error=RuntimeError, SSHClient=object)
+                    with unittest.mock.patch.dict(sys.modules, {"asyncssh": asyncssh}):
+                        asyncio.run(server._run_embedded_tunnel(12345))
+
+                    self.assertEqual(messages, [
+                        (f"HTTPS tunnel reconnecting after {stage} failed (TimeoutError)", "warn"),
+                    ])
+
     @unittest.mock.patch("shutil.which", return_value="/usr/bin/ssh")
     @unittest.mock.patch("subprocess.Popen")
     def test_tunnel_keepalive_options_and_reconnect(self, mock_popen, mock_which):

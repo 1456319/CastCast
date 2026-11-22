@@ -94,6 +94,7 @@ export default function App() {
   const logRef = useRef<HTMLDivElement>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const pollTimerRef = useRef<number | null>(null);
+  const isCheckingSharedRef = useRef(false);
 
   const [anomaly, setAnomaly] = useState<any | null>(null);
 
@@ -247,26 +248,33 @@ export default function App() {
   };
 
   const checkSharedUrl = useCallback(async () => {
+    if (isCheckingSharedRef.current) return;
+    isCheckingSharedRef.current = true;
     try {
       const result = await getSharedUrl();
       if (result.url) {
         let urlStr = result.url as string;
-        if (urlStr.startsWith("intent://") || urlStr.startsWith("intent:")) {
-          const schemeMatch = urlStr.match(/;scheme=([a-zA-Z0-9+.-]+)/);
-          const scheme = schemeMatch ? schemeMatch[1] : "https";
-          const prefix = urlStr.startsWith("intent://") ? "intent://" : "intent:";
-          const bodyAndFragment = urlStr.slice(prefix.length);
-          const body = bodyAndFragment.split("#")[0];
-          if (body) {
-            urlStr = `${scheme}://${body}`;
-          } else {
-            const fallbackMatch = urlStr.match(/[;?&]S\.browser_fallback_url=([^;]+)/);
-            if (fallbackMatch) {
-              urlStr = decodeURIComponent(fallbackMatch[1]);
+        const isLocalFile = Boolean(result.isFile || urlStr.startsWith("/"));
+
+        if (!isLocalFile) {
+          if (urlStr.startsWith("intent://") || urlStr.startsWith("intent:")) {
+            const schemeMatch = urlStr.match(/;scheme=([a-zA-Z0-9+.-]+)/);
+            const scheme = schemeMatch ? schemeMatch[1] : "https";
+            const prefix = urlStr.startsWith("intent://") ? "intent://" : "intent:";
+            const bodyAndFragment = urlStr.slice(prefix.length);
+            const body = bodyAndFragment.split("#")[0];
+            if (body) {
+              urlStr = `${scheme}://${body}`;
+            } else {
+              const fallbackMatch = urlStr.match(/[;?&]S\.browser_fallback_url=([^;]+)/);
+              if (fallbackMatch) {
+                urlStr = decodeURIComponent(fallbackMatch[1]);
+              }
             }
           }
         }
-        const isAmazon = urlStr.includes("amazon.com") || urlStr.includes("primevideo.com") || urlStr.includes("gti=");
+
+        const isAmazon = !isLocalFile && (urlStr.includes("amazon.com") || urlStr.includes("primevideo.com") || urlStr.includes("gti="));
         const isPlaying = statusRef.current?.cast?.state && statusRef.current.cast.state !== "idle" && statusRef.current.cast.state !== "IDLE" && statusRef.current.cast.state !== "unknown" && statusRef.current.cast.state !== "dead" && statusRef.current.cast.state !== "disconnected";
         
         if (isAmazon && isPlaying) {
@@ -277,6 +285,17 @@ export default function App() {
             await loadLibrary();
           } catch (err) {
             setNotice(`Failed to add to queue: ${err}`);
+          }
+        } else if (isLocalFile) {
+          const displayName = result.fileName || urlStr.split("/").pop() || "file";
+          setNotice(`Casting shared file: ${displayName}...`);
+          try {
+            await daemon.cast(urlStr, true);
+            setNotice(`Success! Sending ${displayName} to TV...`);
+            await loadLibrary();
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            setNotice(`Failed to cast shared file: ${msg}`);
           }
         } else {
           setNotice(`Extracting streams, please wait...`);
@@ -291,6 +310,8 @@ export default function App() {
       }
     } catch (e) {
       console.error(e);
+    } finally {
+      isCheckingSharedRef.current = false;
     }
   }, []);
 

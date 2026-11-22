@@ -32,6 +32,9 @@ from .subtitles_remote import (
     SubDLClient,
     download_subtitle_to_vtt,
 )
+from .inspect_content import inspect_file_content, ContentType
+from .dots_synthesizer import synthesize_dots_video
+from .text_synthesizer import synthesize_text_video
 
 DEFAULT_MEDIA_ROOT = "/storage/emulated/0/Download/CastCast/Chromecast"
 
@@ -55,7 +58,11 @@ VIDEO_EXTENSIONS = {
 }
 
 def have_ytdlp() -> bool:
-    return importlib.util.find_spec("yt_dlp") is not None or bool(shutil.which("yt-dlp"))
+    return (
+        importlib.util.find_spec("yt_dlp") is not None
+        or bool(shutil.which("yt-dlp"))
+        or os.path.exists("/data/data/com.termux/files/usr/bin/yt-dlp")
+    )
 
 
 class LogBuffer:
@@ -268,7 +275,7 @@ class CastService:
                     self._current_scavenged_tracks = self._scavenge_all_local_subtitles(source_path)
                     self._current_source_type = "local"
 
-    def _emit(self, kind: str, payload: dict) -> None:
+    def _emit(self, kind: str, payload: Optional[dict] = None) -> None:
         if kind == "media" and isinstance(payload, dict):
             self._on_media_status(payload)
         for listener in list(self._events):
@@ -569,12 +576,15 @@ class CastService:
 
     def _on_remux_update(self, job: remux.RemuxJob) -> None:
         if job.state in ("done", "failed", "cancelled"):
-            level = "info" if job.state == "done" else "warn"
-            self.log(f"conversion {job.state}"
-                     + (f": {job.error}" if job.error else ""), level)
+            if not getattr(job, "_logged_terminal_state", False):
+                job._logged_terminal_state = True
+                level = "info" if job.state == "done" else "warn"
+                action = "download" if (job.plan and "download" in (job.plan.description or "").lower()) else "conversion"
+                self.log(f"{action} {job.state}"
+                         + (f": {job.error}" if job.error else ""), level)
         self._emit("remux", job.to_dict())
 
-        if job.state == "done" and job.plan.input_path in self._queued_for_later:
+        if job.state == "done" and job.plan and job.plan.input_path in self._queued_for_later:
             self._queued_for_later.remove(job.plan.input_path)
             if self.supervisor and self.supervisor._state.value != "disconnected":
                 self._insert_queued_item(job.plan.input_path)
@@ -795,17 +805,37 @@ class CastService:
                     from .remux import RemuxJob, RemuxPlan
                     from .probe import FFMPEG
 
-                    ffmpeg_path = shutil.which(FFMPEG) or FFMPEG
+                    ffmpeg_path = shutil.which(FFMPEG) or (
+                        "/data/data/com.termux/files/usr/bin/ffmpeg"
+                        if os.path.exists("/data/data/com.termux/files/usr/bin/ffmpeg")
+                        else FFMPEG
+                    )
+                    ytdlp_bin = shutil.which("yt-dlp") or (
+                        "/data/data/com.termux/files/usr/bin/yt-dlp"
+                        if os.path.exists("/data/data/com.termux/files/usr/bin/yt-dlp")
+                        else "yt-dlp"
+                    )
+
+                    node_bin = shutil.which("node") or (
+                        "/data/data/com.termux/files/usr/bin/node"
+                        if os.path.exists("/data/data/com.termux/files/usr/bin/node")
+                        else None
+                    )
+                    js_args = ["--remote-components", "ejs:github", "--js-runtimes", f"node:{node_bin}"] if node_bin else []
 
                     cmd = [
-                        "yt-dlp", "--newline", "--no-continue",
+                        ytdlp_bin, "--newline", "--no-continue",
                         "--ffmpeg-location", ffmpeg_path,
+                        "-4",
+                        *js_args,
+                        "--extractor-args", "youtube:player_client=mweb,web",
                         "--sponsorblock-remove", "sponsor,intro,outro,selfpromo,interaction",
-                        "--write-subs", "--write-auto-subs", "--sub-langs", "en.*,eng,en-US,en-GB", "--embed-subs",
-                        "--compat-options", "embed-subs",
+                        "--write-subs", "--write-auto-subs", "--sub-langs", "en,en-US,en-GB,eng,en-orig", "--embed-subs",
+                        "--no-abort-on-error",
                         "-o", os.path.join(youtube_dir, "%(title)s.%(ext)s"),
                         "-f", "bestvideo[vcodec^=vp9]+bestaudio/bestvideo[vcodec^=avc]+bestaudio/best",
                         "--merge-output-format", "mkv",
+                        "--",
                         path
                     ]
 
@@ -819,7 +849,7 @@ class CastService:
                     self._on_remux_update(job)
 
                     try:
-                        if importlib.util.find_spec("yt_dlp") is not None:
+                        if (os.environ.get("CASTCAST_EMBEDDED") == "1" or not shutil.which("yt-dlp")) and importlib.util.find_spec("yt_dlp") is not None:
                             from yt_dlp import YoutubeDL, parse_options
                             from .probe import FFPROBE
 
@@ -855,24 +885,31 @@ class CastService:
                         with self._remuxer._lock:
                             self._remuxer._proc = proc
 
+                        last_lines: List[str] = []
                         last_error = ""
                         for line in proc.stdout:
-                            if line.startswith("ERROR:") or line.startswith("WARNING:"):
-                                self.log(f"[yt-dlp] {line.strip()}", "warn")
-                                last_error = line.strip()
+                            line_s = line.strip()
+                            if line_s:
+                                last_lines.append(line_s)
+                                if len(last_lines) > 10:
+                                    last_lines.pop(0)
+                            if line_s.lower().startswith(("error:", "yt-dlp: error:")):
+                                self.log(f"[yt-dlp] {line_s}", "warn")
+                                last_error = line_s
+                            elif line_s.lower().startswith(("warning:", "yt-dlp: warning:")):
+                                self.log(f"[yt-dlp] {line_s}", "warn")
                             m = re.search(r'\[download\]\s+([\d\.]+)%', line)
                             if m:
                                 job.progress = float(m.group(1)) / 100.0
                                 self._on_remux_update(job)
                         proc.wait()
-                        if job.state == "cancelled":
-                            return
-                        if proc.returncode != 0:
-                            job.state = "failed"
-                            job.error = last_error or "yt-dlp returned non-zero exit code"
-                        else:
-                            job.state = "done"
-                            job.progress = 1.0
+                        if job.state != "cancelled":
+                            if proc.returncode != 0:
+                                job.state = "failed"
+                                job.error = last_error or (last_lines[-1] if last_lines else "yt-dlp returned non-zero exit code")
+                            else:
+                                job.state = "done"
+                                job.progress = 1.0
                     except Exception as exc:
                         if job.state != "cancelled":
                             job.state = "failed"
@@ -882,16 +919,13 @@ class CastService:
                         self._on_remux_update(job)
                         if job.state == "done":
                             self.log("Download complete! Refresh the queue to cast it.")
-                            time.sleep(4)
-                        elif job.state == "failed":
-                            self.log(f"Download failed: {job.error}", "warn")
-                            time.sleep(4)
+                        time.sleep(4)
 
                         with self._remuxer._lock:
                             if self._remuxer.job is job:
                                 self._remuxer.job = None
                                 self._remuxer._proc = None
-                        self._on_remux_update(job)
+                        self._emit("remux", None)
 
                 from .remux import RemuxJob, RemuxPlan
                 with self._remuxer._lock:
@@ -902,6 +936,41 @@ class CastService:
                     self._remuxer.job = job
                 threading.Thread(target=download_worker, daemon=True).start()
                 return {"converting": True, "description": "Downloading to Queue..."}
+
+        if not is_url and os.path.isfile(path):
+            ext = os.path.splitext(path)[1].lower()
+            if ext not in VIDEO_EXTENSIONS:
+                content_type = inspect_file_content(path)
+                rendered_dir = os.path.join(self.media_roots[0], ".castcast", "rendered")
+                os.makedirs(rendered_dir, exist_ok=True)
+                stem = os.path.splitext(os.path.basename(path))[0]
+                is_ultra = bool(getattr(self.supervisor, "is_ultra", getattr(self.device, "is_ultra", True)))
+
+                try:
+                    if content_type == ContentType.BINARY:
+                        out_video = os.path.join(rendered_dir, f"{stem}_dots.mp4")
+                        self.log(f"Synthesizing binary dot matrix video for {path}")
+                        synthesize_dots_video(path, out_video, is_ultra=is_ultra, repeat=8)
+                        mode = "binary"
+                    else:
+                        out_video = os.path.join(rendered_dir, f"{stem}_slides.mp4")
+                        self.log(f"Synthesizing code slide video for {path}")
+                        synthesize_text_video(path, out_video, hold_per_page=6.0)
+                        mode = "text"
+                except Exception as exc:
+                    self.log(f"Failed to synthesize video for {path}: {exc}", "error")
+                    return {"error": f"Synthesis failed: {exc}"}
+
+                url = self.media_server.url_for(out_video)
+                stream_title = title or f"[Data Stream] {os.path.basename(path)}"
+                self.supervisor.load(
+                    url,
+                    content_type="video/mp4",
+                    title=stream_title,
+                    source_path=path,
+                    position=0.0
+                )
+                return {"casting": True, "synthesized": True, "mode": mode, "url": url}
 
         report = self.preflight(path)
         if report.get("error") and not allow_unsafe:
@@ -943,6 +1012,12 @@ class CastService:
         target, language_note = self._target_for_default_language(target, info)
         if language_note:
             self.log(language_note, "debug")
+
+        if hasattr(self.media_server, "add_root"):
+            if os.path.isfile(path):
+                self.media_server.add_root(os.path.dirname(os.path.realpath(path)))
+            if os.path.isfile(target):
+                self.media_server.add_root(os.path.dirname(os.path.realpath(target)))
 
         # Local subtitle scavenging (Tier 1: embedded streams + directory sidecars)
         media_info = original_info if (original_info.get("subtitles")) else info
@@ -1753,7 +1828,7 @@ class CastService:
                 try:
                     cmd = ["yt-dlp", "--dump-json", "--skip-download", self._current_media_path]
                     self.log(f"DEBUG-ONLY: extracting youtube subtitles info with yt-dlp: {self._current_media_path}", "debug")
-                    if importlib.util.find_spec("yt_dlp") is not None:
+                    if (os.environ.get("CASTCAST_EMBEDDED") == "1" or not shutil.which("yt-dlp")) and importlib.util.find_spec("yt_dlp") is not None:
                         from yt_dlp import YoutubeDL
                         with YoutubeDL({"quiet": True, "socket_timeout": 12}) as ydl:
                             info = self._current_youtube_info = ydl.extract_info(self._current_media_path, download=False)

@@ -15,7 +15,7 @@ const native = registerPlugin<{
   startDaemon(): Promise<{ started: boolean }>;
   stopDaemon(): Promise<{ stopped: boolean }>;
   openSettings(options: { target: SettingsTarget }): Promise<void>;
-  getSharedUrl(): Promise<{ url?: string }>;
+  getSharedUrl(): Promise<{ url?: string; isFile?: boolean; fileName?: string }>;
   addListener(event: "sharedUrl", listener: () => void): Promise<PluginListenerHandle>;
 }>("RootProvision");
 
@@ -26,5 +26,5 @@ export const requestAccess = () => native.requestAccess();
 export const startNativeDaemon = () => native.startDaemon();
 export const stopNativeDaemon = () => native.stopDaemon();
 export const openNativeSettings = (target: SettingsTarget) => native.openSettings({ target });
-export const getSharedUrl = async () => isNativeAndroid() ? native.getSharedUrl() : { url: undefined };
+export const getSharedUrl = async () => isNativeAndroid() ? native.getSharedUrl() : { url: undefined, isFile: undefined, fileName: undefined };
 export const listenForSharedUrl = (listener: () => void) => native.addListener("sharedUrl", listener);

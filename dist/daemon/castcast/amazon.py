@@ -10,6 +10,9 @@ DEVICE_TYPE_ID = "A3REWRVYBYPKUM"
 
 
 def get_config_path(filename: str) -> str:
+    config_dir = os.environ.get("CASTCAST_CONFIG_DIR")
+    if config_dir:
+        return os.path.join(config_dir, filename)
     """Resolves config path, prioritizing Termux home on Android if present and appropriate."""
     termux_candidate = os.path.join("/data/data/com.termux/files/home/.config/castcast", filename)
     if os.path.exists(termux_candidate):

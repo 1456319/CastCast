@@ -74,7 +74,7 @@ def _check_tool(binary: str, key: str, label: str, present: bool) -> Check:
         return Check(
             key=key, label=label, ok=False,
             detail=f"{binary} is not on PATH",
-            remedy="pkg install ffmpeg",
+            remedy="Check FFmpeg in CastCast setup or install it on the host",
         )
     version = _tool_version(binary)
     return Check(key=key, label=label, ok=True,
@@ -91,12 +91,12 @@ def _check_root(root: str) -> Check:
     """
     key = "media_root:" + root
     label = f"Media folder {root}"
-    remedy = "termux-setup-storage"
+    remedy = "Grant media access and select a writable media folder"
 
     if not os.path.exists(root):
         return Check(key=key, label=label, ok=False,
                      detail="does not exist",
-                     remedy=f"termux-setup-storage   # then: mkdir -p {root}")
+                     remedy="Open CastCast setup and check media storage")
     if not os.path.isdir(root):
         return Check(key=key, label=label, ok=False,
                      detail="exists but is not a directory", remedy="")
