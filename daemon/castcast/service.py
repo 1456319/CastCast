@@ -448,8 +448,16 @@ class CastService:
             return {"error": str(exc), "media": None, "verdict": None, "plan": None}
 
         is_ultra = False
-        if self.supervisor:
-            is_ultra = getattr(self.supervisor.device, "is_ultra", False)
+        if self.supervisor and getattr(self.supervisor, "device", None):
+            dev = self.supervisor.device
+            if getattr(dev, "is_ultra", False):
+                is_ultra = True
+            else:
+                model = getattr(dev, "model_name", "") or getattr(dev, "model", "")
+                if not model and hasattr(dev, "cast_info") and dev.cast_info:
+                    model = getattr(dev.cast_info, "model_name", "") or getattr(dev.cast_info, "model", "")
+                model_str = str(model).lower()
+                is_ultra = "ultra" in model_str or "4k" in model_str or "eureka dongle" in model_str
 
         verdict = capability.evaluate(
             info,

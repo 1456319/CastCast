@@ -43,6 +43,25 @@ def language3(value: str | None, default: str = "eng") -> str:
         "zh": "zho", "chinese": "zho",
         "ko": "kor", "korean": "kor",
         "ru": "rus", "russian": "rus",
+        "hi": "hin", "hindi": "hin",
+        "nl": "dut", "dutch": "dut",
+        "da": "dan", "danish": "dan",
+        "sv": "swe", "swedish": "swe",
+        "no": "nor", "norwegian": "nor",
+        "fi": "fin", "finnish": "fin",
+        "pl": "pol", "polish": "pol",
+        "tr": "tur", "turkish": "tur",
+        "ar": "ara", "arabic": "ara",
+        "he": "heb", "hebrew": "heb",
+        "cs": "ces", "czech": "ces",
+        "el": "ell", "greek": "ell",
+        "hu": "hun", "hungarian": "hun",
+        "id": "ind", "indonesian": "ind",
+        "ro": "ron", "romanian": "ron",
+        "sk": "slk", "slovak": "slk",
+        "uk": "ukr", "ukrainian": "ukr",
+        "vi": "vie", "vietnamese": "vie",
+        "th": "tha", "thai": "tha",
     }
     if value in aliases:
         return aliases[value]
@@ -50,7 +69,7 @@ def language3(value: str | None, default: str = "eng") -> str:
         return aliases[base]
     if len(base) >= 3:
         return base[:3]
-    return aliases.get(value, value[:3] or default)
+    return aliases.get(base, aliases.get(value, default))
 
 
 def movie_hash(path: str) -> str:

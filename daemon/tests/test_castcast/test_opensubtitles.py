@@ -1,5 +1,5 @@
 import unittest
-from castcast.opensubtitles import srt_to_vtt
+from castcast.opensubtitles import srt_to_vtt, language3
 
 class TestOpenSubtitles(unittest.TestCase):
     """Test suite for OpenSubtitles utility functions."""
@@ -86,3 +86,14 @@ class TestOpenSubtitles(unittest.TestCase):
             "Hello World\n"
         )
         self.assertEqual(srt_to_vtt(srt_input), expected_vtt)
+
+    def test_language3_hyphenated_and_unaliased(self):
+        """Test that language3 properly resolves hyphenated codes (hi-IN, nl-NL, da-DK) without truncating to 3-char broken prefixes."""
+        self.assertEqual(language3("hi-IN"), "hin")
+        self.assertEqual(language3("nl-NL"), "dut")
+        self.assertEqual(language3("da-DK"), "dan")
+        self.assertEqual(language3("sv-SE"), "swe")
+        self.assertEqual(language3("no-NO"), "nor")
+        self.assertEqual(language3("fi-FI"), "fin")
+        self.assertEqual(language3("pl-PL"), "pol")
+        self.assertEqual(language3("en-US"), "eng")

@@ -717,7 +717,7 @@ class Supervisor:
     def _handle_media(self, payload: dict) -> bool:
         kind = payload.get("type")
 
-        if kind in ("LOAD_FAILED", "INVALID_REQUEST"):
+        if kind in ("LOAD_FAILED", "INVALID_REQUEST", "INVALID_COMMAND"):
             reason = payload.get("reason") or payload.get("detail") or kind
             request_kind = self._pop_request_kind(payload.get("requestId"))
             is_load_request = kind == "LOAD_FAILED" or request_kind in {"LOAD", "QUEUE_LOAD"}
@@ -733,6 +733,10 @@ class Supervisor:
                     f"media command failed: {request_kind or 'unknown'} rejected with {reason}; "
                     "refreshing receiver status instead of marking the load failed"
                 )
+                if request_kind == "EDIT_TRACKS_INFO":
+                    with self._lock:
+                        # Revert optimistic tracks on rejection
+                        self.status.has_text_tracks = False
                 if str(reason).lower() == "invalid_media_session_id":
                     with self._lock:
                         self._media_session_id = None
