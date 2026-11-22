@@ -13,15 +13,21 @@ All notable changes to CastCast are documented in this file.
 - **Embedded Android Native Share Bridge**:
   - Updated `RootProvisionPlugin.java` with intent filters for `ACTION_SEND`, `ACTION_VIEW`, and `ACTION_SEND_MULTIPLE` (`*/*` mimeTypes).
   - Automatically queries Android `content://` URIs and stages shared files into `Download/CastCast/Chromecast/inbox` (or internal cache fallback) before notifying the web frontend via the `sharedUrl` event.
-  - Added Chaquopy pip dependencies `numpy`, `opencv-python-headless`, and `reedsolo` to `android/app/build.gradle`.
+  - Added Chaquopy pip dependencies `numpy`, `pillow`, and `reedsolo` to `android/app/build.gradle` (using official Chaquopy Python 3.13 ARM64 wheels).
 
 ### Fixed
+- **Chaquopy Python 3.13 Wheel Compatibility & OpenCV Elimination**:
+  - Replaced OpenCV-based text rendering in `text_synthesizer.py` with Pillow (`PIL.Image`, `PIL.ImageDraw`), eliminating `opencv-python-headless` (which lacks precompiled `cp313-android_24_arm64_v8a` wheels in Chaquopy's repository).
+  - Added pure NumPy color expansion fallback in `dotslib.py:render_frame` (`np.repeat(img[:, :, np.newaxis], 3, axis=2)`).
+  - Isolated `reedsolo` and `numpy` imports from `cv2` into individual `try/except` blocks in `dotslib.py`, ensuring Reed-Solomon FEC and optical frame generation function seamlessly without OpenCV.
 - **Shared URL / Text Extraction Sequence**:
   - Resolved a critical ordering bug in `RootProvisionPlugin.java` where `intent.removeExtra(Intent.EXTRA_TEXT)` was called prior to evaluating `ACTION_SEND` text payloads. Shared links (e.g. YouTube, Prime Video) now extract reliably.
 - **Large File Pacing and Memory Protection**:
   - In `text_synthesizer.py`, added page capping (`max_pages=150`) and accelerated scroll pacing (`hold_per_page = max(1.5, min(hold_per_page, 150.0 / total_pages))`) to prevent oversized documents from stalling playback or taking hours to generate.
   - In `dots_synthesizer.py` and `service.py`, enforced a strict 10 MB payload limit for optical dots streams with clear error feedback to prevent process memory exhaustion or out-of-memory crashes on device.
   - Re-routed synthesis scratch output to `self.work_dir/rendered` with unique file hash suffixes to prevent name collisions and ensure files are always written to managed app storage.
+- **CI Storage Isolation**:
+  - Configured `CastService` to default to `~/Download` when `/storage/emulated/0` is unmounted on non-Android Linux environments, and isolated `TestServiceQueue` with temporary test directories to prevent permissions errors in CI runners.
 
 ---
 

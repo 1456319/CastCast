@@ -24,11 +24,17 @@ import zlib
 
 try:
     import cv2
-    import numpy as np
-    from reedsolo import RSCodec
 except (ImportError, ModuleNotFoundError):
     cv2 = None
+
+try:
+    import numpy as np
+except (ImportError, ModuleNotFoundError):
     np = None
+
+try:
+    from reedsolo import RSCodec
+except (ImportError, ModuleNotFoundError):
     RSCodec = None
 
 GRID_H, GRID_W = 90, 160
@@ -122,6 +128,8 @@ def _fix_orientation(g):
 
 def extract_cells(bgr):
     """BGR frame -> 90x160 bool grid, or None if the border check fails."""
+    if cv2 is None:
+        raise RuntimeError("OpenCV (cv2) is required for extracting dots from video frames.")
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     small = cv2.resize(gray, (GRID_W, GRID_H), interpolation=cv2.INTER_AREA)
     _, bw = cv2.threshold(small, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
