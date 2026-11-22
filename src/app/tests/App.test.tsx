@@ -2,6 +2,7 @@
 import { render, screen, waitFor, act, fireEvent, cleanup } from '@testing-library/react';
 import App from '../App';
 import * as daemonLib from '../lib/daemon';
+import * as nativeDaemon from '../lib/native-daemon';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../lib/daemon', async (importOriginal) => {
@@ -49,15 +50,27 @@ describe('App', () => {
     vi.useRealTimers();
   });
 
-  it('renders Launch Daemon splash screen when offline', async () => {
+  it('requests Android permissions before starting the daemon from offline setup', async ({ onTestFinished }) => {
+    const report: nativeDaemon.RequisitionReport = { state: 'stopped', items: [] };
+    const platform = vi.spyOn(nativeDaemon, 'isNativeAndroid').mockReturnValue(true);
+    const check = vi.spyOn(nativeDaemon, 'checkRequisitions').mockResolvedValue(report);
+    const requestAccess = vi.spyOn(nativeDaemon, 'requestAccess').mockResolvedValue(report);
+    const startNativeDaemon = vi.spyOn(nativeDaemon, 'startNativeDaemon').mockResolvedValue({ started: true });
+    onTestFinished(() => [platform, check, requestAccess, startNativeDaemon].forEach((mock) => mock.mockRestore()));
+
     render(<App />);
 
-    // Should initially show the disconnected view
     expect(screen.getByText('daemon unreachable')).toBeInTheDocument();
-    expect(screen.getByText('Launch Daemon (Termux)')).toBeInTheDocument();
-
-    // Verify it polls for status
+    expect(screen.getByRole('heading', { name: 'Android setup' })).toBeInTheDocument();
     expect(daemonLib.daemon.status).toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Set up and launch' }));
+    });
+
+    expect(requestAccess).toHaveBeenCalledOnce();
+    expect(startNativeDaemon).toHaveBeenCalledOnce();
+    expect(requestAccess.mock.invocationCallOrder[0]).toBeLessThan(startNativeDaemon.mock.invocationCallOrder[0]);
   });
 
   it('transitions to online state when daemon responds', async () => {
@@ -238,7 +251,7 @@ describe('App', () => {
     });
   });
 
-  it('detects and warns about zombie daemon processes', async () => {
+  it('directs users to Android setup when the daemon is unresponsive', async () => {
     // Mock status to simulate a 500 or malformed JSON (a rejected promise due to fetch throw)
     // specifically indicating the port is responsive but broken.
     vi.mocked(daemonLib.daemon.status).mockRejectedValue(new Error('500 Internal Server Error'));
@@ -246,7 +259,8 @@ describe('App', () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText('Daemon process found, but unresponsive. You may need to Force Stop Termux.')).toBeInTheDocument();
+      expect(screen.getByText('daemon zombie detected')).toBeInTheDocument();
+      expect(screen.getByRole('alert')).toHaveTextContent('The daemon is unresponsive. Open Android setup to restart it.');
     });
 
     cleanup();
@@ -256,7 +270,8 @@ describe('App', () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText('Daemon process found, but unresponsive. You may need to Force Stop Termux.')).toBeInTheDocument();
+      expect(screen.getByText('daemon zombie detected')).toBeInTheDocument();
+      expect(screen.getByRole('alert')).toHaveTextContent('The daemon is unresponsive. Open Android setup to restart it.');
     });
   });
 
