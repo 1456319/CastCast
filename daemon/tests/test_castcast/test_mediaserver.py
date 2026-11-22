@@ -153,6 +153,40 @@ class TestTransformDashManifest(unittest.TestCase):
 
 
 class TestTunnelSupervisor(unittest.TestCase):
+    @unittest.mock.patch("castcast.mediaserver.detect_lan_ip", return_value="127.0.0.1")
+    def test_embedded_tunnel_reports_stage_and_exception_for_empty_timeout(self, _detect_lan_ip):
+        import asyncio
+        import sys
+        from tempfile import TemporaryDirectory
+        from types import SimpleNamespace
+        from castcast.mediaserver import MediaServer
+
+        def log(message, level):
+            messages.append((message, level))
+            server._tunnel_stop.set()
+
+        with TemporaryDirectory() as root:
+            for connected, stage in (
+                (False, "connecting to localhost.run:22"),
+                (True, "SSH handshake and authentication"),
+            ):
+                with self.subTest(stage=stage):
+                    messages = []
+                    server = MediaServer(roots=[root], logger=log)
+
+                    def connect(*args, client_factory, **kwargs):
+                        if connected:
+                            client_factory().connection_made(None)
+                        raise TimeoutError()
+
+                    asyncssh = SimpleNamespace(connect=connect, Error=RuntimeError, SSHClient=object)
+                    with unittest.mock.patch.dict(sys.modules, {"asyncssh": asyncssh}):
+                        asyncio.run(server._run_embedded_tunnel(12345))
+
+                    self.assertEqual(messages, [
+                        (f"HTTPS tunnel reconnecting after {stage} failed (TimeoutError)", "warn"),
+                    ])
+
     @unittest.mock.patch("shutil.which", return_value="/usr/bin/ssh")
     @unittest.mock.patch("subprocess.Popen")
     def test_tunnel_keepalive_options_and_reconnect(self, mock_popen, mock_which):

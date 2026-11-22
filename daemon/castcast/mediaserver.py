@@ -729,7 +729,7 @@ class MediaServer:
             try:
                 asyncio.run(self._run_embedded_tunnel(listener.server_port))
             except Exception as error:
-                self.log(f"HTTPS tunnel unavailable: {error}", "warn")
+                self.log(f"HTTPS tunnel unavailable: {type(error).__name__}: {error}", "warn")
 
         self._tunnel_thread = threading.Thread(target=run, name="castcast-tunnel", daemon=True)
         self._tunnel_thread.start()
@@ -746,6 +746,10 @@ class MediaServer:
                         self.log("HTTPS license tunnel ready")
 
         class VerifiedClient(asyncssh.SSHClient):
+            def connection_made(self, _conn):
+                nonlocal stage
+                stage = "SSH handshake and authentication"
+
             # Published at https://localhost.run/docs/security
             def validate_host_public_key(self, host, addr, port, key):
                 return key.get_fingerprint("sha256") in {
@@ -761,6 +765,7 @@ class MediaServer:
                 accept_url(line)
 
         while not self._tunnel_stop.is_set():
+            stage = "connecting to localhost.run:22"
             try:
                 async with asyncssh.connect(
                     "localhost.run", username="nokey", known_hosts=b"",
@@ -768,8 +773,11 @@ class MediaServer:
                     connect_timeout=5, login_timeout=5, keepalive_interval=15,
                     server_host_key_algs="default",
                 ) as conn:
+                    stage = "requesting SSH port forwarding"
                     await asyncio.wait_for(conn.forward_remote_port("localhost", 80, "127.0.0.1", local_port), 5)
+                    stage = "opening the tunnel provider session"
                     process = await asyncio.wait_for(conn.create_process(), 5)
+                    stage = "monitoring the tunnel provider session"
                     readers = [asyncio.create_task(read_output(reader)) for reader in (process.stdout, process.stderr)]
                     try:
                         while not self._tunnel_stop.is_set() and not conn.is_closed():
@@ -781,7 +789,9 @@ class MediaServer:
                         conn.abort()
             except (OSError, asyncssh.Error, TimeoutError) as error:
                 if not self._tunnel_stop.is_set():
-                    self.log(f"HTTPS tunnel reconnecting: {error}", "warn")
+                    reason = str(error).strip()
+                    detail = f": {reason}" if reason else ""
+                    self.log(f"HTTPS tunnel reconnecting after {stage} failed ({type(error).__name__}){detail}", "warn")
             finally:
                 with self._tunnel_lock:
                     self.public_url = None
