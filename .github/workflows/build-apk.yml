@@ -2,7 +2,7 @@ name: Build APK
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, 'prototype/**']
 
 jobs:
   build-android:
@@ -27,6 +27,13 @@ jobs:
         with:
           distribution: 'zulu'
           java-version: '21'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Bundle FFmpeg and FFprobe
+        run: bash scripts/bundle-android-ffmpeg.sh
 
       - name: Install Dependencies & Build Web App
         run: |
@@ -55,6 +62,9 @@ jobs:
         working-directory: ./android
         run: ./gradlew assembleDebug
 
+      - name: Verify packaged native library alignment
+        run: python scripts/check-apk-page-alignment.py android/app/build/outputs/apk/debug/app-debug.apk
+
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -62,6 +72,7 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
 
       - name: Publish APK to GitHub Releases
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest-build

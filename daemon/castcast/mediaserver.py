@@ -18,6 +18,7 @@ seek, and large files stall.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import posixpath
 import re
@@ -29,6 +30,8 @@ import shutil
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
+
+from .probe import FFMPEG
 
 _RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 
@@ -151,11 +154,16 @@ def transform_dash_manifest(body_content: str, target_url: str) -> str:
     )
 
     # 3. Strip PlayReady ContentProtection entirely
-    body_content = re.sub(r'<ContentProtection[^>]*schemeIdUri="urn:uuid:9A04F079-9840-4286-AB92-E65BE0885F95"[^>]*>.*?</ContentProtection>', '', body_content, flags=re.DOTALL)
+    body_content = re.sub(
+        r"""<(?:[\w.-]+:)?ContentProtection\b"""
+        r"""(?=[^>]*\bschemeIdUri=["']urn:uuid:9a04f079-9840-4286-ab92-e65be0885f95["'])"""
+        r"""(?:[^>]*/\s*>|[^>]*>.*?</(?:[\w.-]+:)?ContentProtection\s*>)""",
+        "", body_content, flags=re.DOTALL | re.IGNORECASE,
+    )
 
     # 4. Wrap remaining bare Widevine protobufs in valid MP4 pssh boxes
     def fix_widevine_pssh(match):
-        inner_b64 = match.group(1)
+        inner_b64 = match.group(2)
         try:
             decoded = base64.b64decode(inner_b64)
             if len(decoded) > 8 and decoded[4:8] == b'pssh':
@@ -169,11 +177,11 @@ def transform_dash_manifest(body_content: str, target_url: str) -> str:
             box.extend(len(decoded).to_bytes(4, 'big'))
             box.extend(decoded)
             valid_b64 = base64.b64encode(box).decode('utf-8')
-            return f'<cenc:pssh>{valid_b64}</cenc:pssh>'
+            return f"{match[1]}{valid_b64}{match[3]}"
         except Exception:
             return match.group(0)
 
-    body_content = re.sub(r'<cenc:pssh>\s*(.*?)\s*</cenc:pssh>', fix_widevine_pssh, body_content, flags=re.DOTALL)
+    body_content = re.sub(r'(<(?:[\w.-]+:)?pssh>)\s*(.*?)\s*(</(?:[\w.-]+:)?pssh>)', fix_widevine_pssh, body_content, flags=re.DOTALL | re.IGNORECASE)
     return body_content
 
 
@@ -212,7 +220,7 @@ class _Handler(BaseHTTPRequestHandler):
     # -- verbs ------------------------------------------------------------
 
     def do_OPTIONS(self):  # noqa: N802
-        self.server.media_server.log(f"Received OPTIONS: {self.path}", "debug")
+        self.server.media_server.log(f"Received OPTIONS: {self.path.partition('?')[0]}", "debug")
         if self.path.startswith("/drm/") or self.path.startswith("/amazon/license"):
             self.send_response(200)
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -224,7 +232,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_error(405)
 
     def do_POST(self):
-        self.server.media_server.log(f"Received POST: {self.path}", "debug")
+        self.server.media_server.log(f"Received POST: {self.path.partition('?')[0]}", "debug")
 
         # ====================================================================
         # [AMAZON LICENSE PROXY ENDPOINT]
@@ -260,11 +268,16 @@ class _Handler(BaseHTTPRequestHandler):
             
             amazon_data = self.server.media_server.drm_tokens.get(f"amazon_{title_id}")
             if not amazon_data:
-                self.send_response(404)
-                self.end_headers()
+                self.send_error(404)
                 return
                 
-            content_length = int(self.headers.get('Content-Length', 0))
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+            except ValueError:
+                content_length = 0
+            if not 0 < content_length <= 1024 * 1024:
+                self.send_error(400, "Invalid license challenge size")
+                return
             challenge_bytes = self.rfile.read(content_length)
             
             self.server.media_server.log(f"Proxying Amazon Widevine License for {title_id}", "info")
@@ -283,8 +296,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self.wfile.write(license_bytes)
             except Exception as e:
                 self.server.media_server.log(f"Amazon License Proxy Error: {e}", "warn")
-                self.send_response(500)
-                self.end_headers()
+                self.send_error(500)
             return
 
         if self.path.startswith("/drm/"):
@@ -466,7 +478,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             if not body:
                 return
-            cmd = ["ffmpeg", "-i", cfg["v"], "-i", cfg["a"], "-c", "copy", "-f", "mpegts", "pipe:1"]
+            cmd = [shutil.which(FFMPEG) or FFMPEG, "-i", cfg["v"], "-i", cfg["a"], "-c", "copy", "-f", "mpegts", "pipe:1"]
             proc = None
             try:
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -552,10 +564,38 @@ class _Handler(BaseHTTPRequestHandler):
                 pass
 
 
+class _LicenseHandler(_Handler):
+    """Public tunnels can reach this handler, which serves only license requests."""
+
+    def _authorized(self):
+        parsed = urllib.parse.urlsplit(self.path)
+        token = urllib.parse.parse_qs(parsed.query).get("access", [""])[0]
+        return parsed.path == "/amazon/license" and secrets.compare_digest(
+            token, self.server.media_server._license_access_token)
+
+    def do_OPTIONS(self):
+        if self._authorized():
+            super().do_OPTIONS()
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+        if self._authorized():
+            self.connection.settimeout(15)
+            super().do_POST()
+        else:
+            self.send_error(404)
+
+    def do_GET(self):
+        self.send_error(404)
+
+    do_HEAD = do_GET
+
+
 class MediaServer:
     """Threaded HTTP server exposing one or more directories under a random path."""
 
-    def __init__(self, roots, port: int = 0, bind: str = "0.0.0.0", logger=None, on_telemetry=None):
+    def __init__(self, roots, port: int = 0, bind: str = "0.0.0.0", logger=None, on_telemetry=None, work_dir: str | None = None):
         self.roots = [os.path.realpath(r) for r in roots]
         self.root_token = secrets.token_urlsafe(12)
         self._bind = bind
@@ -574,8 +614,10 @@ class MediaServer:
         self._tunnel_stop = threading.Event()
         self._tunnel_lock = threading.Lock()
         self._tunnel_thread: Optional[threading.Thread] = None
+        self._license_httpd: Optional[ThreadingHTTPServer] = None
+        self._license_access_token = secrets.token_urlsafe(24)
 
-        telemetry_dir = "/storage/emulated/0/Download/CastCast/Chromecast/.castcast/telemetry"
+        telemetry_dir = os.path.join(work_dir or os.path.join(self.roots[0], ".castcast"), "telemetry")
         try:
             os.makedirs(telemetry_dir, exist_ok=True)
         except OSError as e:
@@ -659,7 +701,94 @@ class MediaServer:
         self._logger(f"media server listening on {self.base_url}")
         self._start_tunnel()
 
+    def amazon_license_url(self, title_id: str) -> str | None:
+        with self._tunnel_lock:
+            if not self.public_url:
+                return None
+            query = {"title_id": title_id}
+            if self._license_httpd:
+                query["access"] = self._license_access_token
+            return f"{self.public_url}/amazon/license?{urllib.parse.urlencode(query)}"
+
     def _start_tunnel(self) -> None:
+        if self._tunnel_thread and self._tunnel_thread.is_alive():
+            return
+        if os.environ.get("CASTCAST_EMBEDDED") != "1":
+            self._start_system_tunnel()
+            return
+
+        self._tunnel_stop.clear()
+        listener = ThreadingHTTPServer(("127.0.0.1", 0), _LicenseHandler)
+        listener.daemon_threads = True
+        listener.media_server = self
+        self._license_httpd = listener
+        threading.Thread(target=listener.serve_forever, kwargs={"poll_interval": 0.25},
+                         name="castcast-license", daemon=True).start()
+
+        def run():
+            try:
+                asyncio.run(self._run_embedded_tunnel(listener.server_port))
+            except Exception as error:
+                self.log(f"HTTPS tunnel unavailable: {error}", "warn")
+
+        self._tunnel_thread = threading.Thread(target=run, name="castcast-tunnel", daemon=True)
+        self._tunnel_thread.start()
+
+    async def _run_embedded_tunnel(self, local_port: int) -> None:
+        import asyncssh
+
+        def accept_url(line):
+            found = re.search(r"https://[a-z0-9-]+\.lhr\.life(?![a-z0-9.-])", line, re.IGNORECASE)
+            if found:
+                with self._tunnel_lock:
+                    if self.public_url != found[0]:
+                        self.public_url = found[0]
+                        self.log("HTTPS license tunnel ready")
+
+        class VerifiedClient(asyncssh.SSHClient):
+            # Published at https://localhost.run/docs/security
+            def validate_host_public_key(self, host, addr, port, key):
+                return key.get_fingerprint("sha256") in {
+                    "SHA256:pG6qrBxubYfWa1Zadu/V0NUgjEDiBds/7e2xzte/QNM",
+                    "SHA256:FV8IMJ4IYjYUTnd6on7PqbRjaZf4c1EhhEBgeUdE94I",
+                }
+
+            def auth_banner_received(self, message, language):
+                accept_url(message)
+
+        async def read_output(reader):
+            async for line in reader:
+                accept_url(line)
+
+        while not self._tunnel_stop.is_set():
+            try:
+                async with asyncssh.connect(
+                    "localhost.run", username="nokey", known_hosts=b"",
+                    client_factory=VerifiedClient, config=None, agent_path=None, client_keys=[],
+                    connect_timeout=5, login_timeout=5, keepalive_interval=15,
+                    server_host_key_algs="default",
+                ) as conn:
+                    await asyncio.wait_for(conn.forward_remote_port("localhost", 80, "127.0.0.1", local_port), 5)
+                    process = await asyncio.wait_for(conn.create_process(), 5)
+                    readers = [asyncio.create_task(read_output(reader)) for reader in (process.stdout, process.stderr)]
+                    try:
+                        while not self._tunnel_stop.is_set() and not conn.is_closed():
+                            await asyncio.sleep(0.25)
+                    finally:
+                        for task in readers:
+                            task.cancel()
+                        await asyncio.gather(*readers, return_exceptions=True)
+                        conn.abort()
+            except (OSError, asyncssh.Error, TimeoutError) as error:
+                if not self._tunnel_stop.is_set():
+                    self.log(f"HTTPS tunnel reconnecting: {error}", "warn")
+            finally:
+                with self._tunnel_lock:
+                    self.public_url = None
+            if not self._tunnel_stop.is_set():
+                await asyncio.sleep(self.reconnect_delay)
+
+    def _start_system_tunnel(self) -> None:
         if not shutil.which("ssh"):
             self.log("ssh is not installed, cannot start public HTTPS tunnel for DRM", "warning")
             return
@@ -731,6 +860,11 @@ class MediaServer:
         self._tunnel_thread.start()
 
     def stop(self) -> None:
+        self._tunnel_stop.set()
+        if self._license_httpd:
+            self._license_httpd.shutdown()
+            self._license_httpd.server_close()
+            self._license_httpd = None
         if self._httpd:
             self._httpd.shutdown()
             self._httpd.server_close()
@@ -746,7 +880,7 @@ class MediaServer:
                     pass
                 self._ssh_process = None
         if self._tunnel_thread and self._tunnel_thread.is_alive():
-            self._tunnel_thread.join(timeout=1.0)
+            self._tunnel_thread.join(timeout=6.0)
         self._tunnel_thread = None
 
     def rotate_token(self) -> None:

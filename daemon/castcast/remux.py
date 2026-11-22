@@ -9,6 +9,7 @@ phone is not something you want to do by accident.
 from __future__ import annotations
 
 import os
+from functools import lru_cache
 import re
 import shutil
 import subprocess
@@ -83,6 +84,22 @@ def output_path_for(input_path: str, work_dir: str, container: str, video_codec:
     suffix = f".cast{codec_tag}.fmp4.mp4" if container == "fmp4" else f".cast{codec_tag}.{ext}"
     return os.path.join(work_dir, stem + suffix)
 
+def _android_encoder(software: str, hardware: str) -> str:
+    if os.environ.get("CASTCAST_EMBEDDED") != "1":
+        return software
+    return hardware if hardware in _available_encoders() and software not in _available_encoders() else software
+
+
+@lru_cache(maxsize=1)
+def _available_encoders() -> set[str]:
+    try:
+        result = subprocess.run([shutil.which(FFMPEG) or FFMPEG, "-hide_banner", "-encoders"],
+                                capture_output=True, text=True, timeout=5, check=True)
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    return {parts[1] for line in result.stdout.splitlines()
+            if len(parts := line.split()) > 1 and len(parts[0]) == 6 and parts[0][0] == "V"}
+
 def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str, is_ultra: bool = True) -> Optional[RemuxPlan]:
     """Return the plan needed to make ``info`` castable, or ``None`` if it already is."""
     if not verdict.needs_processing:
@@ -103,13 +120,15 @@ def build_plan(info: MediaInfo, verdict: Verdict, work_dir: str, is_ultra: bool 
             # Preserve HDR by staying 10-bit when the source is; otherwise the
             # picture comes back washed out.
             ten_bit = bool(v and v.bit_depth >= 10)
-            args += ["-c:v", "libx265", "-preset", "superfast", "-crf", "18",
-                     "-pix_fmt", "yuv420p10le" if ten_bit else "yuv420p",
+            encoder = _android_encoder("libx265", "hevc_mediacodec")
+            options = ["-b:v", "20M"] if encoder == "hevc_mediacodec" else ["-preset", "superfast", "-crf", "18"]
+            args += ["-c:v", encoder, *options, "-pix_fmt", "yuv420p10le" if ten_bit else "yuv420p",
                      "-tag:v", "hvc1"]
         else:
             # Standard Chromecast maxes out at 1080p H.264
-            args += ["-c:v", "libx264", "-preset", "superfast", "-crf", "18",
-                     "-profile:v", "high", "-level", "4.1", "-pix_fmt", "yuv420p"]
+            encoder = _android_encoder("libx264", "h264_mediacodec")
+            options = ["-b:v", "8M"] if encoder == "h264_mediacodec" else ["-preset", "superfast", "-crf", "18"]
+            args += ["-c:v", encoder, *options, "-profile:v", "high", "-level", "4.1", "-pix_fmt", "yuv420p"]
             if v and v.width > 1920:
                 args += ["-vf", "scale=-2:1080"]
         lossless_video = False
@@ -192,11 +211,11 @@ def build_4k_remaster_plan(info: MediaInfo, work_dir: str) -> Optional[RemuxPlan
 
     out = output_path_for(info.path, work_dir, "mkv", "hevc")
 
+    encoder = _android_encoder("libx265", "hevc_mediacodec")
+    options = ["-b:v", "20M"] if encoder == "hevc_mediacodec" else ["-preset", "medium", "-crf", "18"]
     args = [
         "-map", f"0:{info.primary_video.index}",
-        "-c:v", "libx265",
-        "-preset", "medium",  # Replaced 'slow' with 'medium' to prevent thermal throttling
-        "-crf", "18",
+        "-c:v", encoder, *options,
         "-vf", "scale=3840:2160:flags=lanczos",
         "-pix_fmt", "yuv420p10le",
     ]

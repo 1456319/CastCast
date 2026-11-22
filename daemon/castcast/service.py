@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import collections
 import hashlib
+import importlib.util
 import os
 import re
 import shutil
@@ -17,6 +18,7 @@ import time
 from typing import Callable, Dict, List, Optional
 
 from . import capability, health, remux
+from .amazon import get_config_path, get_saved_auth
 from .channel import DEFAULT_TEXT_TRACK_STYLE
 from .discovery import CastDevice, DeviceCache, resolve
 from .mediaserver import MediaServer, guess_mime
@@ -53,7 +55,7 @@ VIDEO_EXTENSIONS = {
 }
 
 def have_ytdlp() -> bool:
-    return bool(shutil.which("yt-dlp"))
+    return importlib.util.find_spec("yt_dlp") is not None or bool(shutil.which("yt-dlp"))
 
 
 class LogBuffer:
@@ -105,7 +107,7 @@ class CastService:
             config.get("work_dir") or os.path.join(self.media_roots[0], ".castcast"))
 
         self.cache = DeviceCache(os.path.expanduser(
-            config.get("device_cache") or "~/.config/castcast/devices.json"))
+            config.get("device_cache") or get_config_path("devices.json")))
 
         self.rules = RuleManager(self.work_dir)
 
@@ -117,7 +119,8 @@ class CastService:
             port=int(config.get("media_port") or 0),
             bind=config.get("bind") or "0.0.0.0",
             logger=lambda msg, level="info": self.log(msg, level),
-            on_telemetry=lambda data: self._emit("telemetry_anomaly", data)
+            on_telemetry=lambda data: self._emit("telemetry_anomaly", data),
+            work_dir=self.work_dir
         )
 
         self.supervisor: Optional[Supervisor] = None
@@ -150,7 +153,7 @@ class CastService:
         self._watchdog: Optional[threading.Thread] = None
         self._stop = threading.Event()
         
-        self.amazon_queue_path = os.path.expanduser("~/.config/castcast/amazon_queue.json")
+        self.amazon_queue_path = get_config_path("amazon_queue.json")
         self.amazon_queue = []
         if os.path.exists(self.amazon_queue_path):
             try:
@@ -160,7 +163,7 @@ class CastService:
             except Exception as e:
                 self.log(f"Failed to load amazon_queue: {e}", "warn")
                 
-        self.resume_state_path = os.path.expanduser("~/.config/castcast/resume_state.json")
+        self.resume_state_path = get_config_path("resume_state.json")
         self.resume_state = {}
         if os.path.exists(self.resume_state_path):
             try:
@@ -223,7 +226,7 @@ class CastService:
         self.log(f"media roots: {', '.join(self.media_roots)}")
         if not have_ffprobe():
             self.log("ffprobe not found -- pre-flight checks disabled. "
-                     "On Termux: pkg install ffmpeg", "warn")
+                     "Check FFprobe in CastCast setup.", "warn")
         if not have_ffmpeg():
             self.log("ffmpeg not found -- remuxing disabled.", "warn")
 
@@ -329,8 +332,10 @@ class CastService:
         with self._lock:
             if self.supervisor:
                 self.supervisor.stop()
+            cached = next((device for device in self.cache.all() if device.host == host), None)
             self.device = CastDevice(host=host, port=port,
-                                     friendly_name=friendly_name or host,
+                                     friendly_name=friendly_name or (cached.friendly_name if cached else host),
+                                     model=cached.model if cached else "",
                                      source="manual")
             self.supervisor = Supervisor(
                 host, port,
@@ -356,11 +361,13 @@ class CastService:
         out = {
             "connected": bool(self.supervisor),
             "device": self.device.to_dict() if self.device else None,
+            "amazon_authenticated": self._amazon_authenticated(),
             "media_server": {
                 "base_url": self.media_server.base_url,
                 "lan_ip": self.media_server.lan_ip,
                 "port": self.media_server.port,
                 "roots": self.media_roots,
+                "public_url": self.media_server.public_url,
             },
             "tools": {"ffmpeg": have_ffmpeg(), "ffprobe": have_ffprobe(), "yt_dlp": have_ytdlp()},
             "remux": self._remuxer.job.to_dict() if self._remuxer.job else None,
@@ -368,6 +375,13 @@ class CastService:
         out["cast"] = self.supervisor.snapshot() if self.supervisor else {
             "state": State.DISCONNECTED.value}
         return out
+
+    @staticmethod
+    def _amazon_authenticated() -> bool:
+        try:
+            return bool(get_saved_auth())
+        except (OSError, ValueError):
+            return False
 
     def health(self) -> dict:
         """Readiness: can this daemon actually cast, and if not, what fixes it?
@@ -386,6 +400,12 @@ class CastService:
             media_server_running=self.media_server.running,
             version=__version__,
         )
+        report.checks.extend([
+            health.Check("drm_tunnel", "HTTPS DRM tunnel", bool(self.media_server.public_url),
+                         remedy="Verify network access to the HTTPS tunnel provider", blocking=False),
+            health.Check("amazon_auth", "Prime Video account", self._amazon_authenticated(),
+                         remedy="Pair your account in CastCast", blocking=False),
+        ])
         out = report.to_dict()
         out["connected"] = bool(self.supervisor)
         return out
@@ -447,9 +467,8 @@ class CastService:
         except ProbeError as exc:
             return {"error": str(exc), "media": None, "verdict": None, "plan": None}
 
-        is_ultra = False
-        if self.supervisor:
-            is_ultra = getattr(self.supervisor.device, "is_ultra", False)
+        model = self.device.model.lower() if self.device else ""
+        is_ultra = not model or any(name in model for name in ("ultra", "chromecast with google tv", "streamer"))
 
         verdict = capability.evaluate(
             info,
@@ -773,7 +792,6 @@ class CastService:
                 os.makedirs(youtube_dir, exist_ok=True)
 
                 def download_worker():
-                    import subprocess, time, re, shutil
                     from .remux import RemuxJob, RemuxPlan
                     from .probe import FFMPEG
 
@@ -797,13 +815,42 @@ class CastService:
                         description=f"Downloading {path} to Queue",
                         estimated="A few minutes depending on network"
                     )
-                    job = RemuxJob(plan=plan, state="running", started_at=time.time())
-
-                    with self._remuxer._lock:
-                        self._remuxer.job = job
+                    job.plan = plan
                     self._on_remux_update(job)
 
                     try:
+                        if importlib.util.find_spec("yt_dlp") is not None:
+                            from yt_dlp import YoutubeDL, parse_options
+                            from .probe import FFPROBE
+
+                            # yt-dlp looks for the two conventional names in one directory.
+                            tools = os.path.join(self.work_dir, "yt-dlp-tools")
+                            os.makedirs(tools, exist_ok=True)
+                            for name, tool in (("ffmpeg", FFMPEG), ("ffprobe", FFPROBE)):
+                                target = shutil.which(tool) or tool
+                                link = os.path.join(tools, name)
+                                if not os.path.lexists(link):
+                                    os.symlink(target, link)
+                            cmd[cmd.index("--ffmpeg-location") + 1] = tools
+
+                            def progress(event):
+                                if job.state == "cancelled":
+                                    raise RuntimeError("Download cancelled")
+                                size = event.get("total_bytes") or event.get("total_bytes_estimate")
+                                if size:
+                                    job.progress = event.get("downloaded_bytes", 0) / size
+                                    self._on_remux_update(job)
+
+                            params = parse_options(cmd[1:]).ydl_opts
+                            params.update(progress_hooks=[progress], postprocessor_hooks=[progress],
+                                          socket_timeout=15, quiet=True)
+                            with YoutubeDL(params) as ydl:
+                                result = ydl.download([path])
+                            if job.state != "cancelled":
+                                job.state = "done" if result == 0 else "failed"
+                                job.error = "" if result == 0 else "yt-dlp download failed"
+                                job.progress = 1.0 if result == 0 else job.progress
+                            return
                         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
                         with self._remuxer._lock:
                             self._remuxer._proc = proc
@@ -818,6 +865,8 @@ class CastService:
                                 job.progress = float(m.group(1)) / 100.0
                                 self._on_remux_update(job)
                         proc.wait()
+                        if job.state == "cancelled":
+                            return
                         if proc.returncode != 0:
                             job.state = "failed"
                             job.error = last_error or "yt-dlp returned non-zero exit code"
@@ -825,15 +874,16 @@ class CastService:
                             job.state = "done"
                             job.progress = 1.0
                     except Exception as exc:
-                        job.state = "failed"
-                        job.error = str(exc)
+                        if job.state != "cancelled":
+                            job.state = "failed"
+                            job.error = str(exc)
                     finally:
                         job.finished_at = time.time()
                         self._on_remux_update(job)
                         if job.state == "done":
                             self.log("Download complete! Refresh the queue to cast it.")
                             time.sleep(4)
-                        else:
+                        elif job.state == "failed":
                             self.log(f"Download failed: {job.error}", "warn")
                             time.sleep(4)
 
@@ -843,7 +893,13 @@ class CastService:
                                 self._remuxer._proc = None
                         self._on_remux_update(job)
 
-                import threading
+                from .remux import RemuxJob, RemuxPlan
+                with self._remuxer._lock:
+                    if self._remuxer.busy:
+                        return {"error": "A conversion or download is already running."}
+                    job = RemuxJob(plan=RemuxPlan(path, "", description="Downloading"),
+                                   state="running", started_at=time.time())
+                    self._remuxer.job = job
                 threading.Thread(target=download_worker, daemon=True).start()
                 return {"converting": True, "description": "Downloading to Queue..."}
 
@@ -1021,9 +1077,11 @@ class CastService:
             "actor_token": amazon_data["actor_token"],
             "playback_envelope": amazon_data["playback_envelope"]
         }
-        if hasattr(self.media_server, "public_url") and self.media_server.public_url:
-            license_url = f"{self.media_server.public_url}/amazon/license?title_id={title_id}"
-            self.log(f"Using public HTTPS proxy for DRM: {license_url}")
+        license_url = self.media_server.amazon_license_url(title_id)
+        if license_url:
+            self.log("Using the HTTPS license tunnel")
+        elif os.environ.get("CASTCAST_EMBEDDED") == "1":
+            return {"error": "HTTPS license tunnel is not ready. Check Prime Video status and retry."}
         else:
             license_url = f"http://{self.media_server.lan_ip}:{self.media_server.port}/amazon/license?title_id={title_id}"
             self.log("Warning: Using local HTTP proxy for DRM. This may fail due to Chromecast Mixed Content restrictions.", "warn")
@@ -1695,6 +1753,11 @@ class CastService:
                 try:
                     cmd = ["yt-dlp", "--dump-json", "--skip-download", self._current_media_path]
                     self.log(f"DEBUG-ONLY: extracting youtube subtitles info with yt-dlp: {self._current_media_path}", "debug")
+                    if importlib.util.find_spec("yt_dlp") is not None:
+                        from yt_dlp import YoutubeDL
+                        with YoutubeDL({"quiet": True, "socket_timeout": 12}) as ydl:
+                            info = self._current_youtube_info = ydl.extract_info(self._current_media_path, download=False)
+                        return parse_youtube_subtitles(info or {})
                     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
                     if proc.returncode == 0 and proc.stdout:
                         import json

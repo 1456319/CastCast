@@ -1,4 +1,4 @@
-<!-- WARNING: Editing this file or ignoring its contents during feature development may cause catastrophic app desynchronization between the Android App, Termux daemon, and Chromecast components. -->
+<!-- WARNING: Editing this file or ignoring its contents during feature development may cause catastrophic app desynchronization between the Android App, embedded Android daemon, and Chromecast components. -->
 
 # CastCast Synchronization Map & Checklist
 
@@ -25,10 +25,10 @@ When adding a new feature or file, determine its placement using the following a
 *   **`media-routing`**: Proxying, DRM, and media delivery. (e.g., `daemon/castcast/mediaserver.py`)
 *   **`utility-middleware`**: Standalone utilities and metadata extraction. (e.g., `daemon/castcast/metadata.py`)
 *   **`web-client`**: Frontend application and React components. (e.g., `src/app/App.tsx`)
-*   **`android-bridge`**: Capacitor plugins and Android native code. (e.g., `TermuxDaemonPlugin.java`)
+*   **`android-bridge`**: Capacitor plugins and Android native code. (e.g., `RootProvisionPlugin.java`)
 *   **`cast-sender-receiver`**: Chromecast receiver HTML/JS and sender logic. (e.g., `daemon/castcast/receiver/index.html`)
 *   **`config-state`**: Configuration files and persistent state storage.
-*   **`operations-release`**: Build scripts, daemon bootstrap, and release artifacts. (e.g., `termux_bootstrap.sh`)
+*   **`operations-release`**: Build scripts, daemon bootstrap, and release artifacts. (e.g., `bundle-android-ffmpeg.sh`)
 
 ## Contract Tables
 
@@ -57,7 +57,7 @@ When adding a new feature or file, determine its placement using the following a
 ### Native Plugins
 | TypeScript Signature | Java Method/Event | Registration | Permissions | Lifecycle Behavior | Test |
 |---|---|---|---|---|---|
-| `TermuxDaemonPlugin` | `launchTermux` | Capacitor | ... | ... | ... |
+| `RootProvision` | `startDaemon` | Capacitor | ... | ... | ... |
 
 ### Receiver Contract
 | Sender Producer | Receiver Consumer | Payload Shape/Defaults | Compatibility Policy | Test |

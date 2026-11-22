@@ -6,6 +6,11 @@ from castcast.amazon import get_config_path
 
 
 class TestAmazonConfigPath(unittest.TestCase):
+    def test_android_config_directory_overrides_legacy_path(self):
+        with patch.dict(os.environ, {"CASTCAST_CONFIG_DIR": "/private/castcast"}):
+            with patch("os.path.exists", return_value=True):
+                self.assertEqual(get_config_path("amazon_auth.json"), "/private/castcast/amazon_auth.json")
+
     def test_termux_existing_file_prioritized(self):
         with patch('os.path.exists') as mock_exists:
             mock_exists.side_effect = lambda path: path == "/data/data/com.termux/files/home/.config/castcast/amazon_auth.json"

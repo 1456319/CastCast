@@ -4,6 +4,7 @@ defaults:
   - dist/**
   - node_modules/**
   - android/.gradle/**
+  - android/app/build/**
   - '**/*.lock'
   - src/app/components/ui/**
   - src/app/components/figma/**
@@ -50,13 +51,27 @@ files:
     boundaries:
     - media-routing
     - api-contract
-  android/app/src/main/java/app/videoqualitychecker/castcast/TermuxDaemonPlugin.java:
+  android/app/src/main/java/app/videoqualitychecker/castcast/RootProvisionPlugin.java:
     section: android-bridge
-    role: termux-launch-plugin
+    role: root-provision-plugin
     boundaries:
     - web-client
     - config-state
     - operations-release
+  android/app/src/main/java/app/videoqualitychecker/castcast/CastDaemonService.java:
+    section: android-bridge
+    role: embedded-daemon-service
+    boundaries:
+    - core-service
+    - web-client
+    - config-state
+  daemon/castcast/android_entry.py:
+    section: core-service
+    role: android-entrypoint
+    boundaries:
+    - android-bridge
+    - api-contract
+    - config-state
   daemon/castcast/rules.py:
     section: media-routing
     role: media-rules
@@ -134,9 +149,9 @@ files:
     role: browser-mdns
     boundaries:
     - api-contract
-  src/app/lib/termux-daemon.ts:
+  src/app/lib/native-daemon.ts:
     section: web-client
-    role: termux-client
+    role: native-daemon-client
     boundaries:
     - android-bridge
   src/app/lib/seek-controller.ts:
@@ -154,3 +169,13 @@ files:
     role: main-activity
     boundaries:
     - config-state
+  src/app/components/AmazonAuthCard.tsx:
+    section: web-client
+    role: amazon-auth-card
+    boundaries:
+    - api-contract
+  src/app/components/PermissionRequisitions.tsx:
+    section: web-client
+    role: permission-requisitions
+    boundaries:
+    - android-bridge

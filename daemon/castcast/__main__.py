@@ -25,7 +25,7 @@ from .service import CastService
 DEFAULT_CONFIG_PATH = "~/.config/castcast/config.json"
 
 DEFAULT_CONFIG = {
-    "media_roots": ["/storage/emulated/0/Download/Chromecast"],
+    "media_roots": ["/storage/emulated/0/Download/CastCast/Chromecast"],
     "work_dir": None,
     "static_host": None,
     "static_port": 8009,

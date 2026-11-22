@@ -35,7 +35,9 @@ import {
 } from "./lib/daemon";
 import { PreflightPanel } from "./components/preflight-panel";
 import SubtitlesDrawer from "./components/SubtitlesDrawer";
-import { TERMUX_MANUAL_COMMAND, TERMUX_KILL_COMMAND, launchTermuxDaemon, stopTermuxDaemon, canLaunchTermuxDaemon, getSharedUrl } from "./lib/termux-daemon";
+import { getSharedUrl, isNativeAndroid, listenForSharedUrl, stopNativeDaemon } from "./lib/native-daemon";
+import { PermissionRequisitions } from "./components/PermissionRequisitions";
+import { AmazonAuthCard } from "./components/AmazonAuthCard";
 import { DiscoveryBrowser } from "./lib/discovery-browser";
 import { SeekController } from "./lib/seek-controller";
 import {
@@ -71,13 +73,11 @@ export default function App() {
   const [selected, setSelected] = useState<LibraryItem | null>(null);
   const [report, setReport] = useState<Preflight | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
-  const [showDebugLogs, setShowDebugLogs] = useState(false);
+  const [showDebugLogs, setShowDebugLogs] = useState(() => localStorage.getItem("castcast.logs.showDebug") === "true");
   const [online, setOnline] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [host, setHost] = useState("192.168.1.50");
   const [notice, setNotice] = useState<string | null>(null);
-  const [launchMessage, setLaunchMessage] = useState<string | null>(null);
-  const [missingDep, setMissingDep] = useState<string | null>(null);
   const [selectedAudioId, setSelectedAudioId] = useState<number | null>(null);
   const [selectedSubtitleId, setSelectedSubtitleId] = useState<number | null>(null);
   const [subtitlesDrawerOpen, setSubtitlesDrawerOpen] = useState(false);
@@ -124,13 +124,13 @@ export default function App() {
         // daemon may not support or request may fail, ignore
       }
       setOnline(true);
-      setNotice((prev) => (prev === 'Daemon process found, but unresponsive. You may need to Force Stop Termux.' ? null : prev));
+      setNotice((prev) => (prev === 'The daemon is unresponsive. Open Android setup to restart it.' ? null : prev));
     } catch (err: any) {
       setOnline(false);
       if (err instanceof Error && (err.message.includes('500') || err.name === 'SyntaxError' || err.message.includes('Unexpected token') || err.message.includes('Unexpected end of JSON input') || err.message.includes('Failed to parse'))) {
-        setNotice('Daemon process found, but unresponsive. You may need to Force Stop Termux.');
+        setNotice('The daemon is unresponsive. Open Android setup to restart it.');
       } else if (err instanceof Error && err.message.includes('Failed to fetch')) {
-        setNotice((prev) => (prev === 'Daemon process found, but unresponsive. You may need to Force Stop Termux.' ? null : prev));
+        setNotice((prev) => (prev === 'The daemon is unresponsive. Open Android setup to restart it.' ? null : prev));
       }
     }
   }, []);
@@ -183,7 +183,7 @@ export default function App() {
     refreshStatus();
     const unsubscribe = subscribe({
       onOpen: () => setOnline(true),
-      onError: () => setOnline(false),
+      onError: () => { void refreshStatus(); },
       onStatus: (s) => {
         setStatus(s);
         setOnline(true);
@@ -232,13 +232,7 @@ export default function App() {
       await refreshStatus();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const match = msg.match(/No such file or directory: '([^']+)'/);
-      if (match) {
-        setMissingDep(match[1]);
-        setNotice(`'${match[1]}' is not installed. Install it?`);
-      } else {
-        setNotice(msg);
-      }
+      setNotice(msg);
     } finally {
       setBusy(null);
     }
@@ -283,13 +277,7 @@ export default function App() {
             setNotice(`Success! Sending stream to TV...`);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            const match = msg.match(/No such file or directory: '([^']+)'/);
-            if (match) {
-              setMissingDep(match[1]);
-              setNotice(`'${match[1]}' is not installed. Install it?`);
-            } else {
-              setNotice(msg);
-            }
+            setNotice(msg);
           }
         }
       }
@@ -299,11 +287,16 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!online || !status?.device) return;
     checkSharedUrl();
     const handleVis = () => { if (document.visibilityState === "visible") checkSharedUrl(); };
     document.addEventListener("visibilitychange", handleVis);
-    return () => document.removeEventListener("visibilitychange", handleVis);
-  }, [checkSharedUrl]);
+    const nativeListener = isNativeAndroid() ? listenForSharedUrl(checkSharedUrl) : null;
+    return () => {
+      document.removeEventListener("visibilitychange", handleVis);
+      void nativeListener?.then((listener) => listener.remove()).catch(console.error);
+    };
+  }, [checkSharedUrl, online, status?.device?.host]);
 
   useEffect(() => {
     const handle = DiscoveryBrowser.addListener("onStreamDetected", async (event) => {
@@ -316,37 +309,6 @@ export default function App() {
     });
     return () => { handle.then(h => h.remove()); };
   }, []);
-
-  const launchDaemon = () =>
-    run("launch-daemon", async () => {
-      setLaunchMessage("Sending Termux RUN_COMMAND intent…");
-      const result = await launchTermuxDaemon();
-      setLaunchMessage(
-        `Root configured Termux and sent launch request. Waiting for ${DAEMON_BASE}. Audit log: ${result.auditLog ?? "/storage/emulated/0/Download/CastCast/Chromecast/.castcast/audit.log"}. ${result.note ?? ""}`.trim(),
-      );
-      await new Promise((resolve) => window.setTimeout(resolve, 2500));
-      await refreshStatus();
-    });
-
-  const forceKillDaemon = () =>
-    run("force-kill", async () => {
-      setLaunchMessage("Force stopping daemon…");
-      try {
-        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 1000));
-        await Promise.race([daemon.shutdown(), timeoutPromise]);
-      } catch {
-        // Expected if daemon is unresponsive
-      }
-      if (canLaunchTermuxDaemon()) {
-        try {
-          await stopTermuxDaemon();
-        } catch {
-          // Ignore
-        }
-      }
-      setNotice("Daemon terminated. You can relaunch it now.");
-      setLaunchMessage("");
-    });
 
   const loadLibrary = () =>
     run("library", async () => {
@@ -524,39 +486,13 @@ export default function App() {
             <CircleAlert className="h-5 w-5" />
             <span>{notice && notice.includes("unresponsive") ? "daemon zombie detected" : "daemon unreachable"}</span>
           </div>
-          <p className="text-emerald-500/70">
-            This UI is a face for the <span className="font-mono">castcast</span> daemon. A browser
-            cannot speak CASTv2 itself — the protocol needs a raw TLS socket — so the daemon does all
-            the device work and this talks to it over localhost.
-          </p>
-          <button
-            type="button"
-            onClick={launchDaemon}
-            disabled={busy === "launch-daemon" || busy === "force-kill"}
-            className="block w-full rounded border border-emerald-500/50 bg-emerald-500/20 px-4 py-3 text-center font-bold tracking-wide text-emerald-100 shadow-lg hover:bg-emerald-500/30 disabled:cursor-wait disabled:opacity-60"
-          >
-            {busy === "launch-daemon" ? "Launching Termux…" : "Launch Daemon (Termux)"}
-          </button>
-          <button
-            type="button"
-            onClick={forceKillDaemon}
-            disabled={busy === "launch-daemon" || busy === "force-kill"}
-            className="block w-full rounded border border-red-500/40 bg-red-500/10 px-4 py-2.5 text-center font-semibold tracking-wide text-red-300 shadow hover:bg-red-500/20 disabled:cursor-wait disabled:opacity-60"
-          >
-            {busy === "force-kill" ? "Stopping Daemon…" : "Force Kill Daemon"}
-          </button>
-          <div className="font-mono text-emerald-500/50">expecting: {DAEMON_BASE}</div>
-          {(launchMessage || notice) && (
-            <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-300">
-              {notice || launchMessage}
-            </div>
+          {isNativeAndroid() ? (
+            <PermissionRequisitions online={false} onRefresh={refreshStatus} />
+          ) : (
+            <p className="text-sm">Start the CastCast daemon on this device and retry.</p>
           )}
-          <div className="rounded border border-emerald-500/20 bg-black/40 p-3 text-xs text-emerald-500/70">
-            <div className="mb-1 text-emerald-400/80">Manual start command:</div>
-            <code className="break-words font-mono">{TERMUX_MANUAL_COMMAND}</code>
-            <div className="mt-2 mb-1 text-red-400/80">Manual kill command:</div>
-            <code className="break-words font-mono">{TERMUX_KILL_COMMAND}</code>
-          </div>
+          <div className="font-mono text-xs text-emerald-500/60">{DAEMON_BASE}</div>
+          {notice && <p role="alert" className="text-sm text-amber-300">{notice}</p>}
           <button
             onClick={() => run("retry", refreshStatus)}
             disabled={busy === "retry"}
@@ -605,35 +541,13 @@ export default function App() {
           </div>
         )}
 
-        {!status?.tools.ffprobe && (
-          <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3 text-amber-300">
-            ffprobe not found — pre-flight checks are disabled, so unsupported files will fail
-            silently on the device. <span className="font-mono">pkg install ffmpeg</span>
-          </div>
+        {isNativeAndroid() && (
+          <details className="rounded border border-emerald-500/25 p-3">
+            <summary className="cursor-pointer">Android setup</summary>
+            <PermissionRequisitions online={online} onRefresh={refreshStatus} />
+          </details>
         )}
-
-        {status && !status.tools.yt_dlp && (
-          <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3 text-amber-300">
-            yt-dlp not found — YouTube sharing is disabled. Run <span className="font-mono">pip install yt-dlp</span> in Termux.
-          </div>
-        )}
-
-        {missingDep && (
-          <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3 flex items-center justify-between text-amber-300">
-            <div>Open Termux and run: <span className="font-mono">pip install {missingDep}</span></div>
-            <button
-              onClick={() => {
-                setMissingDep(null);
-                setNotice(null);
-                checkSharedUrl();
-              }}
-              className="rounded border border-amber-500/40 bg-amber-500/10 px-4 py-1 hover:bg-amber-500/20"
-            >
-              Done
-            </button>
-          </div>
-        )}
-
+        {!status?.tools.ffprobe && <p className="text-sm text-amber-300">FFprobe is unavailable. Check Android setup or the daemon installation.</p>}
         {/* connection */}
         <section className="rounded border border-emerald-500/20 bg-black/40 p-3">
           <div className="mb-2 flex items-center justify-between">
@@ -695,6 +609,9 @@ export default function App() {
             </div>
           )}
         </section>
+
+        {status && <AmazonAuthCard authenticated={!!status.amazon_authenticated}
+          publicUrl={status.media_server.public_url} onAuthenticated={refreshStatus} />}
 
         {/* transport */}
         {live && cast && (
@@ -1025,11 +942,12 @@ export default function App() {
             <div className="flex gap-2">
               <button
                 onClick={async () => {
+                  setMaxVerbosityLogs("Loading diagnostics…");
                   try {
                     const text = await daemon.getDiagnosticsLogs();
                     setMaxVerbosityLogs(text);
                   } catch (e) {
-                    setNotice("Failed to fetch diagnostics logs");
+                    setMaxVerbosityLogs(`Diagnostics request failed. ${e instanceof Error ? e.message : String(e)}`);
                   }
                 }}
                 className="rounded border border-blue-500/30 px-2 py-1 text-xs text-blue-400/70 hover:bg-blue-500/10"
@@ -1037,13 +955,20 @@ export default function App() {
                 Maximum Verbosity
               </button>
               <button
-                onClick={() => setShowDebugLogs((value) => !value)}
+                onClick={() => {
+                  localStorage.setItem("castcast.logs.showDebug", String(!showDebugLogs));
+                  setShowDebugLogs(!showDebugLogs);
+                }}
                 className="rounded border border-emerald-500/25 px-2 py-1 text-xs text-emerald-400/70 hover:bg-emerald-500/10"
               >
                 {showDebugLogs ? "hide debug" : "show debug"}
               </button>
               <button
                 onClick={() => {
+                  if (isNativeAndroid()) {
+                    void run("stop-daemon", stopNativeDaemon);
+                    return;
+                  }
                   // Tear down SSE and poll FIRST so they can't bounce us back online
                   if (unsubscribeRef.current) {
                     unsubscribeRef.current();

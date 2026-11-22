@@ -99,3 +99,7 @@ app/src/main/assets/public
 app/src/main/assets/capacitor.config.json
 app/src/main/assets/capacitor.plugins.json
 app/src/main/res/xml/config.xml
+
+# Versioned inputs are pinned by scripts/bundle-android-ffmpeg.sh.
+app/src/main/jniLibs/arm64-v8a/libffmpeg.so
+app/src/main/jniLibs/arm64-v8a/libffprobe.so

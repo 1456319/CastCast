@@ -37,7 +37,7 @@ def get_comment_syntax(file_path):
     ext = os.path.splitext(file_path)[1]
     if ext in {'.py', '.sh'}:
         return '# ', ''
-    elif ext in {'.ts', '.js', '.java'}:
+    elif ext in {'.ts', '.tsx', '.js', '.java'}:
         return '// ', ''
     elif ext in {'.html'}:
         return '<!-- ', ' -->'

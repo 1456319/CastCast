@@ -1,58 +1,31 @@
-# Packaging notes
+# Android APK
 
-## Android loopback cleartext
+The prototype packages Chaquopy Python 3.13, the CastCast daemon, and arm64
+FFmpeg and FFprobe. It targets Android 9 and later on arm64 devices.
 
-The daemon listens on `http://127.0.0.1:8765`, so Android WebView/Capacitor builds must permit cleartext HTTP for loopback only. Do not set app-wide `android:usesCleartextTraffic="true"`.
-
-This repo enforces the packaging requirement in CI:
-
-1. `pnpm exec cap sync android` generates the native Android project.
-2. `node scripts/configure-android-loopback.mjs` writes `android/app/src/main/res/xml/network_security_config.xml` with cleartext enabled only for `127.0.0.1` and `localhost`.
-3. The same script patches `<application android:networkSecurityConfig="@xml/network_security_config">` and removes app-wide cleartext if another tool added it.
-4. `capacitor.config.ts` sets `server.androidScheme` to `http` so the generated WebView origin matches the loopback HTTP expectation.
-
-## Daemon launch command
-
-In Termux, enter the daemon directory first:
+Use Python 3.13, JDK 21, the Android 36 SDK, and pnpm 10. From the repository root:
 
 ```sh
-cd CastCast/daemon
-python -m castcast --media-root /storage/emulated/0/Download/Chromecast serve
+pnpm install --frozen-lockfile
+pnpm run build
+pnpm exec cap sync android
+bash scripts/bundle-android-ffmpeg.sh
+cd android
+./gradlew assembleDebug
 ```
 
-If the daemon is already running, use:
+The FFmpeg script fetches the pinned upstream Android binaries and checks the
+hashes, architecture, and 16 KB load-segment alignment before packaging them.
+Upstream build and license information is at
+[Android-FFmpeg-Prebuilt](https://github.com/hzw1199/Android-FFmpeg-Prebuilt/tree/90231cc0105aef4f76926b911535f5eb73511b86).
 
-```sh
-python -m castcast server status
-python -m castcast server kill
-python -m castcast serve --restart
-```
+In the app, Android setup requests applicable runtime permissions. **Shared
+storage** opens Android Settings. Restart the daemon after granting shared
+storage to switch to `Download/CastCast/Chromecast`. Otherwise the app uses
+private media storage. **Check root** opens the root manager only on request.
+The daemon runs under the APK's own UID.
 
-## APK-triggered Termux launch
+The control API binds to loopback. Discovery Mode can still load HTTP URLs.
+Prototype CI builds an APK artifact. Release publishing runs on the release branches.
 
-The Android APK uses Termux's `com.termux.RUN_COMMAND` service rather than an
-`intent://` link in the WebView. On rooted target hardware, the app first asks
-`su` to carefully configure Termux for external commands: it creates
-`~/.termux/termux.properties` when needed, appends `allow-external-apps=true`,
-restores Termux ownership / permissions / SELinux context, grants this APK
-`com.termux.permission.RUN_COMMAND`, and broadcasts Termux's reload action.
-
-If root is denied or unavailable, Termux can still be prepared manually:
-
-```sh
-mkdir -p ~/.termux
-echo allow-external-apps=true >> ~/.termux/termux.properties
-termux-reload-settings
-```
-
-The automatic launch expects the repository to be copied to:
-
-```sh
-/storage/emulated/0/Download/CastCast/daemon
-```
-
-If automatic launch is blocked, the APK shows the manual fallback command:
-
-```sh
-cd /storage/emulated/0/Download/CastCast/daemon && chmod +x ./termux_bootstrap.sh && ./termux_bootstrap.sh
-```
+The desktop daemon is still available with `PYTHONPATH=daemon python -m castcast serve`.

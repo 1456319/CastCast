@@ -17,6 +17,8 @@ import urllib.request
 import zipfile
 from typing import Optional
 
+from .probe import FFMPEG
+
 from .opensubtitles import language3, srt_to_vtt, _request as opensubtitles_request
 
 logger = logging.getLogger("castcast.subtitles_remote")
@@ -445,7 +447,7 @@ def download_subtitle_to_vtt(
         vtt_output = srt_to_vtt(text)
     else:
         # Check if ffmpeg is available for other formats (.ass, .ssa, .sub)
-        ffmpeg_bin = shutil.which("ffmpeg")
+        ffmpeg_bin = shutil.which(FFMPEG)
         if ffmpeg_bin:
             temp_in = os.path.join(work_dir, f"temp_{stem}{actual_ext or '.sub'}")
             try:

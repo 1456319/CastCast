@@ -8,3 +8,6 @@ supportedArchitectures:
     - arm64
   libc:
     - glibc
+
+overrides:
+  vite: 6.3.5
