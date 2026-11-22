@@ -37,7 +37,6 @@ chaquopy {
             install "asyncssh==2.22.0"
             install "cryptography==42.0.8"
             install "numpy"
-            install "pillow"
             install "reedsolo"
         }
     }

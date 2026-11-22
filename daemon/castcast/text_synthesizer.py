@@ -1,74 +1,102 @@
 # synchronization-map: section=media-routing; role=text-synthesizer; boundaries=core-service; doc=docs/SYNCHRONIZATION_MAP.md
-"""Synthesizes high-contrast monospaced code/text slides into a 1080p MP4 stream."""
+"""Synthesizes high-contrast monospaced code/text slides into a 1080p MP4 stream using pure NumPy."""
 
+import base64
+import gzip
 import hashlib
 import os
 import shutil
 import subprocess
 from typing import List, Optional
-try:
-    import cv2
-except (ImportError, ModuleNotFoundError):
-    cv2 = None
 
 try:
     import numpy as np
 except (ImportError, ModuleNotFoundError):
     np = None
 
-try:
-    from PIL import Image, ImageDraw, ImageFont
-except (ImportError, ModuleNotFoundError):
-    Image = None
-    ImageDraw = None
-    ImageFont = None
-
 WIDTH, HEIGHT = 1920, 1080
 LINES_PER_PAGE = 30
-CHARS_PER_LINE = 90
-BG_COLOR = (18, 18, 18)        # Charcoal
-TEXT_COLOR = (240, 240, 240)    # White
-HEADER_COLOR = (0, 200, 255)    # Cyan
-LINE_NO_COLOR = (120, 120, 120) # Grey
+CHARS_PER_LINE = 100
+BG_COLOR = (18, 18, 18)        # Charcoal BGR
+TEXT_COLOR = (240, 240, 240)    # White BGR
+HEADER_COLOR = (255, 200, 0)    # Cyan BGR (for rawvideo bgr24)
+LINE_NO_COLOR = (120, 120, 120) # Grey BGR
+
+# Gzip+base64 encoded PSF2 8x16 bitmap font (256 glyphs)
+_FONT_B64 = (
+    "H4sIAMZ4A2sC/31XT2vjRhQXKegkvOltaExyyQcQLSSiFTYs/Qq9i2xR9zC0PmUFHbSbSz5C"
+    "IfTcS7/DghrD0IPJcTHINTnZl1IMC1kfgqbvzf+ZpH1OsH96b+b9fzNKkpjaq9+urt7fXF21"
+    "GoteiPlWiNZI0AGIFYcGHxbMh6Qst9stIaXFLSx2WIkQ9UtI2s5RAZJ8WNYvX9al489v3r+/"
+    "mWv+8eiLL5sFUJNoYaCSgAKFp19Nc6DZ7l7ht6/evgL6YbvptHLSl9uy1/Lvuvvdftjv7rt3"
+    "Eh+ko+PJMDkepQfWfEJIawxOakXwrffv+/7nIyQJGa8KyjktMs68qGLIov1aHyMZ8yQ5hfAo"
+    "GzLibZZXQ5X7Oeu6bvDgaS3qUwcPi4KxYfBsYaxw+YoIclOiMdoecPU0FKB0oPJfWcv4bcfS"
+    "9Joz48Etz0he8WuFCkqLyxXk61LZnudVsB3ISiKZdo5kkojzsC5FWfsmumx7z7wFSfuMX3bF"
+    "QYr26XxDwvjd+mHDTbpI0egMGL4S54PFaZmmqZHPxiVdDGDwsY4uJOPR4xcVYM7t/gOsVz5b"
+    "/Zx5fPzdwvqsCSz3HNbYuCvNg6ilvvdeACQPZez+mZdfqW+9Xq86ZqoFyndAgxR+hApgWPGP"
+    "pt9uwcPuVjdosqeqIehe+1dfvG5eVxf1EOCq2nnr15zXXyuMmqQ6ra/UDWDmxbGsBtfvG1DV"
+    "NKB0o/CukmT14STp50h6/83DsL5z+8tYe/GW/lXOPs3/sGbZyPLRx43lV0WW2vWivwns5dH+"
+    "c0W16WeJ+l6Y+SFZpKyNvUrW7Sfm15i8P+ZCxyfXZOYpTLBZMbbzqsw0lSabyX+RwHYkT583"
+    "GbP9mtxXVSNT7MYZ41AAxr8xaKILJy/5g+MX9Ptq58UX6BLFFyyTKYX96WXt4gt1WfjxTNNk"
+    "lEqqZcmBvCoALV9E9YIlInoki1d6ZDv7vPxYPrMmGvtMS68u68B+nPF2vB/m+SOm42xs+XK5"
+    "F48g/wpjATgMTCgAi1X9tGlmWmqB81TX9whcnaG/I3deJN75gTyUITPtzCpOr+xws53uZ2jn"
+    "LJUeLUL7cQ77+YTFYX0swnqBaRPgghahPGqEFII6U6BhvfCwfnC/gF8nQX1A4AKM8j7mbqAZ"
+    "c3yMY3GoK8h97Q7IH785aperNwpMoLgHjMdd4uz16oeH9aTsdThvFkE8kR/UB/fy3SBkwfzg"
+    "SThP4FyaQ77m5gS07bV5dMUk4KP5ML7YRf0T1PdHVT5HRB6fQMuZDoCfH8x3EF/g+/4gDuyH"
+    "+vL6C5AduCrZlE780wivA4l/M4JzMMfj1b8u4Rna+bcnbH9z1bnl2A53v6bZicP13S8TJaK6"
+    "oSy9fjujS3rmbQeILtXPz78NP9/9Hn7+ehN+yPO0j5DFZ4oe9LexYghwLP+QWvmYdDhC/kNq"
+    "a1c/GbxrkbQnGgH7yP6TQJ4QEZ8UsTwJ7qyJiNdH0idRPM4D+8/zaaBtmof8T4mIzq1P0frz"
+    "ID7Cyev1Vl57J6J4xfuL2L8oDdPA3xMXP0knT+IzjdaL0B4SxzfOl91PRJT4r1FAu4heRBQu"
+    "M+fxarlcrnQ/47vVcgHtuzD3VTzt/YbE6z+SgRxmmjuf8P65RJol/hsTTNjOqgti05JSvcHZ"
+    "CSHHM4wJCzmq+0ffB+E6O5HvfE4fHPZuxHyWAv7YGnXjvMLxXuXjJLoAWn/MX/h6YYKkr892"
+    "iOnrtsEjePN7OhB8/2Gz1r+/45C0p7Kch//zsmIemB8v5N3ub0rLsZ5lXirw+F/m1Z9h+TBF"
+    "z14B/wVIKjaIABAAAA=="
+)
+
+_font_cache = None
+
+def _get_font() -> np.ndarray:
+    global _font_cache
+    if _font_cache is None:
+        raw = gzip.decompress(base64.b64decode(_FONT_B64))
+        unpacked = np.unpackbits(np.frombuffer(raw, dtype=np.uint8)).reshape(256, 16, 8)
+        # Pre-scale x2: 256 chars, 32 height, 16 width
+        _font_cache = np.repeat(np.repeat(unpacked, 2, axis=1), 2, axis=2).astype(bool)
+    return _font_cache
+
+def _draw_text(img: np.ndarray, text: str, x: int, y: int, color: tuple) -> None:
+    font = _get_font()
+    chars = [ord(c) if 0 <= ord(c) < 256 else 63 for c in text]
+    for i, c in enumerate(chars):
+        g = font[c]
+        cx = x + i * 16
+        if cx + 16 > img.shape[1] or y + 32 > img.shape[0]:
+            break
+        img[y:y + 32, cx:cx + 16][g] = color
 
 def _render_page(lines: List[str], start_line: int, filename: str, page_idx: int, total_pages: int, sha_prefix: str) -> np.ndarray:
+    if np is None:
+        raise RuntimeError("NumPy is required for text slide rendering.")
+
     display_filename = (filename[:35] + "...") if len(filename) > 38 else filename
     header_text = f"FILE: {display_filename} | SHA256: {sha_prefix}... | PAGE: {page_idx}/{total_pages}"
 
-    if cv2 is not None and np is not None:
-        img = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
-        img[:] = BG_COLOR
+    img = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+    img[:] = BG_COLOR
 
-        # Header bar
-        cv2.rectangle(img, (0, 0), (WIDTH, 70), (28, 28, 28), -1)
-        cv2.putText(img, header_text, (50, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.8, HEADER_COLOR, 2, cv2.LINE_AA)
+    # Header bar
+    img[0:70, :] = (28, 28, 28)
+    _draw_text(img, header_text, 50, 19, HEADER_COLOR)
 
-        # Content
-        y = 120
-        for idx, line in enumerate(lines):
-            line_no = f"{start_line + idx:04d} | "
-            cv2.putText(img, line_no, (50, y), cv2.FONT_HERSHEY_PLAIN, 1.2, LINE_NO_COLOR, 1, cv2.LINE_AA)
-            expanded_line = line.expandtabs(4)[:CHARS_PER_LINE]
-            cv2.putText(img, expanded_line, (140, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, TEXT_COLOR, 1, cv2.LINE_AA)
-            y += 30
+    # Content
+    y = 90
+    for idx, line in enumerate(lines):
+        line_no = f"{start_line + idx:04d} | "
+        _draw_text(img, line_no, 50, y, LINE_NO_COLOR)
+        expanded_line = line.expandtabs(4)[:CHARS_PER_LINE]
+        _draw_text(img, expanded_line, 160, y, TEXT_COLOR)
+        y += 32
 
-        return img
-    elif Image is not None and np is not None:
-        im = Image.new("RGB", (WIDTH, HEIGHT), BG_COLOR)
-        draw = ImageDraw.Draw(im)
-        draw.rectangle([(0, 0), (WIDTH, 70)], fill=(28, 28, 28))
-        draw.text((50, 25), header_text, fill=HEADER_COLOR)
-        y = 120
-        for idx, line in enumerate(lines):
-            line_no = f"{start_line + idx:04d} | "
-            draw.text((50, y), line_no, fill=LINE_NO_COLOR)
-            expanded_line = line.expandtabs(4)[:CHARS_PER_LINE]
-            draw.text((140, y), expanded_line, fill=TEXT_COLOR)
-            y += 30
-        img_rgb = np.array(im, dtype=np.uint8)
-        return img_rgb[:, :, ::-1]
-    else:
-        raise RuntimeError("Neither OpenCV nor Pillow is available for text rendering.")
+    return img
 
 def synthesize_text_video(
     input_path: str,

@@ -13,11 +13,12 @@ All notable changes to CastCast are documented in this file.
 - **Embedded Android Native Share Bridge**:
   - Updated `RootProvisionPlugin.java` with intent filters for `ACTION_SEND`, `ACTION_VIEW`, and `ACTION_SEND_MULTIPLE` (`*/*` mimeTypes).
   - Automatically queries Android `content://` URIs and stages shared files into `Download/CastCast/Chromecast/inbox` (or internal cache fallback) before notifying the web frontend via the `sharedUrl` event.
-  - Added Chaquopy pip dependencies `numpy`, `pillow`, and `reedsolo` to `android/app/build.gradle` (using official Chaquopy Python 3.13 ARM64 wheels).
+  - Added Chaquopy pip dependencies `numpy` and `reedsolo` to `android/app/build.gradle` (both verified 16 KB ELF page-aligned for Android 15/16).
 
 ### Fixed
-- **Chaquopy Python 3.13 Wheel Compatibility & OpenCV Elimination**:
-  - Replaced OpenCV-based text rendering in `text_synthesizer.py` with Pillow (`PIL.Image`, `PIL.ImageDraw`), eliminating `opencv-python-headless` (which lacks precompiled `cp313-android_24_arm64_v8a` wheels in Chaquopy's repository).
+- **16 KB Page Alignment & Pure NumPy Bitmap Font Renderer**:
+  - Replaced OpenCV and Pillow text rendering in `text_synthesizer.py` with an embedded 8x16 console bitmap font rendered via pure NumPy array indexing and slicing.
+  - Removed `pillow` from Chaquopy pip dependencies, eliminating `libfreetype.so` (which had 4 KB load segment alignments) and ensuring 100% compliance with Android 15/16 16 KB page-size kernel security requirements.
   - Added pure NumPy color expansion fallback in `dotslib.py:render_frame` (`np.repeat(img[:, :, np.newaxis], 3, axis=2)`).
   - Isolated `reedsolo` and `numpy` imports from `cv2` into individual `try/except` blocks in `dotslib.py`, ensuring Reed-Solomon FEC and optical frame generation function seamlessly without OpenCV.
 - **Shared URL / Text Extraction Sequence**:
