@@ -27,10 +27,13 @@ TRASH_DIR="$CHROMECAST_DIR/trash"
 # DEBUG-ONLY: runtime diagnostics are kept out of the visible queue.
 AUDIT_DIR="$CHROMECAST_DIR/.castcast"
 AUDIT_LOG="$AUDIT_DIR/audit.log"
+export CASTCAST_AUDIT_LOG="$AUDIT_LOG"
 
-# Ensure hidden daemon state exists so we can write the log without polluting
-# the media queue.
-mkdir -p "$AUDIT_DIR"
+# Test actual access as Termux before trying package installation.
+if ! mkdir -p "$AUDIT_DIR" "$TRASH_DIR" || ! touch "$AUDIT_LOG"; then
+    echo "[FATAL] Termux cannot write to $CHROMECAST_DIR. Allow Termux file access in Android Settings and retry."
+    exit 1
+fi
 
 log_action() {
     local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
@@ -42,65 +45,59 @@ abort() {
     exit 1
 }
 
-log_action "=== Termux Bootstrap Initiated by APK ==="
+package_failure() {
+    tail -n 12 "$AUDIT_LOG"
+    abort "$1"
+}
 
-# 1. Check Storage Permission
-if [ ! -d "/storage/emulated/0" ]; then
-    log_action "Requesting termux-setup-storage..."
-    termux-setup-storage
-    sleep 2
-    if [ ! -d "/storage/emulated/0" ]; then
-        abort "Storage permission denied by user"
+log_action "[OK] Termux can write to the CastCast media folder"
+
+packages=()
+command -v python3 >/dev/null || packages+=(python)
+command -v ssh >/dev/null || packages+=(openssh)
+if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+    packages+=(ffmpeg)
+fi
+if [ "${#packages[@]}" -gt 0 ]; then
+    log_action "Installing Termux packages: ${packages[*]}"
+    pkg update >> "$AUDIT_LOG" 2>&1 || package_failure "Could not refresh Termux packages. Check your connection or Termux repository settings and retry"
+    pkg install -y "${packages[@]}" >> "$AUDIT_LOG" 2>&1 || package_failure "Could not install ${packages[*]}. Check Termux package output in $AUDIT_LOG"
+fi
+for tool in python3 ssh ffmpeg ffprobe; do
+    command -v "$tool" >/dev/null || abort "$tool is still missing after installation"
+done
+
+if ! command -v yt-dlp >/dev/null; then
+    log_action "Installing yt-dlp for supported web links"
+    if ! { python3 -m pip --version || pkg install -y python-pip; } >> "$AUDIT_LOG" 2>&1 ||
+        ! python3 -m pip install yt-dlp >> "$AUDIT_LOG" 2>&1; then
+        log_action "[WARN] Could not install yt-dlp. Local casting can still be set up"
     fi
 fi
-log_action "[OK] Storage permissions verified."
 
-# 2. Verify / Create Environment Directories safely
-log_action "Verifying environment directories..."
-if [ ! -d "$CHROMECAST_DIR" ]; then
-    log_action "Creating required directory: $CHROMECAST_DIR"
-    mkdir -p "$CHROMECAST_DIR" || abort "Failed to create chromecast directory"
+cd "$(dirname "$0")" || abort "Could not enter the bundled daemon directory"
+log_action "Starting the CastCast daemon"
+python3 -m castcast --media-root "$CHROMECAST_DIR" serve --api-host 127.0.0.1 --api-port 8765 --if-running exit \
+    </dev/null >> "$AUDIT_LOG" 2>&1 &
+
+# The process can fail after it is spawned. Confirm the CastCast API responds.
+if ! python3 - <<'PY'
+import json
+import time
+import urllib.request
+
+deadline = time.monotonic() + 25
+while time.monotonic() < deadline:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8765/", timeout=1) as response:
+            if json.load(response).get("service") == "castcast":
+                raise SystemExit(0)
+    except (OSError, ValueError, AttributeError):
+        pass
+    time.sleep(1)
+raise SystemExit(1)
+PY
+then
+    abort "The daemon did not answer on port 8765. See $AUDIT_LOG"
 fi
-
-if [ ! -d "$TRASH_DIR" ]; then
-    log_action "Creating required directory: $TRASH_DIR"
-    mkdir -p "$TRASH_DIR" || abort "Failed to create trash directory"
-fi
-log_action "[OK] Environment directories verified."
-
-# 3. Verify Dependencies
-log_action "Verifying dependencies (python, ffmpeg)..."
-if ! command -v python3 &> /dev/null; then
-    log_action "Python not found. Installing python..."
-    pkg install -y python || abort "Failed to install Python"
-fi
-
-if ! command -v ssh &> /dev/null; then
-    log_action "OpenSSH not found. Installing openssh for DRM tunneling..."
-    pkg install -y openssh || abort "Failed to install OpenSSH"
-fi
-
-if ! command -v ffmpeg &> /dev/null; then
-    log_action "FFmpeg not found. Installing ffmpeg..."
-    pkg install -y ffmpeg || abort "Failed to install FFmpeg"
-fi
-
-log_action "[OK] Dependencies verified."
-
-# 4. Kill any old daemon instances and orphan SSH tunnels
-log_action "Cleaning up old daemon instances..."
-pkill -f "python3 -m castcast" || true
-pkill -f "pinggy.io" || true
-pkill -f "localhost.run" || true
-sleep 1
-
-# 5. Launch the Daemon
-log_action "Booting castcast daemon..."
-cd "$(dirname "$0")" || abort "Failed to navigate to daemon directory"
-
-# Run the daemon in the background and pipe output to the audit log
-python3 -m castcast --media-root "$CHROMECAST_DIR" serve >> "$AUDIT_LOG" 2>&1 &
-DAEMON_PID=$!
-
-log_action "[OK] Daemon launched with PID: $DAEMON_PID"
-log_action "=== Bootstrap Complete ==="
+log_action "[OK] The CastCast daemon is responding"

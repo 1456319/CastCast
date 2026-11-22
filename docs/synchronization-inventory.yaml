@@ -57,6 +57,12 @@ files:
     - web-client
     - config-state
     - operations-release
+  android/app/src/main/java/app/videoqualitychecker/castcast/TermuxSetupResultReceiver.java:
+    section: android-bridge
+    role: termux-setup-result
+    boundaries:
+    - config-state
+    - web-client
   daemon/castcast/rules.py:
     section: media-routing
     role: media-rules

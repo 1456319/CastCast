@@ -137,11 +137,43 @@ export interface Status {
   cast: CastState;
 }
 
+export interface CastDevice {
+  host: string;
+  port: number;
+  friendly_name: string;
+}
+
+export interface ReadinessCheck {
+  key: string;
+  label: string;
+  ok: boolean | null;
+  detail: string;
+  remedy: string;
+  blocking: boolean;
+}
+
+export interface HealthReport {
+  ready: boolean;
+  checks: ReadinessCheck[];
+}
+
+interface DeviceCode {
+  public_code?: string;
+  private_code?: string;
+}
+
 export interface LogLine {
   seq: number;
   ts: number;
   level: string;
   message: string;
+}
+
+interface DiagnosticsLogs {
+  log_buffer?: LogLine[];
+  last_error?: string;
+  audit_log?: string;
+  logs?: string;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -168,7 +200,14 @@ const post = <T,>(path: string, payload?: unknown) =>
 
 export const daemon = {
   status: () => request<Status>("/status"),
-  devices: () => request<{ devices: any[] }>("/devices"),
+  health: (signal?: AbortSignal) => request<HealthReport>("/health", { signal }),
+  amazonDeviceCode: () =>
+    request<DeviceCode & { code_data?: DeviceCode }>("/amazon/auth", { signal: AbortSignal.timeout(15000) }),
+  checkAmazonDeviceCode: (publicCode: string, privateCode: string) => {
+    const params = new URLSearchParams({ public_code: publicCode, private_code: privateCode });
+    return request<{ response?: { success?: unknown } }>(`/amazon/poll?${params}`, { signal: AbortSignal.timeout(15000) });
+  },
+  devices: () => request<{ devices: CastDevice[] }>("/devices"),
   library: (deep = false) => request<{ items: LibraryItem[] }>(`/library${deep ? "?deep=1" : ""}`),
   getTrash: () => request<{ items: LibraryItem[] }>("/trash"),
   preflight: (path: string) => request<Preflight>(`/preflight?path=${encodeURIComponent(path)}`),
@@ -228,12 +267,20 @@ export const daemon = {
   addAmazonQueue: (url: string) => post<any>("/amazon/queue/add", { url }),
   reorderLibrary: (items: any[]) => post<any>("/library/reorder", { items }),
   getDiagnosticsLogs: async () => {
-    const res = await fetch(`${DAEMON_BASE}/diagnostics/logs`);
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    const data = await res.json();
-    return `LAST ERROR:\n${data.last_error || "None"}\n\nLOGS:\n${data.logs || ""}`;
+    const data = await request<DiagnosticsLogs>("/diagnostics/logs", { signal: AbortSignal.timeout(10000) });
+    const recent = data.log_buffer?.map(formatLogLine).join("\n");
+    return [
+      `LAST ERROR\n${data.last_error || "None recorded."}`,
+      `DAEMON LOG\n${recent || data.logs || "No entries recorded."}`,
+      `TERMUX AUDIT LOG (LAST 64 KiB)\n${data.audit_log || "Unavailable."}`,
+    ].join("\n\n");
   },
 };
+
+export function formatLogLine(line: LogLine): string {
+  const time = new Date(line.ts * 1000).toLocaleTimeString([], { hour12: false });
+  return `${time} [${line.level.toUpperCase()}] ${line.message}`;
+}
 
 export interface SubscribeArgs {
   onStatus?: (status: Status) => void;

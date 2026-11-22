@@ -1,28 +1,35 @@
 // synchronization-map: section=android-bridge; role=termux-launch-plugin; boundaries=web-client,config-state,operations-release; doc=docs/SYNCHRONIZATION_MAP.md
 package app.videoqualitychecker.castcast;
 
+import android.app.PendingIntent;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.SharedPreferences;
+import android.net.Uri;
+import android.net.wifi.WifiManager;
+import android.os.Build;
+import android.os.PowerManager;
+import android.provider.Settings;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 
 import java.io.BufferedReader;
 import java.io.DataOutputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
-import android.os.PowerManager;
-import android.net.wifi.WifiManager;
-import android.content.Context;
-import android.content.Intent;
-import android.net.Uri;
-import android.provider.Settings;
 
-@CapacitorPlugin(name = "TermuxDaemon")
+@CapacitorPlugin(name = "TermuxDaemon", permissions = {
+    @Permission(alias = "runCommand", strings = { "com.termux.permission.RUN_COMMAND" })
+})
 public class TermuxDaemonPlugin extends Plugin {
     private static final String TERMUX_PACKAGE = "com.termux";
     private static final String RUN_COMMAND_SERVICE = "com.termux.app.RunCommandService";
@@ -32,7 +39,10 @@ public class TermuxDaemonPlugin extends Plugin {
     private static final String EXTRA_WORKDIR = "com.termux.RUN_COMMAND_WORKDIR";
     private static final String EXTRA_BACKGROUND = "com.termux.RUN_COMMAND_BACKGROUND";
     private static final String EXTRA_SESSION_ACTION = "com.termux.RUN_COMMAND_SESSION_ACTION";
-    private static final int ROOT_TIMEOUT_SECONDS = 15;
+    private static final String EXTRA_PENDING_INTENT = "com.termux.RUN_COMMAND_PENDING_INTENT";
+    private static final String RUN_COMMAND_PERMISSION = "com.termux.permission.RUN_COMMAND";
+    private static final int ROOT_TIMEOUT_SECONDS = 30;
+    private static final long SETUP_TIMEOUT_MS = TimeUnit.MINUTES.toMillis(10);
 
     private static final String BASH = "/data/data/com.termux/files/usr/bin/bash";
     private static final String DAEMON_DIR = "/data/data/com.termux/files/home/CastCast/daemon";
@@ -41,11 +51,93 @@ public class TermuxDaemonPlugin extends Plugin {
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
 
+    private boolean canRunTermuxCommands() {
+        return getContext().checkSelfPermission(RUN_COMMAND_PERMISSION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private static String bootstrapPhase(SharedPreferences prefs) {
+        String phase = prefs.getString("phase", "idle");
+        if ("running".equals(phase) &&
+                System.currentTimeMillis() - prefs.getLong("startedAt", 0) >= SETUP_TIMEOUT_MS) {
+            return "timedOut";
+        }
+        return phase;
+    }
+
     @PluginMethod
-    public void launch(PluginCall call) {
+    public void getSetupStatus(PluginCall call) {
+        Context context = getContext();
+        SharedPreferences prefs = TermuxSetupResultReceiver.preferences(context);
+        JSObject result = new JSObject();
+        result.put("termuxInstalled", context.getPackageManager().getLaunchIntentForPackage(TERMUX_PACKAGE) != null);
+        result.put("runCommandGranted", canRunTermuxCommands());
+        result.put("bootstrapPhase", bootstrapPhase(prefs));
+        result.put("bootstrapDetail", prefs.getString("detail", ""));
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void requestRunCommandPermission(PluginCall call) {
+        if (canRunTermuxCommands()) {
+            getSetupStatus(call);
+            return;
+        }
+        requestPermissionForAlias("runCommand", call, "onRunCommandPermissionResult");
+    }
+
+    @PermissionCallback
+    private void onRunCommandPermissionResult(PluginCall call) {
+        getSetupStatus(call);
+    }
+
+    @PluginMethod
+    public void openSetupScreen(PluginCall call) {
+        String target = call.getString("target", "");
+        Intent intent;
+        switch (target) {
+            case "installTermux":
+                intent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://f-droid.org/packages/com.termux/"));
+                break;
+            case "termux":
+                intent = getContext().getPackageManager().getLaunchIntentForPackage(TERMUX_PACKAGE);
+                break;
+            case "termuxPermissions":
+                intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + TERMUX_PACKAGE));
+                break;
+            case "castCastPermissions":
+                intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getContext().getPackageName()));
+                break;
+            default:
+                call.reject("Unknown setup screen.");
+                return;
+        }
+        if (intent == null) {
+            call.reject("Install Termux before opening it.");
+            return;
+        }
+        try {
+            getActivity().startActivity(intent);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Android could not open this setup screen.", e);
+        }
+    }
+
+    @PluginMethod
+    public synchronized void launch(PluginCall call) {
         PackageManager packageManager = getContext().getPackageManager();
         if (packageManager.getLaunchIntentForPackage(TERMUX_PACKAGE) == null) {
-            call.reject("Termux is not installed. Install Termux, copy the project to Download/CastCast, then retry.");
+            call.reject("Install Termux, open it once, then return to setup.");
+            return;
+        }
+        if (!canRunTermuxCommands()) {
+            call.reject("Allow CastCast to run commands in Termux in Android Settings.");
+            return;
+        }
+        SharedPreferences prefs = TermuxSetupResultReceiver.preferences(getContext());
+        if ("running".equals(bootstrapPhase(prefs))) {
+            call.reject("Termux is already preparing CastCast.");
             return;
         }
 
@@ -64,19 +156,19 @@ public class TermuxDaemonPlugin extends Plugin {
         intent.putExtra(EXTRA_WORKDIR, DAEMON_DIR);
         intent.putExtra(EXTRA_BACKGROUND, true);
         intent.putExtra(EXTRA_SESSION_ACTION, "0");
+        String attemptId = UUID.randomUUID().toString();
+        Intent resultIntent = new Intent(getContext(), TermuxSetupResultReceiver.class)
+            .setData(Uri.fromParts("castcast-setup", attemptId, null));
+        int flags = PendingIntent.FLAG_ONE_SHOT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) flags |= PendingIntent.FLAG_MUTABLE;
+        PendingIntent callback = PendingIntent.getBroadcast(getContext(), 0, resultIntent, flags);
+        intent.putExtra(EXTRA_PENDING_INTENT, callback);
+        prefs.edit().putString("attemptId", attemptId).putString("phase", "running")
+            .putLong("startedAt", System.currentTimeMillis()).remove("detail").commit();
 
         try {
             PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                if (!pm.isIgnoringBatteryOptimizations(getContext().getPackageName())) {
-                    Intent intentBattery = new Intent();
-                    intentBattery.setAction(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-                    intentBattery.setData(Uri.parse("package:" + getContext().getPackageName()));
-                    getContext().startActivity(intentBattery);
-                }
-            }
-
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 getContext().startForegroundService(intent);
             } else {
                 getContext().startService(intent);
@@ -96,12 +188,13 @@ public class TermuxDaemonPlugin extends Plugin {
             result.put("started", true);
             result.put("rootConfigured", true);
             result.put("auditLog", "/storage/emulated/0/Download/CastCast/Chromecast/.castcast/audit.log");
-            result.put("note", "Root configured Termux allow-external-apps and granted RUN_COMMAND. If the daemon stays offline, check that the repo exists at " + DAEMON_DIR + " and inspect the audit log.");
+            result.put("note", "Termux is checking storage, installing missing packages and starting the daemon.");
             call.resolve(result);
-        } catch (SecurityException e) {
-            call.reject("Android blocked Termux RUN_COMMAND even after root configuration. Reopen your root manager, grant root to this app, and retry.", e);
         } catch (Exception e) {
-            call.reject("Unable to start Termux RunCommandService: " + e.getMessage(), e);
+            callback.cancel();
+            String detail = "Unable to start Termux: " + e.getMessage();
+            prefs.edit().putString("phase", "failed").putString("detail", detail).apply();
+            call.reject(detail, e);
         }
     }
 
@@ -112,10 +205,10 @@ public class TermuxDaemonPlugin extends Plugin {
             pb.redirectErrorStream(true);
             Process process = pb.start();
             try (DataOutputStream stdin = new DataOutputStream(process.getOutputStream())) {
-                stdin.writeBytes("echo ROOT_OK\nexit\n");
+                stdin.writeBytes("id -u\nexit\n");
                 stdin.flush();
             }
-            boolean finished = process.waitFor(5, TimeUnit.SECONDS);
+            boolean finished = process.waitFor(ROOT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             if (!finished) {
                 process.destroyForcibly();
                 call.reject("Root check timed out. Is your root manager (Magisk, KernelSU, etc.) running?");
@@ -124,15 +217,11 @@ public class TermuxDaemonPlugin extends Plugin {
             String output = readStream(process.getInputStream());
             int exitCode = process.exitValue();
             JSObject result = new JSObject();
-            result.put("hasRoot", exitCode == 0 && output.contains("ROOT_OK"));
+            boolean hasRoot = exitCode == 0 && output.matches("(?s)(.*\\n)?\\s*0\\s*(\\n.*)?");
+            result.put("hasRoot", hasRoot);
             result.put("exitCode", exitCode);
             result.put("output", output);
-            if (exitCode == 0 && output.contains("ROOT_OK")) {
-                call.resolve(result);
-            } else {
-                result.put("hasRoot", false);
-                call.resolve(result);
-            }
+            call.resolve(result);
         } catch (Exception e) {
             JSObject result = new JSObject();
             result.put("hasRoot", false);
@@ -199,60 +288,37 @@ public class TermuxDaemonPlugin extends Plugin {
 
     private RootResult configureTermuxWithRoot() {
         String packageName = getContext().getPackageName();
-        // Each step echoes progress to stdout; on failure, the step prints the
-        // error and exits so the user sees exactly what went wrong.
         String apkPath = getContext().getApplicationInfo().sourceDir;
         String payload =
+            "set -e\n" +
             "TERMUX_HOME=/data/data/com.termux/files/home\n" +
             "TERMUX_PROP=$TERMUX_HOME/.termux/termux.properties\n" +
-            "\n" +
-            "echo '[0/8] extracting bundled daemon code'\n" +
-            "mkdir -p /storage/emulated/0/Download/CastCast || { echo 'FAIL: create app dir'; exit 1; }\n" +
-            "unzip -qo " + shellQuote(apkPath) + " \"assets/public/daemon/*\" -d /data/local/tmp/ || { echo 'FAIL: unzip daemon'; exit 1; }\n" +
+            "if [ ! -d \"$TERMUX_HOME\" ] || [ ! -x " + shellQuote(BASH) + " ]; then\n" +
+            "  echo 'Open Termux once and wait for its first launch to finish.'; exit 1\n" +
+            "fi\n" +
+            "TERMUX_OWNER=$(stat -c '%u:%g' \"$TERMUX_HOME\")\n" +
+            "echo 'Installing the daemon bundled in CastCast'\n" +
+            "STAGE=$(mktemp -d /data/local/tmp/castcast.XXXXXX)\n" +
+            "trap 'rm -rf \"$STAGE\"' EXIT\n" +
+            "unzip -qo " + shellQuote(apkPath) + " 'assets/public/daemon/*' -d \"$STAGE\"\n" +
             "mkdir -p " + shellQuote(DAEMON_DIR) + "\n" +
-            "rm -rf " + shellQuote(DAEMON_DIR) + "/*\n" +
-            "cp -rf /data/local/tmp/assets/public/daemon/* " + shellQuote(DAEMON_DIR) + "/ || { echo 'FAIL: copy daemon'; exit 1; }\n" +
-            "rm -rf /data/local/tmp/assets\n" +
-            "rm -rf \"$TERMUX_HOME/VideoQualityCheckerApp\"\n" +
-            "echo '[0/8] creating queue directories'\n" +
-            "mkdir -p /storage/emulated/0/Download/CastCast/Chromecast/trash || { echo 'FAIL: create trash dir'; exit 1; }\n" +
-            "mkdir -p /storage/emulated/0/Download/CastCast/Chromecast/.castcast || { echo 'FAIL: create castcast dir'; exit 1; }\n" +
-            "\n" +
-            "echo '[1/8] checking Termux home'\n" +
-            "if [ ! -d \"$TERMUX_HOME\" ]; then echo 'FAIL: Termux home directory not found at '$TERMUX_HOME'. Is Termux installed and opened at least once?'; exit 1; fi\n" +
-            "\n" +
-            "echo '[2/8] reading Termux UID/GID'\n" +
-            "TERMUX_UID=$(stat -c %u \"$TERMUX_HOME\" 2>/dev/null) || { echo 'FAIL: stat -c %u failed; trying ls fallback'; TERMUX_UID=$(ls -ldn \"$TERMUX_HOME\" | awk '{print $3}'); }\n" +
-            "TERMUX_GID=$(stat -c %g \"$TERMUX_HOME\" 2>/dev/null) || { echo 'FAIL: stat -c %g failed; trying ls fallback'; TERMUX_GID=$(ls -ldn \"$TERMUX_HOME\" | awk '{print $4}'); }\n" +
-            "echo \"  uid=$TERMUX_UID gid=$TERMUX_GID\"\n" +
-            "\n" +
-            "echo '[3/8] creating .termux dir'\n" +
-            "mkdir -p \"$TERMUX_HOME/.termux\" || { echo 'FAIL: mkdir -p .termux'; exit 1; }\n" +
-            "\n" +
-            "echo '[4/8] ensuring termux.properties exists'\n" +
-            "touch \"$TERMUX_PROP\" || { echo 'FAIL: touch termux.properties'; exit 1; }\n" +
-            "\n" +
-            "echo '[5/8] setting allow-external-apps=true'\n" +
-            "grep -q '^allow-external-apps=true$' \"$TERMUX_PROP\" 2>/dev/null || echo 'allow-external-apps=true' >> \"$TERMUX_PROP\" || { echo 'FAIL: write termux.properties'; exit 1; }\n" +
-            "\n" +
-            "echo '[6/8] fixing ownership and permissions'\n" +
-            "chown -R $TERMUX_UID:$TERMUX_GID \"$TERMUX_HOME/.termux\" || { echo 'FAIL: chown .termux'; exit 1; }\n" +
-            "chown -R $TERMUX_UID:$TERMUX_GID \"$TERMUX_HOME/CastCast\" || { echo 'FAIL: chown CastCast'; exit 1; }\n" +
-            "chmod 700 \"$TERMUX_HOME/.termux\" || { echo 'FAIL: chmod 700 .termux'; exit 1; }\n" +
-            "chmod 600 \"$TERMUX_PROP\" || { echo 'FAIL: chmod 600 termux.properties'; exit 1; }\n" +
-            "command -v restorecon >/dev/null 2>&1 && restorecon -R \"$TERMUX_HOME/.termux\" || true\n" +
-            "\n" +
-            "echo '[7/8] granting Android permissions'\n" +
-            "pm grant " + shellQuote(packageName) + " com.termux.permission.RUN_COMMAND 2>&1 || { echo 'FAIL: pm grant RUN_COMMAND'; exit 1; }\n" +
-            "appops set com.termux SYSTEM_ALERT_WINDOW allow 2>&1 || { echo 'FAIL: appops SYSTEM_ALERT_WINDOW'; exit 1; }\n" +
-            "appops set com.termux MANAGE_EXTERNAL_STORAGE allow 2>&1 || { echo 'FAIL: appops MANAGE_EXTERNAL_STORAGE'; exit 1; }\n" +
-            "\n" +
-            "echo '[8/8] killing old daemon instance'\n" +
-            "pkill -f mediaserver.py || true\n" +
-            "\n" +
-            "echo '[8/8] reloading Termux config'\n" +
-            "am broadcast -a com.termux.app.reload_style com.termux >/dev/null 2>&1 || true\n" +
-            "echo 'OK: all steps completed'\n";
+            "cp -R \"$STAGE/assets/public/daemon/.\" " + shellQuote(DAEMON_DIR) + "\n" +
+            "chown \"$TERMUX_OWNER\" \"$TERMUX_HOME/CastCast\"\n" +
+            "chown -R \"$TERMUX_OWNER\" " + shellQuote(DAEMON_DIR) + "\n" +
+            "echo 'Configuring Termux for external commands'\n" +
+            "mkdir -p \"$TERMUX_HOME/.termux\"\n" +
+            "touch \"$TERMUX_PROP\"\n" +
+            "sed '/^[[:space:]]*allow-external-apps[[:space:]]*[:=]/d' \"$TERMUX_PROP\" > \"$STAGE/termux.properties\"\n" +
+            "printf '\\nallow-external-apps=true\\n' >> \"$STAGE/termux.properties\"\n" +
+            "TEMP_PROP=$(mktemp \"$TERMUX_HOME/.termux/.castcast.XXXXXX\")\n" +
+            "cat \"$STAGE/termux.properties\" > \"$TEMP_PROP\"\n" +
+            "chown \"$TERMUX_OWNER\" \"$TERMUX_HOME/.termux\" \"$TEMP_PROP\"\n" +
+            "chmod 600 \"$TEMP_PROP\"\n" +
+            "mv -f \"$TEMP_PROP\" \"$TERMUX_PROP\"\n" +
+            "if command -v restorecon >/dev/null 2>&1; then\n" +
+            "  restorecon -R " + shellQuote(DAEMON_DIR) + " \"$TERMUX_HOME/.termux\" || true\n" +
+            "fi\n" +
+            "am broadcast -a com.termux.app.reload_style com.termux >/dev/null 2>&1\n";
 
         Process process = null;
         try {

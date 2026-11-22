@@ -8,10 +8,23 @@ export interface LaunchDaemonResult {
   rootConfigured?: boolean;
 }
 
+export interface TermuxSetupStatus {
+  termuxInstalled: boolean;
+  runCommandGranted: boolean;
+  bootstrapPhase: "idle" | "running" | "complete" | "failed" | "timedOut";
+  bootstrapDetail: string;
+}
+
+type SetupTarget = "installTermux" | "termux" | "termuxPermissions" | "castCastPermissions";
+
 interface TermuxDaemonPlugin {
   launch(): Promise<LaunchDaemonResult>;
   stopDaemon(): Promise<{ stopped: boolean }>;
   getSharedUrl(): Promise<{ url?: string }>;
+  getSetupStatus(): Promise<TermuxSetupStatus>;
+  requestRunCommandPermission(): Promise<TermuxSetupStatus>;
+  checkRoot(): Promise<{ hasRoot: boolean }>;
+  openSetupScreen(options: { target: SetupTarget }): Promise<void>;
 }
 
 const TermuxDaemon = registerPlugin<TermuxDaemonPlugin>("TermuxDaemon");
@@ -19,6 +32,11 @@ const TermuxDaemon = registerPlugin<TermuxDaemonPlugin>("TermuxDaemon");
 export function canLaunchTermuxDaemon() {
   return Capacitor.isNativePlatform();
 }
+
+export const getTermuxSetupStatus = () => TermuxDaemon.getSetupStatus();
+export const requestTermuxCommandPermission = () => TermuxDaemon.requestRunCommandPermission();
+export const checkTermuxRoot = () => TermuxDaemon.checkRoot();
+export const openTermuxSetupScreen = (target: SetupTarget) => TermuxDaemon.openSetupScreen({ target });
 
 export async function launchTermuxDaemon() {
   if (!canLaunchTermuxDaemon()) {

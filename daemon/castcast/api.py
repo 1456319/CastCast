@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import urllib.parse
 import urllib.request
@@ -22,6 +23,30 @@ from .service import CastService
 from .metadata import resolve_title
 
 API_PORT = 8765
+AUDIT_TAIL_BYTES = 64 * 1024
+
+
+def _audit_log_tail(work_dir: str) -> str:
+    candidates = (
+        os.environ.get("CASTCAST_AUDIT_LOG"),
+        os.path.join(work_dir, "audit.log"),
+        "/var/log/audit/audit.log",
+        "/tmp/castcast.log",
+    )
+    for path in candidates:
+        if not path:
+            continue
+        try:
+            with open(path, "rb") as audit:
+                start = max(0, audit.seek(0, os.SEEK_END) - AUDIT_TAIL_BYTES)
+                audit.seek(start)
+                tail = audit.read(AUDIT_TAIL_BYTES)
+            if start and b"\n" in tail:
+                tail = tail.split(b"\n", 1)[1]
+            return tail.decode("utf-8", errors="replace")
+        except OSError:
+            continue
+    return ""
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -127,21 +152,6 @@ class _Handler(BaseHTTPRequestHandler):
                 else:
                     self._json({"subtitles": self.service.list_remote_subtitles()})
             elif route == "/diagnostics/logs":
-                import os
-                audit_log = ""
-                if os.path.exists("/var/log/audit/audit.log"):
-                    try:
-                        with open("/var/log/audit/audit.log", "r") as f:
-                            audit_log = f.read()
-                    except Exception:
-                        pass
-                elif os.path.exists("/tmp/castcast.log"):
-                    try:
-                        with open("/tmp/castcast.log", "r") as f:
-                            audit_log = f.read()
-                    except Exception:
-                        pass
-                
                 last_error = ""
                 if self.service.supervisor:
                     last_error = self.service.supervisor.status.last_error
@@ -149,7 +159,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({
                     "log_buffer": self.service.log_buffer.recent(),
                     "last_error": last_error,
-                    "audit_log": audit_log
+                    "audit_log": _audit_log_tail(self.service.work_dir),
                 })
             elif route == "/preflight":
                 path = one("path")
@@ -398,6 +408,7 @@ _ROUTES = {
     "GET /subtitles/remote": "list remote subtitle tracks (YouTube yt-dlp or SubDL/OpenSubtitles)",
     "GET /preflight?path=": "probe + castability verdict + ffmpeg plan",
     "GET /logs?since=N": "recent log lines",
+    "GET /diagnostics/logs": "recent log lines, last playback error and bootstrap log tail",
     "GET /events": "SSE stream of logs, state changes, media status",
     "POST /connect": "{host, port?}",
     "POST /disconnect": "",

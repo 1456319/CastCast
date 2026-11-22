@@ -27,6 +27,7 @@ import {
   daemon,
   formatBytes,
   formatDuration,
+  formatLogLine,
   subscribe,
   type LibraryItem,
   type LogLine,
@@ -34,6 +35,7 @@ import {
   type Status,
 } from "./lib/daemon";
 import { PreflightPanel } from "./components/preflight-panel";
+import FirstRunSetup from "./components/FirstRunSetup";
 import SubtitlesDrawer from "./components/SubtitlesDrawer";
 import { TERMUX_MANUAL_COMMAND, TERMUX_KILL_COMMAND, launchTermuxDaemon, stopTermuxDaemon, canLaunchTermuxDaemon, getSharedUrl } from "./lib/termux-daemon";
 import { DiscoveryBrowser } from "./lib/discovery-browser";
@@ -48,6 +50,8 @@ import {
 } from "./components/ui/drawer";
 
 const LIVE_STATES = new Set(["playing", "buffering", "paused", "loading"]);
+const SETUP_COMPLETE_KEY = "castcast.setup.complete";
+const SHOW_DEBUG_KEY = "castcast.logs.showDebug";
 
 const STATE_TONE: Record<string, string> = {
   playing: "text-emerald-400",
@@ -63,15 +67,18 @@ const STATE_TONE: Record<string, string> = {
 };
 
 export default function App() {
+  const nativeSetup = canLaunchTermuxDaemon();
+  const [showSetup, setShowSetup] = useState(() => nativeSetup && localStorage.getItem(SETUP_COMPLETE_KEY) !== "true");
   const [status, setStatus] = useState<Status | null>(null);
   const [library, setLibrary] = useState<LibraryItem[]>([]);
   const [trashItems, setTrashItems] = useState<LibraryItem[]>([]);
   const [amazonQueue, setAmazonQueue] = useState<any[]>([]);
   const [maxVerbosityLogs, setMaxVerbosityLogs] = useState<string | null>(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const [selected, setSelected] = useState<LibraryItem | null>(null);
   const [report, setReport] = useState<Preflight | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
-  const [showDebugLogs, setShowDebugLogs] = useState(false);
+  const [showDebugLogs, setShowDebugLogs] = useState(() => localStorage.getItem(SHOW_DEBUG_KEY) === "true");
   const [online, setOnline] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [host, setHost] = useState("192.168.1.50");
@@ -183,12 +190,15 @@ export default function App() {
     refreshStatus();
     const unsubscribe = subscribe({
       onOpen: () => setOnline(true),
-      onError: () => setOnline(false),
+      onError: () => { void refreshStatus(); },
       onStatus: (s) => {
         setStatus(s);
         setOnline(true);
       },
-      onLog: (line) => setLogs((prev) => [...prev.slice(-300), line]),
+      onLog: (line) => setLogs((prev) => {
+        if (prev.some((entry) => entry.seq === line.seq && entry.ts === line.ts)) return prev;
+        return [...prev.slice(-499), line];
+      }),
       onState: refreshStatus,
       onRemux: refreshStatus,
       onMedia: (media) =>
@@ -515,6 +525,22 @@ export default function App() {
     };
   }, [live, activeTrackKey]);
 
+  if (nativeSetup && (showSetup || !online)) {
+    return (
+      <FirstRunSetup
+        online={online}
+        status={status}
+        retainedLogs={logs.slice(-50).map(formatLogLine).join("\n")}
+        onRefreshStatus={refreshStatus}
+        onStop={forceKillDaemon}
+        onFinish={() => {
+          localStorage.setItem(SETUP_COMPLETE_KEY, "true");
+          setShowSetup(false);
+        }}
+      />
+    );
+  }
+
   // ---- daemon offline ------------------------------------------------
   if (!online) {
     return (
@@ -583,6 +609,11 @@ export default function App() {
             <span className="tracking-wide">castcast</span>
           </div>
           <div className="flex items-center gap-2">
+            {nativeSetup && (
+              <button onClick={() => setShowSetup(true)} className="rounded border border-emerald-500/30 px-2 py-1 text-xs text-emerald-300">
+                Setup
+              </button>
+            )}
             <button
               onClick={() => {
                 const url = prompt("Enter a URL to discover (e.g. https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8):", "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8");
@@ -1025,22 +1056,32 @@ export default function App() {
             <div className="flex gap-2">
               <button
                 onClick={async () => {
+                  setMaxVerbosityLogs("Loading diagnostics…");
+                  setDiagnosticsLoading(true);
                   try {
-                    const text = await daemon.getDiagnosticsLogs();
-                    setMaxVerbosityLogs(text);
+                    setMaxVerbosityLogs(await daemon.getDiagnosticsLogs());
                   } catch (e) {
-                    setNotice("Failed to fetch diagnostics logs");
+                    const error = e instanceof Error ? e.message : String(e);
+                    const retained = logs.slice(-50).map(formatLogLine).join("\n");
+                    setMaxVerbosityLogs(`Could not fetch diagnostics. ${error}\n\n${retained || "No live entries retained."}`);
+                  } finally {
+                    setDiagnosticsLoading(false);
                   }
                 }}
+                disabled={diagnosticsLoading}
                 className="rounded border border-blue-500/30 px-2 py-1 text-xs text-blue-400/70 hover:bg-blue-500/10"
               >
                 Maximum Verbosity
               </button>
               <button
-                onClick={() => setShowDebugLogs((value) => !value)}
+                onClick={() => {
+                  localStorage.setItem(SHOW_DEBUG_KEY, String(!showDebugLogs));
+                  setShowDebugLogs(!showDebugLogs);
+                }}
+                aria-pressed={showDebugLogs}
                 className="rounded border border-emerald-500/25 px-2 py-1 text-xs text-emerald-400/70 hover:bg-emerald-500/10"
               >
-                {showDebugLogs ? "hide debug" : "show debug"}
+                {showDebugLogs ? "Hide debug entries" : "Show debug entries"}
               </button>
               <button
                 onClick={() => {
@@ -1073,19 +1114,16 @@ export default function App() {
             ) : (
               logs.filter((line) => showDebugLogs || line.level !== "debug").map((line) => (
                 <div
-                  key={line.seq}
+                  key={`${line.seq}:${line.ts}`}
                   className={
                     line.level === "warn"
                       ? "text-amber-400/80"
                       : line.level === "debug"
-                        ? "text-emerald-500/35"
+                        ? "text-emerald-300/80"
                         : "text-emerald-400/70"
                   }
                 >
-                  <span className="text-emerald-500/30">
-                    {new Date(line.ts * 1000).toLocaleTimeString([], { hour12: false })}{" "}
-                  </span>
-                  {line.message}
+                  {formatLogLine(line)}
                 </div>
               ))
             )}
@@ -1254,6 +1292,7 @@ export default function App() {
               <h2 className="text-xl font-bold tracking-wide">Maximum Verbosity Diagnostics</h2>
               <button
                 onClick={() => setMaxVerbosityLogs(null)}
+                disabled={diagnosticsLoading}
                 className="text-blue-500/60 hover:text-blue-400"
               >
                 Close
