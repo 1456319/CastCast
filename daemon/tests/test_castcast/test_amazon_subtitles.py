@@ -274,7 +274,8 @@ class TestAmazonSubtitlesServiceIntegration(unittest.TestCase):
             "manifest_text": SAMPLE_MPD,
         }):
             res = self.svc._cast_amazon(
-                "https://www.amazon.com/gp/video/detail/B0B1C2D3E4",
+                "https://www.primevideo.com/detail?gti=amzn1.dv.gti.00000000-0000-0000-0000-000000000001",
+                title="Sample",
                 manifest_text=SAMPLE_MPD,
             )
             self.assertTrue(res.get("casting"))

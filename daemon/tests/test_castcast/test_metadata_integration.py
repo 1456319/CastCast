@@ -3,6 +3,7 @@ import time
 import os
 import json
 import tempfile
+import threading
 import urllib.request
 import urllib.error
 from unittest.mock import MagicMock, patch
@@ -68,12 +69,14 @@ class TestMetadataIntegration(unittest.TestCase):
         self.assertIn("title", deserialized["items"][0])
         self.assertEqual(deserialized["items"][0]["title"], "Sample.Video.2023")
 
+    @patch('castcast.service.resolve_amazon_media_info', return_value={})
     @patch('castcast.service.resolve_title')
-    def test_async_queue_title_transition_and_persistence(self, mock_resolve):
+    def test_async_queue_title_transition_and_persistence(self, mock_resolve, mock_media_info):
         mock_resolve.return_value = "The Boys Season 4"
 
         # Mock save_amazon_queue to track persistence
-        self.svc.save_amazon_queue = MagicMock()
+        saved = threading.Event()
+        self.svc.save_amazon_queue = MagicMock(side_effect=saved.set)
 
         # Item initially added with "Fetching title..."
         test_url = "https://www.primevideo.com/detail/test-item"
@@ -85,11 +88,12 @@ class TestMetadataIntegration(unittest.TestCase):
         self.svc.resolve_amazon_title_async(test_url)
 
         # Wait for worker thread to complete
-        time.sleep(0.3)
+        self.assertTrue(saved.wait(2))
 
         # Assert title transitioned from placeholder to resolved title
         self.assertEqual(self.svc.amazon_queue[0]["title"], "The Boys Season 4")
-        self.svc.save_amazon_queue.assert_called()
+        self.svc.save_amazon_queue.assert_called_once()
+        mock_media_info.assert_called_once_with(test_url)
 
     @patch('castcast.service.resolve_title')
     def test_async_queue_failure_fallback_replaces_fetching_title(self, mock_resolve):
@@ -145,7 +149,8 @@ class TestMetadataIntegration(unittest.TestCase):
     @patch('castcast.service.resolve_title')
     def test_cast_amazon_resolves_placeholder_title(self, mock_resolve, mock_manifest):
         mock_manifest.return_value = {
-            "mpd_url": "http://cdn.example.com/manifest.mpd",
+            "mpd_url": "https://cdn.example.invalid/manifest.mpd",
+            "manifest_text": "<MPD/>",
             "actor_token": "actor",
             "playback_envelope": "env"
         }

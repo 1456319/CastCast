@@ -4,12 +4,25 @@ on:
   push:
     branches: [main, master, 'prototype/**']
 
+permissions:
+  contents: read
+
+concurrency:
+  group: castcast-android-release
+  cancel-in-progress: false
+
 jobs:
   build-android:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      published: ${{ steps.release.outputs.published }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v3
@@ -32,20 +45,47 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Bundle FFmpeg and FFprobe
-        run: bash scripts/bundle-android-ffmpeg.sh
+      - name: Check synchronization headers and daemon tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          python -m pip install PyYAML pytest
+          python scripts/check_sync_headers.py
+          PYTHONPATH=daemon python -m pytest daemon/tests
 
-      - name: Install Dependencies & Build Web App
+      - name: Install dependencies, test and build the web app
         run: |
           pnpm install --frozen-lockfile
+          pnpm test
           pnpm run build
 
+      - name: Select the next Android release version
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_CHANNEL: ${{ startsWith(github.ref, 'refs/heads/prototype/') && 'prototype' || 'stable' }}
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.draft == false) | [.tag_name, .target_commitish] | @tsv' \
+            > "$RUNNER_TEMP/published-releases.tsv"
+          python scripts/next-android-version.py "$RELEASE_CHANNEL" "$GITHUB_SHA" \
+            < "$RUNNER_TEMP/published-releases.tsv" >> "$GITHUB_OUTPUT"
+
+      - name: Bundle FFmpeg and FFprobe
+        if: steps.release.outputs.published == 'false'
+        run: bash scripts/bundle-android-ffmpeg.sh
+
       - name: Install & Sync Capacitor
+        if: steps.release.outputs.published == 'false'
         run: |
           pnpm exec cap sync android
           node scripts/configure-android-loopback.mjs
+          test -f android/app/src/main/res/xml/network_security_config.xml
+          grep -q 'android:networkSecurityConfig="@xml/network_security_config"' android/app/src/main/AndroidManifest.xml
+          grep -q 'androidScheme.*http' capacitor.config.ts
 
       - name: Patch Gradle Duplicate Classes
+        if: steps.release.outputs.published == 'false'
         working-directory: ./android/app
         run: |
           cat << 'EOF_GRADLE' >> build.gradle
@@ -59,24 +99,76 @@ jobs:
           EOF_GRADLE
 
       - name: Build APK with Gradle
+        if: steps.release.outputs.published == 'false'
+        env:
+          VERSION_NAME: ${{ steps.release.outputs.version }}
+          VERSION_CODE: ${{ steps.release.outputs.code }}
         working-directory: ./android
-        run: ./gradlew assembleDebug
+        run: ./gradlew assembleDebug "-PcastcastVersionName=$VERSION_NAME" "-PcastcastVersionCode=$VERSION_CODE"
 
-      - name: Verify packaged native library alignment
-        run: python scripts/check-apk-page-alignment.py android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Verify APK signature, version and native library alignment
+        if: steps.release.outputs.published == 'false'
+        env:
+          VERSION_NAME: ${{ steps.release.outputs.version }}
+          VERSION_CODE: ${{ steps.release.outputs.code }}
+        run: |
+          apk=android/app/build/outputs/apk/debug/app-debug.apk
+          build_tools=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n1)
+          android_tools=$(dirname "$build_tools")
+          "$android_tools/apksigner" verify "$apk"
+          badging=$("$android_tools/aapt2" dump badging "$apk")
+          [[ "$badging" == *"versionCode='$VERSION_CODE' versionName='$VERSION_NAME'"* ]]
+          python scripts/check-apk-page-alignment.py "$apk"
+          mkdir -p apk
+          cp "$apk" "apk/CastCast-$VERSION_NAME.apk"
 
       - name: Upload APK Artifact
+        if: steps.release.outputs.published == 'false'
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: castcast-apk
+          path: apk/*.apk
+          if-no-files-found: error
 
-      - name: Publish APK to GitHub Releases
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-        uses: softprops/action-gh-release@v2
+  publish:
+    needs: build-android
+    if: needs.build-android.outputs.published == 'false'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          tag_name: latest-build
-          name: Latest Android Build
-          body: "Automated APK build compiled via GitHub Actions."
-          files: android/app/build/outputs/apk/debug/app-debug.apk
-          prerelease: true
+          name: castcast-apk
+      - name: Publish APK to GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION_NAME: ${{ needs.build-android.outputs.version }}
+          RELEASE_TAG: ${{ needs.build-android.outputs.tag }}
+        run: |
+          args=(--repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "CastCast $VERSION_NAME")
+          latest=true
+          if [[ "$RELEASE_TAG" == prototype-* ]]; then
+            args+=(--prerelease)
+            latest=false
+          fi
+          asset="CastCast-$VERSION_NAME.apk"
+          notes=$(printf '<!-- castcast-ci -->\n\nCommit: `%s`\n\nSigned debug APK for Android 9+ (arm64).\n\nSHA-256: `%s`\n' \
+            "$GITHUB_SHA" "$(sha256sum "$asset" | cut -d' ' -f1)")
+
+          # A draft interrupted during upload is safe to retry. Published releases stay immutable.
+          existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\")")
+          tag_ref=$(git ls-remote "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "refs/tags/$RELEASE_TAG")
+          if [[ -n "$tag_ref" && "${tag_ref%%$'\t'*}" != "$GITHUB_SHA" ]]; then
+            echo "::error::Version tag already points to another commit."
+            exit 1
+          fi
+          if [[ -z "$existing" ]]; then
+            gh release create "$RELEASE_TAG" "${args[@]}" --draft --latest=false --notes "$notes"
+          else
+            jq -e '.draft and (.body | contains("<!-- castcast-ci -->"))' <<< "$existing" >/dev/null
+            gh release edit "$RELEASE_TAG" "${args[@]}" --notes "$notes"
+          fi
+          gh release upload "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$latest"

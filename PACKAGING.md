@@ -26,6 +26,17 @@ private media storage. **Check root** opens the root manager only on request.
 The daemon runs under the APK's own UID.
 
 The control API binds to loopback. Discovery Mode can still load HTTP URLs.
-Prototype CI builds an APK artifact. Release publishing runs on the release branches.
+
+## CI releases
+
+Pushes to the prototype and release branches run synchronization, frontend and daemon
+checks before assembling the APK. The workflow verifies the APK signature, embedded
+version and native library alignment before publishing it.
+
+Published Android releases advance the visible version by 0.01 from 2.00.
+`versionCode` uses the same value in hundredths, so 2.01 has code 201. A failed run
+leaves the published version intact. A rerun of a published commit on the same
+channel uses its existing release. Prototype builds are prereleases with
+`prototype-v` tags and leave the latest stable release link intact.
 
 The desktop daemon is still available with `PYTHONPATH=daemon python -m castcast serve`.
