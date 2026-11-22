@@ -10,7 +10,15 @@ DEVICE_TYPE_ID = "A3REWRVYBYPKUM"
 
 
 def get_config_path(filename: str) -> str:
-    """Resolves config path, prioritizing Termux home on Android if present and appropriate."""
+    """Resolves config path, consolidating across Android app storage, Termux backward compatibility, and desktop platforms."""
+    custom_dir = os.environ.get("CASTCAST_CONFIG_DIR")
+    if custom_dir:
+        return os.path.join(custom_dir, filename)
+
+    android_app_dir = "/data/data/app.videoqualitychecker.castcast/files/.config/castcast"
+    if os.path.exists(android_app_dir) or os.path.exists(os.path.join(android_app_dir, filename)):
+        return os.path.join(android_app_dir, filename)
+
     termux_candidate = os.path.join("/data/data/com.termux/files/home/.config/castcast", filename)
     if os.path.exists(termux_candidate):
         return termux_candidate
@@ -20,7 +28,6 @@ def get_config_path(filename: str) -> str:
         user_candidate = os.path.join(home_dir, ".config/castcast", filename)
         if os.path.exists(user_candidate):
             return user_candidate
-        return user_candidate
 
     is_termux = (
         os.environ.get("PREFIX", "").startswith("/data/data/com.termux")
@@ -28,6 +35,9 @@ def get_config_path(filename: str) -> str:
     )
     if is_termux and (os.path.isdir("/data/data/com.termux/files/home") or os.path.exists("/data/data/com.termux")):
         return termux_candidate
+
+    if home_dir and home_dir not in ("/data", "/"):
+        return os.path.join(home_dir, ".config/castcast", filename)
 
     return os.path.expanduser(f"~/.config/castcast/{filename}")
 

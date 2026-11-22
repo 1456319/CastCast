@@ -53,6 +53,11 @@ VIDEO_EXTENSIONS = {
 }
 
 def have_ytdlp() -> bool:
+    try:
+        import yt_dlp
+        return True
+    except ImportError:
+        pass
     return bool(shutil.which("yt-dlp"))
 
 
@@ -786,9 +791,10 @@ class CastService:
                     from .probe import FFMPEG
 
                     ffmpeg_path = shutil.which(FFMPEG) or FFMPEG
+                    ytdlp_cmd = [shutil.which("yt-dlp")] if shutil.which("yt-dlp") else [sys.executable, "-m", "yt_dlp"]
 
                     cmd = [
-                        "yt-dlp", "--newline", "--no-continue",
+                        *ytdlp_cmd, "--newline", "--no-continue",
                         "--ffmpeg-location", ffmpeg_path,
                         "--sponsorblock-remove", "sponsor,intro,outro,selfpromo,interaction",
                         "--write-subs", "--write-auto-subs", "--sub-langs", "en.*,eng,en-US,en-GB", "--embed-subs",
@@ -1701,7 +1707,8 @@ class CastService:
             info = getattr(self, "_current_youtube_info", None)
             if not info and getattr(self, "_current_media_path", ""):
                 try:
-                    cmd = ["yt-dlp", "--dump-json", "--skip-download", self._current_media_path]
+                    ytdlp_cmd = [shutil.which("yt-dlp")] if shutil.which("yt-dlp") else [sys.executable, "-m", "yt_dlp"]
+                    cmd = [*ytdlp_cmd, "--dump-json", "--skip-download", self._current_media_path]
                     self.log(f"DEBUG-ONLY: extracting youtube subtitles info with yt-dlp: {self._current_media_path}", "debug")
                     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
                     if proc.returncode == 0 and proc.stdout:

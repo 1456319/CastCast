@@ -146,8 +146,17 @@ class _Handler(BaseHTTPRequestHandler):
                 if self.service.supervisor:
                     last_error = self.service.supervisor.status.last_error
 
+                recent_logs = self.service.log_buffer.recent()
+                logs_text = "\n".join(
+                    f"[{e.get('time', '')}] {e.get('message', '')}" if isinstance(e, dict) else str(e)
+                    for e in recent_logs
+                )
+                if audit_log:
+                    logs_text = f"{logs_text}\n\n=== AUDIT LOG ===\n{audit_log}".strip()
+
                 self._json({
-                    "log_buffer": self.service.log_buffer.recent(),
+                    "logs": logs_text,
+                    "log_buffer": recent_logs,
                     "last_error": last_error,
                     "audit_log": audit_log
                 })
@@ -305,19 +314,27 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(svc.set_muted(bool(body.get("muted"))))
             elif route == "/shutdown":
                 self.send_response(200)
+                self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(b'{"status": "ok"}')
-
-                # Graceful cleanup of all processes and threads
                 try:
-                    if hasattr(svc, "_remuxer") and svc._remuxer:
-                        svc._remuxer.cancel()
-                    svc.stop()
-                except Exception as e:
-                    print(f"Error during shutdown cleanup: {e}")
+                    self.wfile.flush()
+                except Exception:
+                    pass
 
-                import os
-                os._exit(0)
+                def _deferred_exit():
+                    import time
+                    import os
+                    time.sleep(0.2)
+                    try:
+                        if hasattr(svc, "_remuxer") and svc._remuxer:
+                            svc._remuxer.cancel()
+                        svc.stop()
+                    except Exception as e:
+                        print(f"Error during shutdown cleanup: {e}")
+                    os._exit(0)
+
+                threading.Thread(target=_deferred_exit, daemon=True, name="castcast-shutdown").start()
             elif route == "/discovery/intercept":
                 self._json(svc.handle_intercept(body))
             else:

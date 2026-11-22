@@ -445,7 +445,8 @@ def download_subtitle_to_vtt(
         vtt_output = srt_to_vtt(text)
     else:
         # Check if ffmpeg is available for other formats (.ass, .ssa, .sub)
-        ffmpeg_bin = shutil.which("ffmpeg")
+        from .probe import FFMPEG
+        ffmpeg_bin = shutil.which(FFMPEG) or (FFMPEG if os.path.exists(FFMPEG) else None)
         if ffmpeg_bin:
             temp_in = os.path.join(work_dir, f"temp_{stem}{actual_ext or '.sub'}")
             try:

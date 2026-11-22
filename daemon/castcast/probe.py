@@ -15,8 +15,25 @@ from dataclasses import dataclass, field, asdict
 from fractions import Fraction
 from typing import List, Optional
 
-FFPROBE = os.environ.get("CASTCAST_FFPROBE", "ffprobe")
-FFMPEG = os.environ.get("CASTCAST_FFMPEG", "ffmpeg")
+def resolve_binary(name: str) -> str:
+    env_override = os.environ.get(f"CASTCAST_{name.upper()}")
+    if env_override and os.path.exists(env_override):
+        return env_override
+    android_candidates = [
+        f"/data/data/app.videoqualitychecker.castcast/files/bin/{name}",
+        f"/data/data/app.videoqualitychecker.castcast/lib/lib{name}.so",
+    ]
+    for candidate in android_candidates:
+        if os.path.exists(candidate):
+            return candidate
+    which_path = shutil.which(name)
+    if which_path:
+        return which_path
+    return name
+
+
+FFPROBE = resolve_binary("ffprobe")
+FFMPEG = resolve_binary("ffmpeg")
 
 
 def have_ffmpeg() -> bool:

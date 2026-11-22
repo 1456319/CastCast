@@ -85,7 +85,10 @@ class TestMetadataIntegration(unittest.TestCase):
         self.svc.resolve_amazon_title_async(test_url)
 
         # Wait for worker thread to complete
-        time.sleep(0.3)
+        for _ in range(40):
+            if self.svc.amazon_queue and self.svc.amazon_queue[0]["title"] == "The Boys Season 4":
+                break
+            time.sleep(0.05)
 
         # Assert title transitioned from placeholder to resolved title
         self.assertEqual(self.svc.amazon_queue[0]["title"], "The Boys Season 4")

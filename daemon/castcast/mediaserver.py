@@ -466,7 +466,9 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             if not body:
                 return
-            cmd = ["ffmpeg", "-i", cfg["v"], "-i", cfg["a"], "-c", "copy", "-f", "mpegts", "pipe:1"]
+            from .probe import FFMPEG
+            ffmpeg_bin = shutil.which(FFMPEG) or FFMPEG
+            cmd = [ffmpeg_bin, "-i", cfg["v"], "-i", cfg["a"], "-c", "copy", "-f", "mpegts", "pipe:1"]
             proc = None
             try:
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -575,7 +577,12 @@ class MediaServer:
         self._tunnel_lock = threading.Lock()
         self._tunnel_thread: Optional[threading.Thread] = None
 
-        telemetry_dir = "/storage/emulated/0/Download/CastCast/Chromecast/.castcast/telemetry"
+        telemetry_dir = os.environ.get("CASTCAST_TELEMETRY_DIR")
+        if not telemetry_dir:
+            base_dir = self.roots[0] if self.roots else os.path.expanduser("~/.config/castcast")
+            telemetry_dir = os.path.join(base_dir, ".castcast", "telemetry")
+            if not os.path.exists(telemetry_dir) and os.path.exists("/storage/emulated/0/Download/CastCast/Chromecast/.castcast"):
+                telemetry_dir = "/storage/emulated/0/Download/CastCast/Chromecast/.castcast/telemetry"
         try:
             os.makedirs(telemetry_dir, exist_ok=True)
         except OSError as e:
@@ -659,9 +666,48 @@ class MediaServer:
         self._logger(f"media server listening on {self.base_url}")
         self._start_tunnel()
 
+    def _run_asyncssh_tunnel(self) -> None:
+        import asyncio
+        import asyncssh
+
+        async def _tunnel_coro():
+            async with asyncssh.connect(
+                "localhost.run",
+                username="nokey",
+                known_hosts=None,
+                server_alive_interval=15,
+                server_alive_count_max=3,
+            ) as conn:
+                await conn.forward_remote_port("", 80, "127.0.0.1", self.port)
+                async with conn.create_process() as process:
+                    async for line in process.stdout:
+                        if self._tunnel_stop.is_set():
+                            break
+                        if "http" in line and ("lhr.life" in line or "lhrtunnel.pro" in line or "localhost.run" in line):
+                            urls = [word.rstrip(".,:;\"'/") for word in line.split() if word.startswith("https://")]
+                            for u in urls:
+                                with self._tunnel_lock:
+                                    if self.public_url != u:
+                                        self.public_url = u
+                                        self.log(f"Established public HTTPS tunnel for DRM (asyncssh): {self.public_url}")
+                                break
+                    while not self._tunnel_stop.is_set():
+                        await asyncio.sleep(1)
+
+        asyncio.run(_tunnel_coro())
+
     def _start_tunnel(self) -> None:
-        if not shutil.which("ssh"):
-            self.log("ssh is not installed, cannot start public HTTPS tunnel for DRM", "warning")
+        has_asyncssh = False
+        try:
+            import asyncssh
+            has_asyncssh = True
+        except ImportError:
+            pass
+
+        has_ssh_cli = bool(shutil.which("ssh"))
+
+        if not has_asyncssh and not has_ssh_cli:
+            self.log("Neither asyncssh nor system ssh is available, cannot start public HTTPS tunnel for DRM", "warning")
             return
 
         if self._tunnel_thread and self._tunnel_thread.is_alive():
@@ -671,6 +717,15 @@ class MediaServer:
 
         def tunnel_supervisor():
             while not self._tunnel_stop.is_set():
+                if has_asyncssh:
+                    try:
+                        self._run_asyncssh_tunnel()
+                    except Exception as e:
+                        if not self._tunnel_stop.is_set():
+                            self.log(f"asyncssh tunnel error: {e}", "warning")
+                        if not self._tunnel_stop.is_set():
+                            self._tunnel_stop.wait(self.reconnect_delay)
+                        continue
                 proc = None
                 try:
                     cmd = [
