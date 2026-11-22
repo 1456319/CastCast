@@ -2,6 +2,29 @@
 
 All notable changes to CastCast are documented in this file.
 
+## [2.05] - 2026-11-22
+
+### Added
+- **Universal Non-Media File Casting**:
+  - Merged the universal file sharing pipeline (`feat/universal-file-sharing`) into the standalone embedded Android daemon (`prototype/embedded-android`).
+  - Implemented automatic file content inspection in `daemon/castcast/inspect_content.py` to classify files into `TEXT_CODE` vs `BINARY` using UTF-8 decoding and printable character ratio heuristics.
+  - Added `daemon/castcast/text_synthesizer.py`: synthesizes readable text, markdown, scripts, and logs into a 1080p high-contrast monospaced MP4 slide video stream with line numbers, file metadata, and SHA-256 header tags.
+  - Added `daemon/castcast/dots_synthesizer.py` and embedded `daemon/castcast/dotslib.py`: converts raw binary files (`.apk`, `.exe`, `.zip`, `.bin`, etc.) into an optical dot matrix HDMI covert data stream with Reed-Solomon forward error correction.
+- **Embedded Android Native Share Bridge**:
+  - Updated `RootProvisionPlugin.java` with intent filters for `ACTION_SEND`, `ACTION_VIEW`, and `ACTION_SEND_MULTIPLE` (`*/*` mimeTypes).
+  - Automatically queries Android `content://` URIs and stages shared files into `Download/CastCast/Chromecast/inbox` (or internal cache fallback) before notifying the web frontend via the `sharedUrl` event.
+  - Added Chaquopy pip dependencies `numpy`, `opencv-python-headless`, and `reedsolo` to `android/app/build.gradle`.
+
+### Fixed
+- **Shared URL / Text Extraction Sequence**:
+  - Resolved a critical ordering bug in `RootProvisionPlugin.java` where `intent.removeExtra(Intent.EXTRA_TEXT)` was called prior to evaluating `ACTION_SEND` text payloads. Shared links (e.g. YouTube, Prime Video) now extract reliably.
+- **Large File Pacing and Memory Protection**:
+  - In `text_synthesizer.py`, added page capping (`max_pages=150`) and accelerated scroll pacing (`hold_per_page = max(1.5, min(hold_per_page, 150.0 / total_pages))`) to prevent oversized documents from stalling playback or taking hours to generate.
+  - In `dots_synthesizer.py` and `service.py`, enforced a strict 10 MB payload limit for optical dots streams with clear error feedback to prevent process memory exhaustion or out-of-memory crashes on device.
+  - Re-routed synthesis scratch output to `self.work_dir/rendered` with unique file hash suffixes to prevent name collisions and ensure files are always written to managed app storage.
+
+---
+
 ## [2.04] - 2026-11-22
 
 ### Fixed
@@ -35,6 +58,4 @@ All notable changes to CastCast are documented in this file.
 ### 2. Universal File Compatibility Status
 - **Embedded Android Prototype (`prototype/embedded-android`):**
   - Features the in-process Chaquopy Python daemon (`CastDaemonService.java`), eliminating external Termux dependencies.
-- **Universal Format Synthesizers (`feat/universal-file-sharing`):**
-  - Content inspection (`inspect_content.py`), text slide video synthesizer (`text_synthesizer.py` for `.md`, `.py`, code), and binary dots synthesizer (`dots_synthesizer.py` for `.apk`, `.exe`, raw binaries) reside on branch `feat/universal-file-sharing`.
-  - Merging `feat/universal-file-sharing` into `prototype/embedded-android` will combine the standalone embedded daemon with full universal non-media file casting.
+  - Fully incorporates universal non-media file casting: any file (`.apk`, `.exe`, `.py`, `.md`, `.zip`, `.pdf`, etc.) shared from Android file managers or apps is converted on-the-fly into scrollable text slides or binary optical dot matrix streams and cast directly to Chromecast.
