@@ -1,6 +1,7 @@
 import unittest
 import unittest.mock
 import base64
+import importlib.util
 import urllib.parse
 from castcast.mediaserver import guess_mime, transform_dash_manifest
 
@@ -153,6 +154,57 @@ class TestTransformDashManifest(unittest.TestCase):
 
 
 class TestTunnelSupervisor(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec("asyncssh"), "requires the Android AsyncSSH dependency")
+    def test_tunnel_output_arrives_without_a_shell_acknowledgment(self):
+        import asyncio
+        import asyncssh
+        from castcast.mediaserver import _open_localhost_run_output
+
+        class TunnelSession(asyncssh.SSHServerSession):
+            def connection_made(self, channel):
+                self.channel = channel
+
+            def shell_requested(self):
+                return True
+
+            def session_started(self):
+                self.channel.write_stderr("https://example.lhr.life forwarded\n")
+
+        class TunnelServer(asyncssh.SSHServer):
+            def connection_made(self, conn):
+                self.conn = conn
+
+            def begin_auth(self, _username):
+                return False
+
+            def session_requested(self):
+                channel = self.conn.create_server_channel()
+                report_response = channel._report_response
+
+                def report_without_shell_reply(result):
+                    request, packet, want_reply = channel._request_queue[0]
+                    channel._request_queue[0] = (request, packet, want_reply and request != "shell")
+                    report_response(result)
+
+                channel._report_response = report_without_shell_reply
+                return channel, TunnelSession()
+
+        async def verify():
+            host_key = asyncssh.generate_private_key("ssh-ed25519")
+            async with asyncssh.listen("127.0.0.1", 0, server_factory=TunnelServer,
+                                       server_host_keys=[host_key]) as listener:
+                async with asyncssh.connect("127.0.0.1", listener.get_port(), username="test",
+                                            known_hosts=([host_key.convert_to_public()], [], [])) as conn:
+                    with self.assertRaises(TimeoutError):
+                        await asyncio.wait_for(conn.create_process(), 0.2)
+                async with asyncssh.connect("127.0.0.1", listener.get_port(), username="test",
+                                            known_hosts=([host_key.convert_to_public()], [], [])) as conn:
+                    process = await asyncio.wait_for(_open_localhost_run_output(conn), 2)
+                    line = await asyncio.wait_for(process.stderr.readline(), 2)
+                    self.assertEqual(line, "https://example.lhr.life forwarded\n")
+
+        asyncio.run(verify())
+
     @unittest.mock.patch("castcast.mediaserver.detect_lan_ip", return_value="127.0.0.1")
     def test_embedded_tunnel_reports_stage_and_exception_for_empty_timeout(self, _detect_lan_ip):
         import asyncio

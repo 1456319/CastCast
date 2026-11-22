@@ -34,7 +34,6 @@ from typing import Optional
 from .probe import FFMPEG
 
 _RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
-
 MIME_TYPES = {
     ".mp4": "video/mp4",
     ".m4v": "video/mp4",
@@ -564,6 +563,30 @@ class _Handler(BaseHTTPRequestHandler):
                 pass
 
 
+async def _open_localhost_run_output(conn):
+    import asyncssh
+
+    class TunnelOutputChannel(asyncssh.SSHClientChannel):
+        async def _make_request(self, request, *args):
+            if request == b"shell":
+                # localhost.run sends the URL over the session without replying
+                # to the shell request. Keep this workaround scoped to this
+                # channel on the pinned AsyncSSH version.
+                self._send_request(request, *args, want_reply=False)
+                return True
+            return await super()._make_request(request, *args)
+
+    channel = TunnelOutputChannel(
+        conn, asyncio.get_running_loop(), "strict", "utf-8", "replace", 2**21, 32768,
+    )
+    return await channel.create(
+        asyncssh.SSHClientProcess, command=None, subsystem=None, env={},
+        request_pty=False, term_type=None, term_size=(), term_modes={},
+        x11_forwarding=False, x11_display=None, x11_auth_path=None,
+        x11_single_connection=False, agent_forwarding=False,
+    )
+
+
 class _LicenseHandler(_Handler):
     """Public tunnels can reach this handler, which serves only license requests."""
 
@@ -737,13 +760,22 @@ class MediaServer:
     async def _run_embedded_tunnel(self, local_port: int) -> None:
         import asyncssh
 
+        url_received = asyncio.Event()
+
         def accept_url(line):
+            nonlocal announced_url
             found = re.search(r"https://[a-z0-9-]+\.lhr\.life(?![a-z0-9.-])", line, re.IGNORECASE)
             if found:
-                with self._tunnel_lock:
-                    if self.public_url != found[0]:
-                        self.public_url = found[0]
-                        self.log("HTTPS license tunnel ready")
+                announced_url = found[0]
+                url_received.set()
+                if output_open:
+                    publish_url()
+
+        def publish_url():
+            with self._tunnel_lock:
+                if announced_url and self.public_url != announced_url:
+                    self.public_url = announced_url
+                    self.log("HTTPS license tunnel ready")
 
         class VerifiedClient(asyncssh.SSHClient):
             def connection_made(self, _conn):
@@ -765,6 +797,9 @@ class MediaServer:
                 accept_url(line)
 
         while not self._tunnel_stop.is_set():
+            announced_url = None
+            output_open = False
+            url_received.clear()
             stage = "connecting to localhost.run:22"
             try:
                 async with asyncssh.connect(
@@ -776,10 +811,14 @@ class MediaServer:
                     stage = "requesting SSH port forwarding"
                     await asyncio.wait_for(conn.forward_remote_port("localhost", 80, "127.0.0.1", local_port), 5)
                     stage = "opening the tunnel provider session"
-                    process = await asyncio.wait_for(conn.create_process(), 5)
-                    stage = "monitoring the tunnel provider session"
+                    process = await asyncio.wait_for(_open_localhost_run_output(conn), 5)
+                    output_open = True
+                    publish_url()
                     readers = [asyncio.create_task(read_output(reader)) for reader in (process.stdout, process.stderr)]
                     try:
+                        stage = "waiting for the public HTTPS URL"
+                        await asyncio.wait_for(url_received.wait(), 5)
+                        stage = "monitoring the tunnel provider session"
                         while not self._tunnel_stop.is_set() and not conn.is_closed():
                             await asyncio.sleep(0.25)
                     finally:

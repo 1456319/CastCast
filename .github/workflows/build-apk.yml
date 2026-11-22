@@ -49,7 +49,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg
-          python -m pip install PyYAML pytest
+          python -m pip install PyYAML pytest asyncssh==2.22.0
           python scripts/check_sync_headers.py
           PYTHONPATH=daemon python -m pytest daemon/tests
 
