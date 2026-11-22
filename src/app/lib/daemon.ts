@@ -8,9 +8,20 @@
  * browser cannot open the raw TLS socket the protocol requires.
  */
 
-export const DAEMON_BASE =
-  (typeof localStorage !== "undefined" && localStorage.getItem("castcast.base")) ||
-  "http://127.0.0.1:8765";
+function getInitialDaemonBase(): string {
+  try {
+    return (
+      (typeof window !== "undefined" &&
+        typeof localStorage !== "undefined" &&
+        localStorage.getItem("castcast.base")) ||
+      "http://127.0.0.1:8765"
+    );
+  } catch {
+    return "http://127.0.0.1:8765";
+  }
+}
+
+export const DAEMON_BASE = getInitialDaemonBase();
 
 export interface Issue {
   severity: "fatal" | "warning" | "info";

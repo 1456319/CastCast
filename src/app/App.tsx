@@ -73,7 +73,15 @@ export default function App() {
   const [selected, setSelected] = useState<LibraryItem | null>(null);
   const [report, setReport] = useState<Preflight | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
-  const [showDebugLogs, setShowDebugLogs] = useState(() => localStorage.getItem("castcast.logs.showDebug") === "true");
+  const [showDebugLogs, setShowDebugLogs] = useState(() => {
+    try {
+      return typeof window !== "undefined" && typeof localStorage !== "undefined"
+        ? localStorage.getItem("castcast.logs.showDebug") === "true"
+        : false;
+    } catch {
+      return false;
+    }
+  });
   const [online, setOnline] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [host, setHost] = useState("192.168.1.50");
@@ -956,7 +964,13 @@ export default function App() {
               </button>
               <button
                 onClick={() => {
-                  localStorage.setItem("castcast.logs.showDebug", String(!showDebugLogs));
+                  try {
+                    if (typeof localStorage !== "undefined") {
+                      localStorage.setItem("castcast.logs.showDebug", String(!showDebugLogs));
+                    }
+                  } catch {
+                    // Ignore storage access errors in sandboxed environments
+                  }
                   setShowDebugLogs(!showDebugLogs);
                 }}
                 className="rounded border border-emerald-500/25 px-2 py-1 text-xs text-emerald-400/70 hover:bg-emerald-500/10"

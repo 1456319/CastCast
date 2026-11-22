@@ -34,6 +34,7 @@ from typing import Optional
 from .probe import FFMPEG
 
 _RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
+TUNNEL_URL_RE = re.compile(r"https://[a-z0-9.-]+\.(?:lhr\.life|lhrtunnel\.pro|lhr\.rocks)(?![a-z0-9]|\.[a-z0-9-])", re.IGNORECASE)
 MIME_TYPES = {
     ".mp4": "video/mp4",
     ".m4v": "video/mp4",
@@ -764,7 +765,7 @@ class MediaServer:
 
         def accept_url(line):
             nonlocal announced_url
-            found = re.search(r"https://[a-z0-9-]+\.lhr\.life(?![a-z0-9.-])", line, re.IGNORECASE)
+            found = TUNNEL_URL_RE.search(line)
             if found:
                 announced_url = found[0]
                 url_received.set()
@@ -817,7 +818,7 @@ class MediaServer:
                     readers = [asyncio.create_task(read_output(reader)) for reader in (process.stdout, process.stderr)]
                     try:
                         stage = "waiting for the public HTTPS URL"
-                        await asyncio.wait_for(url_received.wait(), 5)
+                        await asyncio.wait_for(url_received.wait(), 15)
                         stage = "monitoring the tunnel provider session"
                         while not self._tunnel_stop.is_set() and not conn.is_closed():
                             await asyncio.sleep(0.25)
@@ -875,14 +876,13 @@ class MediaServer:
                         for line in proc.stdout:
                             if self._tunnel_stop.is_set():
                                 break
-                            if "http" in line and "lhr.life" in line:
-                                urls = [word.rstrip(".,:;\"'/") for word in line.split() if word.startswith("https://")]
-                                for u in urls:
-                                    with self._tunnel_lock:
-                                        if self.public_url != u:
-                                            self.public_url = u
-                                            self.log(f"Established public HTTPS tunnel for DRM: {self.public_url}")
-                                    break
+                            match = TUNNEL_URL_RE.search(line)
+                            if match:
+                                u = match[0]
+                                with self._tunnel_lock:
+                                    if self.public_url != u:
+                                        self.public_url = u
+                                        self.log(f"Established public HTTPS tunnel for DRM: {self.public_url}")
                     proc.wait()
                 except Exception as e:
                     if not self._tunnel_stop.is_set():

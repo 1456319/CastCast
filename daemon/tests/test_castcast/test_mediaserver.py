@@ -2,8 +2,9 @@ import unittest
 import unittest.mock
 import base64
 import importlib.util
+import re
 import urllib.parse
-from castcast.mediaserver import guess_mime, transform_dash_manifest
+from castcast.mediaserver import guess_mime, transform_dash_manifest, TUNNEL_URL_RE
 
 class TestGuessMime(unittest.TestCase):
     """
@@ -204,6 +205,30 @@ class TestTunnelSupervisor(unittest.TestCase):
                     self.assertEqual(line, "https://example.lhr.life forwarded\n")
 
         asyncio.run(verify())
+
+    def test_tunnel_url_regex_accepts_nested_subdomains(self):
+        lines_to_test = [
+            ("800035c81c1631.app.lhr.life tunneled with tls termination, https://800035c81c1631.app.lhr.life\r\n", "https://800035c81c1631.app.lhr.life"),
+            ("https://simple.lhr.life forwarded\n", "https://simple.lhr.life"),
+            ("https://nested.sub.lhrtunnel.pro\n", "https://nested.sub.lhrtunnel.pro"),
+            ("https://alpha.beta.lhr.rocks/path", "https://alpha.beta.lhr.rocks"),
+            ("Active tunnel at https://sample.app.lhr.life.", "https://sample.app.lhr.life"),
+        ]
+        for raw_line, expected_url in lines_to_test:
+            with self.subTest(line=raw_line):
+                match = TUNNEL_URL_RE.search(raw_line)
+                self.assertIsNotNone(match)
+                self.assertEqual(match.group(0), expected_url)
+
+        negative_cases = [
+            "https://evil.lhr.life.attacker.com",
+            "http://800035c81c1631.app.lhr.life",
+            "https://attacker.com",
+            "https://fake-lhr.life.other.net",
+        ]
+        for raw_line in negative_cases:
+            with self.subTest(negative_line=raw_line):
+                self.assertIsNone(TUNNEL_URL_RE.search(raw_line))
 
     @unittest.mock.patch("castcast.mediaserver.detect_lan_ip", return_value="127.0.0.1")
     def test_embedded_tunnel_reports_stage_and_exception_for_empty_timeout(self, _detect_lan_ip):
