@@ -155,6 +155,11 @@ public final class RootProvisionPlugin extends Plugin {
             fileUri = intent.getData();
         }
 
+        String sharedText = null;
+        if (Intent.ACTION_SEND.equals(action) && intent.hasExtra(Intent.EXTRA_TEXT)) {
+            sharedText = intent.getStringExtra(Intent.EXTRA_TEXT);
+        }
+
         // Clean intent action and extras immediately to prevent duplicate execution
         intent.removeExtra(Intent.EXTRA_STREAM);
         intent.removeExtra(Intent.EXTRA_TEXT);
@@ -264,14 +269,11 @@ public final class RootProvisionPlugin extends Plugin {
                 call.reject("Failed to stage shared file: " + e.getMessage(), e);
                 return;
             }
-        } else if (Intent.ACTION_SEND.equals(action) && intent.hasExtra(Intent.EXTRA_TEXT)) {
-            String sharedText = intent.getStringExtra(Intent.EXTRA_TEXT);
-            if (sharedText != null && !sharedText.trim().isEmpty()) {
-                ret.put("url", sharedText);
-                ret.put("isFile", false);
-                call.resolve(ret);
-                return;
-            }
+        } else if (sharedText != null && !sharedText.trim().isEmpty()) {
+            ret.put("url", sharedText.trim());
+            ret.put("isFile", false);
+            call.resolve(ret);
+            return;
         }
 
         call.resolve(ret);

@@ -135,4 +135,16 @@ class TestDotsSynthesizer(unittest.TestCase):
             self.assertIn("FFmpeg failed with exit code 1", str(ctx.exception))
             self.assertIn("Invalid resolution: 3840x2160", str(ctx.exception))
 
+    def test_payload_exceeding_max_bytes_raises(self):
+        with tempfile.NamedTemporaryFile("wb", delete=False) as in_f:
+            in_f.write(b"A" * 1024)
+            in_f.flush()
+            out_path = in_f.name + ".mp4"
+            self.addCleanup(os.unlink, in_f.name)
+            self.addCleanup(lambda: os.unlink(out_path) if os.path.exists(out_path) else None)
+
+            with self.assertRaises(ValueError) as ctx:
+                synthesize_dots_video(in_f.name, out_path, max_bytes=512)
+            self.assertIn("Binary file exceeds maximum optical casting size", str(ctx.exception))
+
 

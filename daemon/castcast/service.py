@@ -940,20 +940,32 @@ class CastService:
         if not is_url and os.path.isfile(path):
             ext = os.path.splitext(path)[1].lower()
             if ext not in VIDEO_EXTENSIONS:
+                try:
+                    file_size = os.path.getsize(path)
+                except OSError:
+                    file_size = 0
                 content_type = inspect_file_content(path)
-                rendered_dir = os.path.join(self.media_roots[0], ".castcast", "rendered")
+                if content_type == ContentType.BINARY and file_size > 10 * 1024 * 1024:
+                    return {"error": f"Binary file too large for optical stream synthesis ({file_size / (1024 * 1024):.1f}MB > 10MB limit)."}
+                elif content_type == ContentType.TEXT_CODE and file_size > 25 * 1024 * 1024:
+                    return {"error": f"Text file too large for slide synthesis ({file_size / (1024 * 1024):.1f}MB > 25MB limit)."}
+
+                rendered_dir = os.path.join(self.work_dir, "rendered")
                 os.makedirs(rendered_dir, exist_ok=True)
+                self.media_server.add_root(rendered_dir)
+
                 stem = os.path.splitext(os.path.basename(path))[0]
+                file_hash = hashlib.sha256(path.encode("utf-8")).hexdigest()[:8]
                 is_ultra = bool(getattr(self.supervisor, "is_ultra", getattr(self.device, "is_ultra", True)))
 
                 try:
                     if content_type == ContentType.BINARY:
-                        out_video = os.path.join(rendered_dir, f"{stem}_dots.mp4")
+                        out_video = os.path.join(rendered_dir, f"{stem}_{file_hash}_dots.mp4")
                         self.log(f"Synthesizing binary dot matrix video for {path}")
                         synthesize_dots_video(path, out_video, is_ultra=is_ultra, repeat=8)
                         mode = "binary"
                     else:
-                        out_video = os.path.join(rendered_dir, f"{stem}_slides.mp4")
+                        out_video = os.path.join(rendered_dir, f"{stem}_{file_hash}_slides.mp4")
                         self.log(f"Synthesizing code slide video for {path}")
                         synthesize_text_video(path, out_video, hold_per_page=6.0)
                         mode = "text"

@@ -18,14 +18,27 @@ except ImportError:
 if "dotslib" not in sys.modules:
     sys.modules["dotslib"] = D
 
+MAX_DOTS_PAYLOAD = 10 * 1024 * 1024  # 10 MB maximum optical dots payload
+
 def synthesize_dots_video(
     input_path: str,
     output_path: str,
     is_ultra: bool = True,
     repeat: int = 8,
     fps: int = 15,
-    ffmpeg_bin: Optional[str] = None
+    ffmpeg_bin: Optional[str] = None,
+    max_bytes: int = MAX_DOTS_PAYLOAD
 ) -> str:
+    try:
+        file_size = os.path.getsize(input_path)
+    except OSError:
+        file_size = 0
+    if file_size > max_bytes:
+        raise ValueError(
+            f"Binary file exceeds maximum optical casting size of {max_bytes // (1024 * 1024)}MB "
+            f"(file size: {file_size / (1024 * 1024):.1f}MB)"
+        )
+
     ffmpeg = ffmpeg_bin or os.environ.get("CASTCAST_FFMPEG") or shutil.which("ffmpeg") or "/data/data/com.termux/files/usr/bin/ffmpeg"
     scale = 24 if is_ultra else 12
     W, H = D.GRID_W * scale, D.GRID_H * scale
