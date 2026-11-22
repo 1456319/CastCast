@@ -29,7 +29,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 
       - name: Install PyYAML
-        run: pip install PyYAML pytest
+        run: pip install PyYAML pytest numpy opencv-python-headless reedsolo
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v3

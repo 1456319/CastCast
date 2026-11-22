@@ -22,9 +22,14 @@ import math
 import struct
 import zlib
 
-import cv2
-import numpy as np
-from reedsolo import RSCodec
+try:
+    import cv2
+    import numpy as np
+    from reedsolo import RSCodec
+except (ImportError, ModuleNotFoundError):
+    cv2 = None
+    np = None
+    RSCodec = None
 
 GRID_H, GRID_W = 90, 160
 SCALE = 24                       # px per cell (20 px dot + 2 px margins)
@@ -36,8 +41,12 @@ SEQ_BYTES, CHUNK, NSYM = 2, 592, 32
 MAGIC = b"DOTSX01\x00"           # 8 bytes to fill the HDR 8s field exactly
 HDR = struct.Struct("<8sQI")
 
-_rsc = RSCodec(NSYM)
-WIRE = len(_rsc.encode(bytes(SEQ_BYTES + CHUNK)))   # 690
+if RSCodec is not None:
+    _rsc = RSCodec(NSYM)
+    WIRE = len(_rsc.encode(bytes(SEQ_BYTES + CHUNK)))   # 690
+else:
+    _rsc = None
+    WIRE = 690
 WIRE_BITS = WIRE * 8                                # 5520
 REGION_W = PAY_C1 - PAY_C0                          # 156
 

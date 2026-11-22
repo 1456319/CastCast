@@ -33,8 +33,12 @@ from .subtitles_remote import (
     download_subtitle_to_vtt,
 )
 from .inspect_content import inspect_file_content, ContentType
-from .dots_synthesizer import synthesize_dots_video
-from .text_synthesizer import synthesize_text_video
+try:
+    from .dots_synthesizer import synthesize_dots_video
+    from .text_synthesizer import synthesize_text_video
+except (ImportError, ModuleNotFoundError):
+    synthesize_dots_video = None
+    synthesize_text_video = None
 
 DEFAULT_MEDIA_ROOT = "/storage/emulated/0/Download/CastCast/Chromecast"
 
@@ -960,11 +964,15 @@ class CastService:
 
                 try:
                     if content_type == ContentType.BINARY:
+                        if synthesize_dots_video is None:
+                            return {"error": "Binary dot matrix synthesizer is not available (missing dependencies)."}
                         out_video = os.path.join(rendered_dir, f"{stem}_{file_hash}_dots.mp4")
                         self.log(f"Synthesizing binary dot matrix video for {path}")
                         synthesize_dots_video(path, out_video, is_ultra=is_ultra, repeat=8)
                         mode = "binary"
                     else:
+                        if synthesize_text_video is None:
+                            return {"error": "Text code slide synthesizer is not available (missing dependencies)."}
                         out_video = os.path.join(rendered_dir, f"{stem}_{file_hash}_slides.mp4")
                         self.log(f"Synthesizing code slide video for {path}")
                         synthesize_text_video(path, out_video, hold_per_page=6.0)

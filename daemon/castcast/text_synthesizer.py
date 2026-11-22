@@ -6,8 +6,12 @@ import os
 import shutil
 import subprocess
 from typing import List, Optional
-import cv2
-import numpy as np
+try:
+    import cv2
+    import numpy as np
+except (ImportError, ModuleNotFoundError):
+    cv2 = None
+    np = None
 
 WIDTH, HEIGHT = 1920, 1080
 LINES_PER_PAGE = 30
