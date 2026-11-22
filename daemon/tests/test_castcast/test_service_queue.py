@@ -1,3 +1,5 @@
+import os
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 from castcast.service import CastService
@@ -6,7 +8,16 @@ from castcast.remux import RemuxJob, RemuxPlan
 
 class TestServiceQueue(unittest.TestCase):
     def setUp(self):
-        self.svc = CastService({})
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp_dir.cleanup)
+        self.media_root = os.path.join(self.tmp_dir.name, "Chromecast")
+        self.work_dir = os.path.join(self.tmp_dir.name, ".castcast")
+        os.makedirs(self.media_root, exist_ok=True)
+        os.makedirs(self.work_dir, exist_ok=True)
+        self.svc = CastService({
+            "media_roots": [self.media_root],
+            "work_dir": self.work_dir
+        })
         self.svc.supervisor = MagicMock(spec=Supervisor)
         self.svc.supervisor._state = MagicMock()
         self.svc.supervisor._state.value = "playing"

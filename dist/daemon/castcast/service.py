@@ -40,7 +40,10 @@ except (ImportError, ModuleNotFoundError):
     synthesize_dots_video = None
     synthesize_text_video = None
 
-DEFAULT_MEDIA_ROOT = "/storage/emulated/0/Download/CastCast/Chromecast"
+if os.path.isdir("/storage/emulated/0"):
+    DEFAULT_MEDIA_ROOT = "/storage/emulated/0/Download/CastCast/Chromecast"
+else:
+    DEFAULT_MEDIA_ROOT = os.path.expanduser("~/Download/CastCast/Chromecast")
 
 SUBTITLE_EXTENSIONS = {".vtt", ".srt", ".ass", ".ssa", ".sub"}
 
@@ -803,7 +806,12 @@ class CastService:
                 self.log(f"Downloading web stream to Queue: {path}")
 
                 youtube_dir = os.path.join(self.media_roots[0], "youtube")
-                os.makedirs(youtube_dir, exist_ok=True)
+                try:
+                    os.makedirs(youtube_dir, exist_ok=True)
+                except OSError:
+                    import tempfile
+                    youtube_dir = os.path.join(tempfile.gettempdir(), "castcast", "youtube")
+                    os.makedirs(youtube_dir, exist_ok=True)
 
                 def download_worker():
                     from .remux import RemuxJob, RemuxPlan
@@ -955,7 +963,12 @@ class CastService:
                     return {"error": f"Text file too large for slide synthesis ({file_size / (1024 * 1024):.1f}MB > 25MB limit)."}
 
                 rendered_dir = os.path.join(self.work_dir, "rendered")
-                os.makedirs(rendered_dir, exist_ok=True)
+                try:
+                    os.makedirs(rendered_dir, exist_ok=True)
+                except OSError:
+                    import tempfile
+                    rendered_dir = os.path.join(tempfile.gettempdir(), "castcast", "rendered")
+                    os.makedirs(rendered_dir, exist_ok=True)
                 self.media_server.add_root(rendered_dir)
 
                 stem = os.path.splitext(os.path.basename(path))[0]
