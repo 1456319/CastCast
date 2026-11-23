@@ -185,6 +185,113 @@ def transform_dash_manifest(body_content: str, target_url: str) -> str:
     return body_content
 
 
+def transform_peacock_dash_manifest(body_content: str, target_url: str) -> str:
+    """
+    In-flight transformation for Peacock DASH manifests:
+    1. BaseURL injection for CDN segment resolution.
+    2. Strips all SSAI advertising <Period> elements (urn:psf:ads:tracking:v1, urn:scte:scte35, urn:sva:advertising-wg).
+    3. Normalizes presentation start time of primary feature Period to PT0S.
+    4. Preserves 4K UHD Widevine ContentProtection descriptors intact.
+    5. Fallback regex strip if XML parsing fails.
+    """
+    import re
+    import xml.etree.ElementTree as ET
+
+    base_url = target_url[:target_url.rfind('/') + 1] if '/' in target_url else target_url + '/'
+    if not re.search(r'<(?:\w+:)?BaseURL[\s>]', body_content, re.IGNORECASE):
+        body_content = re.sub(r'(<MPD[^>]*>)', r'\1\n  <BaseURL>' + base_url + r'</BaseURL>', body_content, count=1)
+
+    ad_schemes = {
+        "urn:psf:ads:tracking:v1",
+        "urn:scte:scte35:2014:bin",
+        "urn:sva:advertising-wg:ad-id-signaling",
+    }
+
+    try:
+        # Register any prefixed namespaces (e.g. xmlns:cenc="urn:mpeg:cenc:2013")
+        for match in re.finditer(r'xmlns:([a-zA-Z0-9_-]+)=[\'"]([^\'"]+)[\'"]', body_content):
+            ET.register_namespace(match.group(1), match.group(2))
+
+        # Strip default xmlns to parse cleanly with standard tag names
+        xml_clean = re.sub(r'\s+xmlns=[\'"][^\'"]+[\'"]', '', body_content, count=1)
+        root = ET.fromstring(xml_clean)
+
+        parent_map = {child: parent for parent in root.iter() for child in parent}
+        periods = [elem for elem in root.iter() if elem.tag.endswith("Period") or elem.tag == "Period"]
+
+        feature_period = None
+        for p in periods:
+            is_ad = False
+            p_id = p.attrib.get("id", "").lower()
+            if "ad" in p_id:
+                is_ad = True
+            else:
+                for elem in p.iter():
+                    scheme = elem.attrib.get("schemeIdUri", "")
+                    if scheme in ad_schemes or scheme.startswith("urn:scte:scte35:"):
+                        is_ad = True
+                        break
+            if is_ad:
+                parent = parent_map.get(p, root)
+                try:
+                    parent.remove(p)
+                except ValueError:
+                    pass
+            else:
+                if feature_period is None:
+                    feature_period = p
+
+        if feature_period is not None:
+            feature_period.attrib["start"] = "PT0S"
+
+        out = ET.tostring(root, encoding="utf-8").decode("utf-8")
+        if 'xmlns=' not in out:
+            out = re.sub(r'<MPD([^>]*)>', r'<MPD\1 xmlns="urn:mpeg:dash:schema:mpd:2011">', out, count=1)
+
+        decl_match = re.match(r'^(<\?xml[^?]+\?>\s*)', body_content)
+        if decl_match and not out.startswith("<?xml"):
+            out = decl_match.group(1) + out
+
+        return out
+
+    except Exception:
+        # Fallback regex strip
+        def _regex_strip_period(match):
+            period_tag = match.group(0)
+            attrs = match.group(1)
+            p_id_match = re.search(r'\bid=[\'"]([^\'"]+)[\'"]', attrs, re.IGNORECASE)
+            if p_id_match and "ad" in p_id_match.group(1).lower():
+                return ""
+            for scheme in ad_schemes:
+                if scheme in period_tag:
+                    return ""
+            if "urn:psf:ads:" in period_tag or "urn:scte:scte35" in period_tag or "urn:sva:advertising-wg" in period_tag:
+                return ""
+            return period_tag
+
+        cleaned = re.sub(
+            r'<(?:\w+:)?Period(\b[^>]*)>(.*?)</(?:\w+:)?Period>',
+            _regex_strip_period,
+            body_content,
+            flags=re.DOTALL | re.IGNORECASE
+        )
+
+        def _rebase_first_period_start(m):
+            tag = m.group(1)
+            attrs = m.group(2)
+            if re.search(r'\bstart=[\'"][^\'"]*[\'"]', attrs):
+                attrs = re.sub(r'\bstart=[\'"][^\'"]*[\'"]', 'start="PT0S"', attrs)
+            else:
+                attrs = attrs + ' start="PT0S"'
+            return f'<{tag}{attrs}>'
+
+        cleaned = re.sub(r'<((?:\w+:)?Period)(\b[^>]*)>', _rebase_first_period_start, cleaned, count=1)
+        if 'xmlns=' not in cleaned:
+            cleaned = re.sub(r'<MPD([^>]*)>', r'<MPD\1 xmlns="urn:mpeg:dash:schema:mpd:2011">', cleaned, count=1)
+
+        return cleaned
+
+
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "castcast"
@@ -423,7 +530,10 @@ class _Handler(BaseHTTPRequestHandler):
                 # ====================================================================
                 elif "dash+xml" in content_type.lower() or target_url.endswith(".mpd"):
                     body_content = response.read().decode("utf-8", "replace")
-                    body_content = transform_dash_manifest(body_content, target_url)
+                    if "peacock" in target_url.lower() or "skyott" in target_url.lower():
+                        body_content = transform_peacock_dash_manifest(body_content, target_url)
+                    else:
+                        body_content = transform_dash_manifest(body_content, target_url)
                     final_body = body_content.encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", content_type)
