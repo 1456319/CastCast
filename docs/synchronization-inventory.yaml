@@ -88,6 +88,11 @@ files:
     role: peacock-auth
     boundaries:
     - utility-middleware
+  daemon/castcast/peacock_drm.py:
+    section: media-routing
+    role: peacock-drm
+    boundaries:
+    - utility-middleware
   daemon/castcast/channel.py:
     section: cast-sender-receiver
     role: cast-channel
