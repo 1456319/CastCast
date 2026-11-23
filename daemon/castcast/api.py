@@ -299,6 +299,11 @@ class _Handler(BaseHTTPRequestHandler):
                 if not path:
                     return self._json({"error": "path is required"}, 400)
                 self._json(svc.trash(path))
+            elif route == "/trash/restore":
+                path = body.get("path")
+                if not path:
+                    return self._json({"error": "path is required"}, 400)
+                self._json(svc.restore(path))
             elif route == "/delete":
                 path = body.get("path")
                 if not path:
@@ -418,6 +423,7 @@ _ROUTES = {
     "POST /prepare": "{path, force?}  run the remux",
     "POST /prepare/cancel": "",
     "POST /trash": "{path} move a file to the trash folder",
+    "POST /trash/restore": "{path} restore a file to the library",
     "POST /delete": "{path} permanently delete a file",
     "POST /play|/pause|/stop": "",
     "POST /seek": "{position}",

@@ -436,17 +436,23 @@ class CastService:
             for dirpath, dirnames, filenames in os.walk(root):
                 dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "trash"]
                 for filename in sorted(filenames):
-                    if os.path.splitext(filename)[1].lower() not in VIDEO_EXTENSIONS:
-                        continue
                     full = os.path.join(dirpath, filename)
+                    relative = os.path.relpath(full, root)
+                    is_video = os.path.splitext(filename)[1].lower() in VIDEO_EXTENSIONS
+                    if filename.startswith(".") or os.path.islink(full):
+                        continue
+                    if not is_video and not relative.startswith("inbox" + os.sep):
+                        continue
                     item = {
                         "path": full,
                         "name": filename,
-                        "rel": os.path.relpath(full, root),
-                        "title": resolve_title(full),
+                        "rel": relative,
+                        "title": resolve_title(full) if is_video else filename,
                         "size_bytes": _size(full),
                     }
-                    if deep:
+                    if not is_video:
+                        item["non_media"] = True
+                    if deep and is_video:
                         item.update(self.preflight(full))
                     entries.append(item)
         return entries
@@ -2029,16 +2035,19 @@ class CastService:
         return self.status()
 
     def trash(self, path: str) -> dict:
-        resolved = self._resolve_under_media_root(path)
-        if not resolved:
-            return {"error": "file not in media roots"}
-        target_root, safe_path = resolved
-        trash_dir = os.path.join(target_root, "trash")
-        os.makedirs(trash_dir, exist_ok=True)
-        rel = os.path.relpath(safe_path, target_root)
-        dest = self._unique_trash_path(os.path.join(trash_dir, rel))
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        shutil.move(safe_path, dest)
+        with self._lock:
+            resolved = self._resolve_under_media_root(path)
+            if not resolved:
+                return {"error": "file not in media roots"}
+            target_root, safe_path = resolved
+            trash_dir = os.path.join(target_root, "trash")
+            rel = os.path.relpath(safe_path, target_root)
+            destination = os.path.join(trash_dir, rel)
+            if os.path.realpath(os.path.dirname(destination)) != os.path.dirname(destination):
+                return {"error": "trash destination contains a symbolic link"}
+            dest = self._unique_move_path(destination)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.move(safe_path, dest)
 
         # Check if in queue and remove
         session = getattr(self.supervisor, "_session", None) if self.supervisor else None
@@ -2057,15 +2066,37 @@ class CastService:
 
         return {"trashed": dest}
 
+    def restore(self, path: str) -> dict:
+        with self._lock:
+            resolved = self._resolve_under_trash(path)
+            if not resolved:
+                return {"error": "file not found in trash"}
+            trash_root, safe_path = resolved
+            relative = os.path.relpath(safe_path, trash_root)
+            if relative == "trash" or relative.startswith("trash" + os.sep):
+                return {"error": "restore destination is inside trash"}
+            destination = os.path.join(os.path.dirname(trash_root), relative)
+            if os.path.realpath(os.path.dirname(destination)) != os.path.dirname(destination):
+                return {"error": "restore destination contains a symbolic link"}
+            dest = self._unique_move_path(destination)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.move(safe_path, dest)
+            return {"restored": dest}
+
     def delete(self, path: str) -> dict:
-        resolved = self._resolve_under_trash(path)
-        if not resolved:
-            return {"error": "file not found in trash"}
-        os.remove(resolved)
-        return {"deleted": resolved}
+        with self._lock:
+            resolved = self._resolve_under_trash(path)
+            if not resolved:
+                return {"error": "file not found in trash"}
+            _, safe_path = resolved
+            os.remove(safe_path)
+            return {"deleted": safe_path}
 
     def _resolve_under_media_root(self, path: str) -> Optional[tuple[str, str]]:
-        real_path = os.path.realpath(os.path.expanduser(path))
+        path = os.path.expanduser(path)
+        if os.path.islink(path):
+            return None
+        real_path = os.path.realpath(path)
         for root in self.media_roots:
             real_root = os.path.realpath(root)
             try:
@@ -2078,26 +2109,31 @@ class CastService:
                 return real_root, real_path
         return None
 
-    def _resolve_under_trash(self, path: str) -> str:
-        real_path = os.path.realpath(os.path.expanduser(path))
+    def _resolve_under_trash(self, path: str) -> Optional[tuple[str, str]]:
+        path = os.path.expanduser(path)
+        if os.path.islink(path):
+            return None
+        real_path = os.path.realpath(path)
         for root in self.media_roots:
-            trash_root = os.path.realpath(os.path.join(root, "trash"))
+            trash_root = os.path.join(os.path.realpath(root), "trash")
+            if os.path.islink(trash_root):
+                continue
             try:
                 rel = os.path.relpath(real_path, trash_root)
             except ValueError:
                 continue
             if rel != os.pardir and not rel.startswith(os.pardir + os.sep) and os.path.isfile(real_path):
-                return real_path
-        return ""
+                return trash_root, real_path
+        return None
 
-    def _unique_trash_path(self, path: str) -> str:
-        if not os.path.exists(path):
+    def _unique_move_path(self, path: str) -> str:
+        if not os.path.lexists(path):
             return path
         stem, ext = os.path.splitext(path)
         counter = 1
         while True:
             candidate = f"{stem}.{counter}{ext}"
-            if not os.path.exists(candidate):
+            if not os.path.lexists(candidate):
                 return candidate
             counter += 1
 
@@ -2105,16 +2141,19 @@ class CastService:
         entries = []
         for root in self.media_roots:
             trash_dir = os.path.join(root, "trash")
-            if not os.path.isdir(trash_dir):
+            if not os.path.isdir(trash_dir) or os.path.islink(trash_dir):
                 continue
-            for filename in sorted(os.listdir(trash_dir)):
-                full = os.path.join(trash_dir, filename)
-                if os.path.isfile(full):
+            for dirpath, dirnames, filenames in os.walk(trash_dir):
+                dirnames.sort()
+                for filename in sorted(filenames):
+                    full = os.path.join(dirpath, filename)
+                    if os.path.islink(full) or not os.path.isfile(full):
+                        continue
                     entries.append({
                         "path": full,
                         "name": filename,
                         "rel": os.path.relpath(full, root),
-                        "size_bytes": os.path.getsize(full),
+                        "size_bytes": _size(full),
                     })
         return entries
 

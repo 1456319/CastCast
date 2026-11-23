@@ -159,6 +159,58 @@ class TestServiceQueue(unittest.TestCase):
             self.assertEqual(self.svc.delete(str(trash)), {"deleted": str(trash)})
             self.assertFalse(trash.exists())
 
+    def test_nested_trash_is_visible_and_restores_without_replacing_existing_file(self):
+        from pathlib import Path
+
+        file = Path(self.media_root) / "Season 1" / "Episode.mkv"
+        file.parent.mkdir()
+        file.write_bytes(b"original")
+
+        trashed = self.svc.trash(str(file))["trashed"]
+        self.assertFalse(file.exists())
+        self.assertEqual([item["path"] for item in self.svc.get_trash()], [trashed])
+        self.assertEqual(self.svc.restore(trashed), {"restored": str(file)})
+        self.assertEqual(file.read_bytes(), b"original")
+
+        trashed = self.svc.trash(str(file))["trashed"]
+        file.write_bytes(b"replacement")
+        restored = Path(self.svc.restore(trashed)["restored"])
+        self.assertEqual(restored.parent, file.parent)
+        self.assertNotEqual(restored, file)
+        self.assertEqual(restored.read_bytes(), b"original")
+        self.assertEqual(file.read_bytes(), b"replacement")
+        self.assertEqual(self.svc.get_trash(), [])
+
+    def test_trash_operations_reject_symlinks_that_lead_outside_library(self):
+        from pathlib import Path
+
+        root = Path(self.media_root)
+        outside = root.parent / "outside"
+        outside.mkdir()
+        original = outside / "Episode.mkv"
+        original.write_bytes(b"outside")
+        (root / "trash").symlink_to(outside, target_is_directory=True)
+        self.assertEqual(self.svc.get_trash(), [])
+        self.assertIn("error", self.svc.delete(str(root / "trash" / original.name)))
+        self.assertIn("error", self.svc.restore(str(root / "trash" / original.name)))
+        self.assertEqual(original.read_bytes(), b"outside")
+
+    def test_library_lists_completed_non_media_imports_with_duplicate_display_names(self):
+        from pathlib import Path
+
+        root = Path(self.media_root)
+        for folder in ("share-first", "share-second"):
+            import_dir = root / "inbox" / folder
+            import_dir.mkdir(parents=True)
+            (import_dir / "notes.txt").write_text(folder)
+            (import_dir / ".pending-copy.part").write_text("incomplete")
+
+        items = self.svc.library()
+        self.assertEqual({item["rel"] for item in items}, {
+            "inbox/share-first/notes.txt", "inbox/share-second/notes.txt",
+        })
+        self.assertTrue(all(item["non_media"] for item in items))
+
     @patch('castcast.service.CastService._scavenge_all_local_subtitles')
     @patch('castcast.service.CastService.preflight')
     @patch('castcast.service.guess_mime')

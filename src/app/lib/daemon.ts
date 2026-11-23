@@ -90,6 +90,7 @@ export interface LibraryItem extends Partial<Preflight> {
   rel: string;
   title?: string;
   size_bytes: number;
+  non_media?: boolean;
 }
 
 export interface SubtitleTrack {
@@ -219,6 +220,7 @@ export const daemon = {
   remaster: (path: string) => post<Preflight>("/remaster", { path }),
   cancelPrepare: () => post<Status>("/prepare/cancel"),
   trash: (path: string) => post<{ trashed?: string; error?: string }>("/trash", { path }),
+  restore: (path: string) => post<{ restored?: string; error?: string }>("/trash/restore", { path }),
   delete: (path: string) => post<{ deleted?: string; error?: string }>("/delete", { path }),
   play: () => post<Status>("/play"),
   pause: () => post<Status>("/pause"),

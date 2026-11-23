@@ -35,7 +35,7 @@ import {
 } from "./lib/daemon";
 import { PreflightPanel } from "./components/preflight-panel";
 import SubtitlesDrawer from "./components/SubtitlesDrawer";
-import { getSharedUrl, isNativeAndroid, listenForSharedUrl, stopNativeDaemon } from "./lib/native-daemon";
+import { getSharedUrl, isNativeAndroid, listenForSharedUrl, stopNativeDaemon, type SharedItems } from "./lib/native-daemon";
 import { PermissionRequisitions } from "./components/PermissionRequisitions";
 import { AmazonAuthCard } from "./components/AmazonAuthCard";
 import { DiscoveryBrowser } from "./lib/discovery-browser";
@@ -95,6 +95,8 @@ export default function App() {
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const pollTimerRef = useRef<number | null>(null);
   const isCheckingSharedRef = useRef(false);
+  const checkSharedAgainRef = useRef(false);
+  const pendingSharedLinks = useRef<string[]>([]);
 
   const [anomaly, setAnomaly] = useState<any | null>(null);
 
@@ -248,82 +250,109 @@ export default function App() {
   };
 
   const checkSharedUrl = useCallback(async () => {
-    if (isCheckingSharedRef.current) return;
+    if (isCheckingSharedRef.current) {
+      checkSharedAgainRef.current = true;
+      return;
+    }
     isCheckingSharedRef.current = true;
     try {
-      const result = await getSharedUrl();
-      if (result.url) {
-        let urlStr = result.url as string;
-        const isLocalFile = Boolean(result.isFile || urlStr.startsWith("/"));
+      do {
+        checkSharedAgainRef.current = false;
+        const device = statusRef.current?.device;
+        const pendingUrl = device ? pendingSharedLinks.current.shift() : undefined;
+        const result: SharedItems = pendingUrl ? { url: pendingUrl } : await getSharedUrl();
+        if (pendingUrl || result.morePending) checkSharedAgainRef.current = true;
 
-        if (!isLocalFile) {
-          if (urlStr.startsWith("intent://") || urlStr.startsWith("intent:")) {
-            const schemeMatch = urlStr.match(/;scheme=([a-zA-Z0-9+.-]+)/);
-            const scheme = schemeMatch ? schemeMatch[1] : "https";
-            const prefix = urlStr.startsWith("intent://") ? "intent://" : "intent:";
-            const bodyAndFragment = urlStr.slice(prefix.length);
-            const body = bodyAndFragment.split("#")[0];
-            if (body) {
-              urlStr = `${scheme}://${body}`;
-            } else {
-              const fallbackMatch = urlStr.match(/[;?&]S\.browser_fallback_url=([^;]+)/);
-              if (fallbackMatch) {
-                urlStr = decodeURIComponent(fallbackMatch[1]);
+        const fileCount = result.files?.length ?? 0;
+        const importErrors = result.errors ?? [];
+        if (result.batch || importErrors.length || (fileCount && !device)) {
+          if (fileCount) await loadLibrary();
+          setNotice([
+            fileCount ? `Imported ${fileCount} ${fileCount === 1 ? "file" : "files"} into the library.` : "",
+            ...importErrors,
+          ].filter(Boolean).join(" ") || "The share did not contain any files.");
+          continue;
+        }
+
+        if (result.url && !device) {
+          pendingSharedLinks.current.push(result.url);
+          setNotice("Connect to a Chromecast to open the shared link.");
+          continue;
+        }
+
+        if (result.url) {
+          let urlStr = result.url as string;
+          const isLocalFile = Boolean(result.isFile || urlStr.startsWith("/"));
+
+          if (!isLocalFile) {
+            if (urlStr.startsWith("intent://") || urlStr.startsWith("intent:")) {
+              const schemeMatch = urlStr.match(/;scheme=([a-zA-Z0-9+.-]+)/);
+              const scheme = schemeMatch ? schemeMatch[1] : "https";
+              const prefix = urlStr.startsWith("intent://") ? "intent://" : "intent:";
+              const bodyAndFragment = urlStr.slice(prefix.length);
+              const body = bodyAndFragment.split("#")[0];
+              if (body) {
+                urlStr = `${scheme}://${body}`;
+              } else {
+                const fallbackMatch = urlStr.match(/[;?&]S\.browser_fallback_url=([^;]+)/);
+                if (fallbackMatch) {
+                  urlStr = decodeURIComponent(fallbackMatch[1]);
+                }
               }
             }
           }
-        }
 
-        const isAmazon = !isLocalFile && (urlStr.includes("amazon.com") || urlStr.includes("primevideo.com") || urlStr.includes("gti="));
-        const isPlaying = statusRef.current?.cast?.state && statusRef.current.cast.state !== "idle" && statusRef.current.cast.state !== "IDLE" && statusRef.current.cast.state !== "unknown" && statusRef.current.cast.state !== "dead" && statusRef.current.cast.state !== "disconnected";
+          const isAmazon = !isLocalFile && (urlStr.includes("amazon.com") || urlStr.includes("primevideo.com") || urlStr.includes("gti="));
+          const isPlaying = statusRef.current?.cast?.state && statusRef.current.cast.state !== "idle" && statusRef.current.cast.state !== "IDLE" && statusRef.current.cast.state !== "unknown" && statusRef.current.cast.state !== "dead" && statusRef.current.cast.state !== "disconnected";
         
-        if (isAmazon && isPlaying) {
-          setNotice(`Adding Amazon video to queue...`);
-          try {
-            await daemon.addAmazonQueue(urlStr);
-            setNotice(`Added to Amazon Queue.`);
-            await loadLibrary();
-          } catch (err) {
-            setNotice(`Failed to add to queue: ${err}`);
-          }
-        } else if (isLocalFile) {
-          const displayName = result.fileName || urlStr.split("/").pop() || "file";
-          setNotice(`Casting shared file: ${displayName}...`);
-          try {
-            await daemon.cast(urlStr, true);
-            setNotice(`Success! Sending ${displayName} to TV...`);
-            await loadLibrary();
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            setNotice(`Failed to cast shared file: ${msg}`);
-          }
-        } else {
-          setNotice(`Extracting streams, please wait...`);
-          try {
-            await daemon.cast(urlStr, true);
-            setNotice(`Success! Sending stream to TV...`);
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            setNotice(msg);
+          if (isAmazon && isPlaying) {
+            setNotice(`Adding Amazon video to queue...`);
+            try {
+              await daemon.addAmazonQueue(urlStr);
+              setNotice(`Added to Amazon Queue.`);
+              await loadLibrary();
+            } catch (err) {
+              setNotice(`Failed to add to queue: ${err}`);
+            }
+          } else if (isLocalFile) {
+            const displayName = result.fileName || urlStr.split("/").pop() || "file";
+            setNotice(`Casting shared file: ${displayName}...`);
+            try {
+              await daemon.cast(urlStr, true);
+              setNotice(`Success! Sending ${displayName} to TV...`);
+              await loadLibrary();
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              setNotice(`Failed to cast shared file: ${msg}`);
+            }
+          } else {
+            setNotice(`Extracting streams, please wait...`);
+            try {
+              await daemon.cast(urlStr, true);
+              setNotice(`Success! Sending stream to TV...`);
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              setNotice(msg);
+            }
           }
         }
-      }
+      } while (checkSharedAgainRef.current);
     } catch (e) {
-      console.error(e);
+      setNotice(`Could not open the share: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       isCheckingSharedRef.current = false;
     }
   }, []);
 
   useEffect(() => {
-    if (!online || !status?.device) return;
-    checkSharedUrl();
+    if (!online || !isNativeAndroid()) return;
     const handleVis = () => { if (document.visibilityState === "visible") checkSharedUrl(); };
     document.addEventListener("visibilitychange", handleVis);
-    const nativeListener = isNativeAndroid() ? listenForSharedUrl(checkSharedUrl) : null;
+    const nativeListener = listenForSharedUrl(checkSharedUrl);
+    void nativeListener.then(checkSharedUrl).catch(console.error);
     return () => {
       document.removeEventListener("visibilitychange", handleVis);
-      void nativeListener?.then((listener) => listener.remove()).catch(console.error);
+      void nativeListener.then((listener) => listener.remove()).catch(console.error);
     };
   }, [checkSharedUrl, online, status?.device?.host]);
 
@@ -403,27 +432,35 @@ export default function App() {
     e.stopPropagation();
     run("trash", async () => {
       await daemon.trash(path);
-      await loadLibrary();
-    });
-  };
-
-  const deleteFile = (path: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    run("delete", async () => {
-      await daemon.delete(path);
-      await loadLibrary();
-    });
-  };
-
-  const emptyTrash = () =>
-    run("empty-trash", async () => {
-      for (const item of trashItems) {
-        const result = await daemon.delete(item.path);
-        if (result.error) throw new Error(`${item.rel}: ${result.error}`);
+      if (selected?.path === path) {
+        setSelected(null);
+        setReport(null);
       }
       await loadLibrary();
+    });
+  };
+
+  const restoreFile = (path: string) =>
+    run("restore", async () => {
+      const result = await daemon.restore(path);
+      await loadLibrary();
+      if (result.restored) setNotice(`Restored to ${result.restored}`);
+    });
+
+  const emptyTrash = () => {
+    const count = trashItems.length;
+    if (!count || !window.confirm(`Permanently delete ${count} ${count === 1 ? "file" : "files"} from Trash?`)) return;
+    return run("empty-trash", async () => {
+      try {
+        for (const item of trashItems) {
+          await daemon.delete(item.path);
+        }
+      } finally {
+        await loadLibrary();
+      }
       setNotice("Trash emptied permanently.");
     });
+  };
 
   const select = (item: LibraryItem) =>
     run("preflight", async () => {
@@ -462,11 +499,12 @@ export default function App() {
 
   const castQueue = () =>
     run("queue", async () => {
-      if (!library.length) throw new Error("Scan the queue before casting it.");
-      const selectedIndex = selected ? library.findIndex((item) => item.path === selected.path) : -1;
+      const videos = library.filter((item) => !item.non_media);
+      if (!videos.length) throw new Error("Scan the queue before casting it.");
+      const selectedIndex = selected ? videos.findIndex((item) => item.path === selected.path) : -1;
       const ordered = selectedIndex >= 0
-        ? [...library.slice(selectedIndex), ...library.slice(0, selectedIndex)]
-        : library;
+        ? [...videos.slice(selectedIndex), ...videos.slice(0, selectedIndex)]
+        : videos;
       const result = await daemon.queue(ordered.map((item) => item.path));
       if (result.error) throw new Error(result.error);
       const first = ordered[0];
@@ -752,11 +790,11 @@ export default function App() {
         {/* library */}
         <section className="rounded border border-emerald-500/20 bg-black/40 p-3">
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-emerald-500/50 uppercase tracking-wider">Queue - Local, YouTube</span>
+            <span className="text-emerald-500/50 uppercase tracking-wider">Library</span>
             <div className="flex items-center gap-2">
               <button
                 onClick={castQueue}
-                disabled={!status?.device || !library.length || busy === "queue"}
+                disabled={!status?.device || !library.some((item) => !item.non_media) || busy === "queue"}
                 className="flex items-center gap-1.5 rounded border border-emerald-500/30 px-2 py-1 text-xs text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-40"
               >
                 {busy === "queue" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Cast className="h-3.5 w-3.5" />}
@@ -772,6 +810,9 @@ export default function App() {
             </div>
           </div>
 
+          {status?.media_server.roots.map((root) => (
+            <p key={root} className="mb-2 break-all font-mono text-xs text-emerald-400/70">{root}</p>
+          ))}
           {library.length === 0 ? (
             <div className="py-4 text-center text-emerald-500/40">
               no files loaded — tap scan
@@ -785,7 +826,7 @@ export default function App() {
                   onDragStart={(e) => handleDragStart(e, idx, 'library')}
                   onDragOver={handleDragOver}
                   onDrop={(e) => handleDrop(e, idx, 'library')}
-                  onClick={() => select(item)}
+                  onClick={() => { if (!item.non_media) void select(item); }}
                   className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left cursor-pointer hover:bg-emerald-500/10 ${
                     selected?.path === item.path ? "bg-emerald-500/15" : ""
                   }`}
@@ -795,6 +836,14 @@ export default function App() {
                   <span className="shrink-0 font-mono text-emerald-500/40">
                     {formatBytes(item.size_bytes)}
                   </span>
+                  {item.non_media && <button
+                    disabled={!status?.device || !!busy}
+                    onClick={() => run("cast", async () => {
+                      await daemon.cast(item.path, true);
+                      markLoading(item.name, item.path);
+                    })}
+                    className="rounded border border-emerald-500/30 px-2 py-1 text-xs disabled:opacity-40"
+                  >Cast</button>}
                   <button
                     onClick={(e) => trashFile(item.path, e)}
                     className="flex items-center gap-1.5 rounded border border-emerald-500/30 px-2 py-1 text-xs hover:bg-emerald-500/20"
@@ -869,7 +918,7 @@ export default function App() {
             <span className="text-emerald-500/50 uppercase tracking-wider">Trash</span>
             <button
               onClick={emptyTrash}
-              disabled={!trashItems.length || busy === "empty-trash"}
+              disabled={!trashItems.length || !!busy}
               className="flex items-center gap-1.5 rounded border border-rose-500/30 px-2 py-1 text-xs text-rose-400 hover:bg-rose-500/20 disabled:opacity-40"
             >
               {busy === "empty-trash" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
@@ -894,10 +943,11 @@ export default function App() {
                     {formatBytes(item.size_bytes)}
                   </span>
                   <button
-                    onClick={(e) => deleteFile(item.path, e)}
-                    className="flex items-center gap-1.5 rounded border border-rose-500/30 px-2 py-1 text-xs text-rose-400 hover:bg-rose-500/20"
+                    onClick={() => restoreFile(item.path)}
+                    disabled={!!busy}
+                    className="rounded border border-emerald-500/30 px-2 py-1 text-xs hover:bg-emerald-500/20 disabled:opacity-40"
                   >
-                    Permanently Delete
+                    Restore
                   </button>
                 </div>
               ))}

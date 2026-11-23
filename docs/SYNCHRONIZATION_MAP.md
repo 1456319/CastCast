@@ -37,6 +37,8 @@ When adding a new feature or file, determine its placement using the following a
 |---|---|---|---|---|---|---|---|
 | POST | `/new_queue/add` | ... | ... | ... | `api.py` | `daemon.ts` | ... |
 | GET | `/diagnostics/logs` | ... | ... | ... | `api.py` | `App.tsx` | ... |
+| GET | `/trash` | — | `{items}`, including nested paths | — | `service.py` | `daemon.getTrash` | `test_service_queue.py` |
+| POST | `/trash/restore` | `{path}` in Trash | `{restored}` | 400 if path is absent, `error` if the move fails | `service.py` | `daemon.restore` | `test_service_queue.py` |
 
 ### SSE Events
 | Name | Producer | Payload Schema | Frontend Subscriber/State Owner | Ordering/Replay Behavior | Test |
@@ -58,6 +60,7 @@ When adding a new feature or file, determine its placement using the following a
 | TypeScript Signature | Java Method/Event | Registration | Permissions | Lifecycle Behavior | Test |
 |---|---|---|---|---|---|
 | `RootProvision` | `startDaemon` | Capacitor | ... | ... | ... |
+| `getSharedUrl(): Promise<SharedItems>` | `RootProvision.getSharedUrl` / `sharedUrl` | Capacitor | Android URI read grants | Import a pending share into the active library inbox and return file results and errors | Android share sheet device check |
 
 ### Receiver Contract
 | Sender Producer | Receiver Consumer | Payload Shape/Defaults | Compatibility Policy | Test |

@@ -8,6 +8,16 @@ export interface RequisitionReport {
 
 type SettingsTarget = "app" | "storage" | "battery";
 
+export interface SharedItems {
+  url?: string;
+  isFile?: boolean;
+  fileName?: string;
+  files?: Array<{ url: string; fileName: string }>;
+  errors?: string[];
+  batch?: boolean;
+  morePending?: boolean;
+}
+
 const native = registerPlugin<{
   checkRequisitions(): Promise<RequisitionReport>;
   checkRoot(): Promise<RequisitionReport>;
@@ -15,7 +25,7 @@ const native = registerPlugin<{
   startDaemon(): Promise<{ started: boolean }>;
   stopDaemon(): Promise<{ stopped: boolean }>;
   openSettings(options: { target: SettingsTarget }): Promise<void>;
-  getSharedUrl(): Promise<{ url?: string; isFile?: boolean; fileName?: string }>;
+  getSharedUrl(): Promise<SharedItems>;
   addListener(event: "sharedUrl", listener: () => void): Promise<PluginListenerHandle>;
 }>("RootProvision");
 
@@ -26,5 +36,5 @@ export const requestAccess = () => native.requestAccess();
 export const startNativeDaemon = () => native.startDaemon();
 export const stopNativeDaemon = () => native.stopDaemon();
 export const openNativeSettings = (target: SettingsTarget) => native.openSettings({ target });
-export const getSharedUrl = async () => isNativeAndroid() ? native.getSharedUrl() : { url: undefined, isFile: undefined, fileName: undefined };
+export const getSharedUrl = async (): Promise<SharedItems> => isNativeAndroid() ? native.getSharedUrl() : {};
 export const listenForSharedUrl = (listener: () => void) => native.addListener("sharedUrl", listener);

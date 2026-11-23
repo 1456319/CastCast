@@ -6,6 +6,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.wifi.WifiManager;
@@ -32,6 +33,7 @@ public final class CastDaemonService extends Service {
     private static final AtomicBoolean WORKER_ACTIVE = new AtomicBoolean();
     static volatile String state = "stopped";
     static volatile String lastError = "";
+    private static volatile File activeMediaDirectory;
 
     private final AtomicBoolean stopRequested = new AtomicBoolean();
     private PowerManager.WakeLock wakeLock;
@@ -80,6 +82,7 @@ public final class CastDaemonService extends Service {
             } finally {
                 stopRequested.set(true);
                 READY.set(false);
+                activeMediaDirectory = null;
                 state = "stopped";
                 WORKER_ACTIVE.set(false);
                 stopSelf();
@@ -97,11 +100,13 @@ public final class CastDaemonService extends Service {
         }
         File config = new File(getFilesDir(), "config");
         File work = new File(getFilesDir(), "work");
-        File media = mediaRoot();
+        File media = configuredMediaDirectory(this);
         mkdir(config);
         mkdir(work);
+        mkdir(media);
         mkdir(new File(media, "trash"));
         if (stopRequested.get()) return;
+        activeMediaDirectory = media;
 
         if (!Python.isStarted()) Python.start(new AndroidPlatform(getApplicationContext()));
         Python python = Python.getInstance();
@@ -116,12 +121,20 @@ public final class CastDaemonService extends Service {
             media.getAbsolutePath(), work.getAbsolutePath(), config.getAbsolutePath(), stopRequested, READY);
     }
 
-    private File mediaRoot() {
-        boolean shared = Build.VERSION.SDK_INT >= 30 ? Environment.isExternalStorageManager()
-            : checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
-        if (!shared) return new File(getFilesDir(), "media");
+    static boolean hasSharedStorage(Context context) {
+        return Build.VERSION.SDK_INT >= 30 ? Environment.isExternalStorageManager()
+            : context.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    static File configuredMediaDirectory(Context context) {
+        if (!hasSharedStorage(context)) return new File(context.getFilesDir(), "media");
         return new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
             "CastCast/Chromecast");
+    }
+
+    static File mediaDirectory(Context context) {
+        File active = activeMediaDirectory;
+        return active != null ? active : configuredMediaDirectory(context);
     }
 
     private static void mkdir(File directory) throws IOException {

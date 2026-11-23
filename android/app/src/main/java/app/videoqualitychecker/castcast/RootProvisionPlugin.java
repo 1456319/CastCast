@@ -2,12 +2,13 @@
 package app.videoqualitychecker.castcast;
 
 import android.Manifest;
+import android.content.ClipData;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
-import android.os.Environment;
+import android.os.Bundle;
 import android.os.PowerManager;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
@@ -26,10 +27,14 @@ import com.topjohnwu.superuser.Shell;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.ArrayList;
-import java.util.UUID;
+import java.nio.file.Files;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 @CapacitorPlugin(name = "RootProvision", permissions = {
     @Permission(alias = "notifications", strings = {Manifest.permission.POST_NOTIFICATIONS}),
@@ -38,6 +43,8 @@ import java.util.UUID;
 })
 public final class RootProvisionPlugin extends Plugin {
     private volatile String rootState = "Unchecked";
+    private final ConcurrentLinkedQueue<Intent> pendingShares = new ConcurrentLinkedQueue<>();
+    private Intent lastCapturedShare;
 
     @PluginMethod
     public void checkRequisitions(PluginCall call) {
@@ -117,166 +124,151 @@ public final class RootProvisionPlugin extends Plugin {
     }
 
     @Override
+    public void load() {
+        if (getActivity() != null) captureShare(getActivity().getIntent());
+    }
+
+    @Override
     protected void handleOnNewIntent(Intent intent) {
         super.handleOnNewIntent(intent);
-        if (getActivity() != null) {
-            getActivity().setIntent(intent);
-        }
-        notifyListeners("sharedUrl", new JSObject());
+        if (captureShare(intent)) notifyListeners("sharedUrl", new JSObject());
+    }
+
+    private synchronized boolean captureShare(Intent intent) {
+        if (intent == null || intent == lastCapturedShare) return false;
+        String action = intent.getAction();
+        if (!Intent.ACTION_SEND.equals(action) && !Intent.ACTION_SEND_MULTIPLE.equals(action)
+            && !Intent.ACTION_VIEW.equals(action)) return false;
+        lastCapturedShare = intent;
+        pendingShares.add(new Intent(intent));
+        return true;
     }
 
     @PluginMethod
-    public synchronized void getSharedUrl(PluginCall call) {
-        if (getActivity() == null) {
-            call.resolve(new JSObject());
+    public void getSharedUrl(PluginCall call) {
+        Intent intent = pendingShares.poll();
+        JSObject result = new JSObject();
+        if (intent == null) {
+            call.resolve(result);
             return;
         }
 
-        Intent intent = getActivity().getIntent();
-        if (intent == null || intent.getAction() == null) {
-            call.resolve(new JSObject());
-            return;
-        }
-
-        String action = intent.getAction();
-        JSObject ret = new JSObject();
-
-        Uri fileUri = null;
-        if (Intent.ACTION_SEND.equals(action) && intent.hasExtra(Intent.EXTRA_STREAM)) {
-            fileUri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
-        } else if (Intent.ACTION_VIEW.equals(action)) {
-            fileUri = intent.getData();
-        } else if (Intent.ACTION_SEND_MULTIPLE.equals(action) && intent.hasExtra(Intent.EXTRA_STREAM)) {
-            ArrayList<Uri> uris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
-            if (uris != null && !uris.isEmpty()) {
-                fileUri = uris.get(0);
-            }
-        } else if (Intent.ACTION_SEND.equals(action) && intent.getData() != null) {
-            fileUri = intent.getData();
-        }
-
-        String sharedText = null;
-        if (Intent.ACTION_SEND.equals(action) && intent.hasExtra(Intent.EXTRA_TEXT)) {
-            sharedText = intent.getStringExtra(Intent.EXTRA_TEXT);
-        }
-
-        // Clean intent action and extras immediately to prevent duplicate execution
-        intent.removeExtra(Intent.EXTRA_STREAM);
-        intent.removeExtra(Intent.EXTRA_TEXT);
-        intent.setData(null);
-        intent.setAction(null);
-
-        if (fileUri != null) {
-            String fileName = null;
-            if ("content".equalsIgnoreCase(fileUri.getScheme())) {
-                try (Cursor cursor = getContext().getContentResolver().query(
-                        fileUri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
-                    if (cursor != null && cursor.moveToFirst()) {
-                        int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                        if (nameIndex >= 0) {
-                            fileName = cursor.getString(nameIndex);
-                        }
-                    }
-                } catch (Exception ignored) {
-                }
-            }
-
-            if (fileName == null || fileName.trim().isEmpty()) {
-                fileName = fileUri.getLastPathSegment();
-            }
-            if (fileName != null) {
-                fileName = new File(fileName).getName();
-            }
-            if (fileName == null || fileName.trim().isEmpty() || ".".equals(fileName) || "..".equals(fileName)) {
-                fileName = "shared_file_" + System.currentTimeMillis();
-            }
-
-            File inboxDir = null;
-            try {
-                File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                if (downloadDir != null) {
-                    inboxDir = new File(downloadDir, "CastCast/Chromecast/inbox");
-                }
-            } catch (Exception ignored) {
-            }
-            if (inboxDir == null) {
-                inboxDir = new File("/storage/emulated/0/Download/CastCast/Chromecast/inbox");
-            }
-            if (!inboxDir.exists()) {
-                inboxDir.mkdirs();
-            }
-            if (!inboxDir.canWrite()) {
-                File extFilesDir = getContext().getExternalFilesDir(null);
-                if (extFilesDir != null) {
-                    inboxDir = new File(extFilesDir, "inbox");
-                } else {
-                    inboxDir = new File(getContext().getCacheDir(), "inbox");
-                }
-                inboxDir.mkdirs();
-            }
-
-            if ("file".equalsIgnoreCase(fileUri.getScheme()) && fileUri.getPath() != null) {
-                File sourceFile = new File(fileUri.getPath());
+        JSArray files = new JSArray();
+        JSArray errors = new JSArray();
+        try {
+            Set<Uri> uris = sharedUris(intent);
+            int index = 0;
+            for (Uri uri : uris) {
+                String name = "File " + ++index;
                 try {
-                    if (sourceFile.exists()) {
-                        File destCanonical = new File(inboxDir, fileName).getCanonicalFile();
-                        if (sourceFile.getCanonicalFile().equals(destCanonical) ||
-                            sourceFile.getCanonicalPath().startsWith(inboxDir.getCanonicalPath())) {
-                            ret.put("url", sourceFile.getAbsolutePath());
-                            ret.put("isFile", true);
-                            ret.put("fileName", sourceFile.getName());
-                            call.resolve(ret);
-                            return;
-                        }
-                    }
-                } catch (Exception ignored) {
+                    name = displayName(uri);
+                    files.put(importFile(uri, name));
+                } catch (IOException | RuntimeException error) {
+                    errors.put(name + ": " + error.getMessage());
                 }
             }
 
-            File tmpFile = new File(inboxDir, ".tmp_" + System.currentTimeMillis() + "_" + UUID.randomUUID().toString().substring(0, 8));
-            File targetFile = new File(inboxDir, fileName);
-
-            try (InputStream in = getContext().getContentResolver().openInputStream(fileUri);
-                 OutputStream out = new FileOutputStream(tmpFile)) {
-                if (in != null) {
-                    byte[] buffer = new byte[65536];
-                    int len;
-                    while ((len = in.read(buffer)) != -1) {
-                        out.write(buffer, 0, len);
-                    }
-                    out.flush();
-                    tmpFile.setReadable(true, false);
-                    tmpFile.setWritable(true, false);
-
-                    if (targetFile.exists()) {
-                        targetFile.delete();
-                    }
-                    if (!tmpFile.renameTo(targetFile)) {
-                        targetFile = tmpFile;
-                    }
-                    targetFile.setReadable(true, false);
-
-                    ret.put("url", targetFile.getAbsolutePath());
-                    ret.put("isFile", true);
-                    ret.put("fileName", targetFile.getName());
-                    call.resolve(ret);
-                    return;
+            if (uris.isEmpty() && Intent.ACTION_SEND.equals(intent.getAction())) {
+                CharSequence text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+                if (text != null && !text.toString().trim().isEmpty()) {
+                    result.put("url", text.toString().trim());
+                    result.put("isFile", false);
                 }
-            } catch (Exception e) {
-                if (tmpFile.exists()) {
-                    tmpFile.delete();
-                }
-                call.reject("Failed to stage shared file: " + e.getMessage(), e);
-                return;
             }
-        } else if (sharedText != null && !sharedText.trim().isEmpty()) {
-            ret.put("url", sharedText.trim());
-            ret.put("isFile", false);
-            call.resolve(ret);
-            return;
+            boolean batch = Intent.ACTION_SEND_MULTIPLE.equals(intent.getAction()) || uris.size() > 1;
+            result.put("batch", batch);
+            if (!batch && files.length() == 1) {
+                JSObject file = (JSObject) files.opt(0);
+                result.put("url", file.getString("url"));
+                result.put("fileName", file.getString("fileName"));
+                result.put("isFile", true);
+            }
+        } catch (RuntimeException error) {
+            errors.put("Could not read the share: " + error.getMessage());
+        }
+        result.put("files", files);
+        result.put("errors", errors);
+        result.put("morePending", !pendingShares.isEmpty());
+        call.resolve(result);
+    }
+
+    private static Set<Uri> sharedUris(Intent intent) {
+        Set<Uri> uris = new LinkedHashSet<>();
+        Bundle extras = intent.getExtras();
+        Object streams = extras == null ? null : extras.get(Intent.EXTRA_STREAM);
+        if (streams instanceof Uri) {
+            uris.add((Uri) streams);
+        } else if (streams instanceof List<?>) {
+            for (Object stream : (List<?>) streams) {
+                if (stream instanceof Uri) uris.add((Uri) stream);
+            }
+        }
+        if (intent.getData() != null) uris.add(intent.getData());
+        ClipData clip = intent.getClipData();
+        if (clip != null) {
+            for (int index = 0; index < clip.getItemCount(); index++) {
+                Uri uri = clip.getItemAt(index).getUri();
+                if (uri != null) uris.add(uri);
+            }
+        }
+        return uris;
+    }
+
+    private String displayName(Uri uri) {
+        String name = null;
+        if ("content".equalsIgnoreCase(uri.getScheme())) {
+            try (Cursor cursor = getContext().getContentResolver().query(
+                    uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+                if (cursor != null && cursor.moveToFirst()) {
+                    int column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                    if (column >= 0) name = cursor.getString(column);
+                }
+            } catch (RuntimeException ignored) {
+                // Some providers permit reading data but omit metadata.
+            }
+        }
+        if (name == null || name.trim().isEmpty()) name = uri.getLastPathSegment();
+        name = name == null ? "" : new File(name).getName().trim();
+        if (name.isEmpty() || ".".equals(name) || "..".equals(name)) return "shared_file";
+        return name.startsWith(".") ? "shared" + name : name;
+    }
+
+    private JSObject importFile(Uri uri, String name) throws IOException {
+        File root = CastDaemonService.mediaDirectory(getContext()).getCanonicalFile();
+        File inbox = new File(root, "inbox");
+        if (!inbox.equals(inbox.getCanonicalFile()) ||
+            (!inbox.isDirectory() && !inbox.mkdirs()) || !inbox.canWrite()) {
+            throw new IOException("Cannot write to " + inbox);
         }
 
-        call.resolve(ret);
+        File folder = Files.createTempDirectory(inbox.toPath(), "share-").toFile();
+        File destination = new File(folder, name);
+        File temporary = null;
+        boolean complete = false;
+        try {
+            temporary = File.createTempFile(".pending-", ".part", folder);
+            try (InputStream input = getContext().getContentResolver().openInputStream(uri)) {
+                if (input == null) throw new IOException("The source app did not provide a readable file.");
+                try (OutputStream output = new FileOutputStream(temporary)) {
+                    byte[] buffer = new byte[65536];
+                    int count;
+                    while ((count = input.read(buffer)) != -1) {
+                        output.write(buffer, 0, count);
+                    }
+                }
+            }
+            if (!temporary.renameTo(destination)) throw new IOException("Could not finish importing the file.");
+            complete = true;
+            JSObject file = new JSObject();
+            file.put("url", destination.getAbsolutePath());
+            file.put("fileName", name);
+            return file;
+        } finally {
+            if (!complete) {
+                if (temporary != null) temporary.delete();
+                folder.delete();
+            }
+        }
     }
 
     private JSObject report() {
@@ -285,8 +277,9 @@ public final class RootProvisionPlugin extends Plugin {
             && new File(binaries, "libffprobe.so").canExecute();
         boolean notifications = Build.VERSION.SDK_INT < 33 || granted(Manifest.permission.POST_NOTIFICATIONS);
         boolean nearby = Build.VERSION.SDK_INT < 33 || granted(Manifest.permission.NEARBY_WIFI_DEVICES);
-        boolean storage = Build.VERSION.SDK_INT >= 30 ? Environment.isExternalStorageManager()
-            : granted(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        boolean storage = CastDaemonService.hasSharedStorage(getContext());
+        File configuredDirectory = CastDaemonService.configuredMediaDirectory(getContext());
+        File mediaDirectory = CastDaemonService.mediaDirectory(getContext());
         boolean battery = getContext().getSystemService(PowerManager.class)
             .isIgnoringBatteryOptimizations(getContext().getPackageName());
         JSArray items = new JSArray();
@@ -294,7 +287,11 @@ public final class RootProvisionPlugin extends Plugin {
         items.put(item("binaries", "FFmpeg and FFprobe", tools, tools ? "Bundled" : "Missing from APK"));
         items.put(item("notifications", "Notifications", notifications, notifications ? "Allowed" : "Optional"));
         items.put(item("nearby", "Nearby devices", nearby, nearby ? "Allowed" : "Optional on this build"));
-        items.put(item("storage", "Shared media folder", storage, storage ? "Allowed" : "Using private storage"));
+        items.put(item("storage", "Library folder", CastDaemonService.READY.get() && mediaDirectory.canWrite(),
+            mediaDirectory.getAbsolutePath()));
+        String storageDetail = storage ? "Allowed" : "Using private storage";
+        if (!configuredDirectory.equals(mediaDirectory)) storageDetail += ". Restart the daemon to apply the change.";
+        items.put(item("storage", "Shared storage", storage, storageDetail));
         items.put(item("battery", "Unrestricted battery", battery, battery ? "Allowed" : "Optional"));
         String state = CastDaemonService.READY.get() ? "running" : CastDaemonService.state;
         items.put(item("daemon", "Embedded Python", "running".equals(state),
