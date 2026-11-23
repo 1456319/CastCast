@@ -39,4 +39,35 @@ leaves the published version intact. A rerun of a published commit on the same
 channel uses its existing release. Prototype builds are prereleases with
 `prototype-v` tags and leave the latest stable release link intact.
 
+### Configure release signing once
+
+Prereleases and stable releases use one persistent PKCS#12 keystore with the
+alias `castcast`. A repository owner can create it with a JDK and an authenticated
+GitHub CLI. Run this from a private directory outside the checkout.
+
+```sh
+umask 077
+keytool -genkeypair -storetype PKCS12 -keystore castcast-release.p12 \
+  -alias castcast -keyalg RSA -keysize 3072 -validity 10000 \
+  -dname 'CN=CastCast'
+base64 < castcast-release.p12 | tr -d '\n' | \
+  gh secret set CASTCAST_APK_KEYSTORE_BASE64 --repo 1456319/CastCast
+gh secret set CASTCAST_APK_SIGNING_PASSWORD --repo 1456319/CastCast
+fingerprint=$(keytool -exportcert -keystore castcast-release.p12 \
+  -alias castcast | sha256sum | cut -d' ' -f1)
+gh variable set CASTCAST_APK_SIGNER_SHA256 --repo 1456319/CastCast \
+  --body "$fingerprint"
+```
+
+Use the keystore password when the CLI prompts for the signing secret. Keep an
+encrypted backup of the keystore and password. GitHub repository secrets hold
+the signing inputs and the fingerprint is a public repository variable.
+Publishing stops if the signing settings are missing or the APK certificate
+differs from the fingerprint. Pull requests only exercise temporary signing.
+
+Switching from the earlier debug-signed APKs takes one reinstall. Back up
+app-private data you need before uninstalling. Files in the public CastCast
+Downloads folder are independent of APK signing. Future releases signed with
+the same key can update the app in place. [Android signing guide](https://developer.android.com/studio/publish/app-signing)
+
 The desktop daemon is still available with `PYTHONPATH=daemon python -m castcast serve`.

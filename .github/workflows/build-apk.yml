@@ -3,6 +3,8 @@ name: Build APK
 on:
   push:
     branches: [main, master, 'prototype/**']
+  pull_request:
+    branches: [main, master, 'prototype/**']
 
 permissions:
   contents: read
@@ -18,6 +20,7 @@ jobs:
       version: ${{ steps.release.outputs.version }}
       tag: ${{ steps.release.outputs.tag }}
       published: ${{ steps.release.outputs.published }}
+      signer: ${{ steps.sign.outputs.signer }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -65,6 +68,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_CHANNEL: ${{ startsWith(github.ref, 'refs/heads/prototype/') && 'prototype' || 'stable' }}
         run: |
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            printf 'version=2.00-dev\ncode=200\npublished=false\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
             --jq '.[] | select(.draft == false) | [.tag_name, .target_commitish] | @tsv' \
             > "$RUNNER_TEMP/published-releases.tsv"
@@ -104,26 +111,69 @@ jobs:
           VERSION_NAME: ${{ steps.release.outputs.version }}
           VERSION_CODE: ${{ steps.release.outputs.code }}
         working-directory: ./android
-        run: ./gradlew assembleDebug "-PcastcastVersionName=$VERSION_NAME" "-PcastcastVersionCode=$VERSION_CODE"
+        run: ./gradlew assembleRelease "-PcastcastVersionName=$VERSION_NAME" "-PcastcastVersionCode=$VERSION_CODE"
 
-      - name: Verify APK signature, version and native library alignment
+      - name: Sign and verify the APK
+        id: sign
         if: steps.release.outputs.published == 'false'
         env:
           VERSION_NAME: ${{ steps.release.outputs.version }}
           VERSION_CODE: ${{ steps.release.outputs.code }}
+          APK_KEYSTORE_BASE64: ${{ github.event_name == 'push' && secrets.CASTCAST_APK_KEYSTORE_BASE64 || '' }}
+          APK_SIGNING_PASSWORD: ${{ github.event_name == 'push' && secrets.CASTCAST_APK_SIGNING_PASSWORD || '' }}
+          APK_SIGNER_SHA256: ${{ github.event_name == 'push' && vars.CASTCAST_APK_SIGNER_SHA256 || '' }}
         run: |
-          apk=android/app/build/outputs/apk/debug/app-debug.apk
+          set -euo pipefail
+          umask 077
+          signing_dir=$(mktemp -d "$RUNNER_TEMP/castcast-signing.XXXXXX")
+          trap 'rm -rf -- "$signing_dir"' EXIT
+          keystore="$signing_dir/castcast.p12"
+
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            # Exercise the release signing path without using the release key.
+            APK_SIGNING_PASSWORD=$(openssl rand -hex 24)
+            export APK_SIGNING_PASSWORD
+            keytool -genkeypair -storetype PKCS12 -keystore "$keystore" \
+              -alias castcast -keyalg RSA -keysize 2048 -validity 1 \
+              -dname 'CN=CastCast CI Test' -storepass:env APK_SIGNING_PASSWORD
+            expected=$(keytool -exportcert -keystore "$keystore" -alias castcast \
+              -storepass:env APK_SIGNING_PASSWORD | sha256sum | cut -d' ' -f1)
+          else
+            expected=$(printf '%s' "$APK_SIGNER_SHA256" | tr -d '[:space:]:' | tr 'A-F' 'a-f')
+            if [[ -z "$APK_KEYSTORE_BASE64" || -z "$APK_SIGNING_PASSWORD" || ! "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+              echo '::error::Configure the CastCast signing secrets and certificate fingerprint in PACKAGING.md.'
+              exit 1
+            fi
+            printf '%s' "$APK_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+            unset APK_KEYSTORE_BASE64
+          fi
+
           build_tools=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n1)
           android_tools=$(dirname "$build_tools")
-          "$android_tools/apksigner" verify "$apk"
+          unsigned=android/app/build/outputs/apk/release/app-release-unsigned.apk
+          aligned="$signing_dir/aligned.apk"
+          mkdir -p apk
+          apk="apk/CastCast-$VERSION_NAME.apk"
+          "$android_tools/zipalign" -P 16 -f 4 "$unsigned" "$aligned"
+          "$android_tools/apksigner" sign --ks "$keystore" --ks-type PKCS12 \
+            --ks-key-alias castcast --ks-pass env:APK_SIGNING_PASSWORD \
+            --key-pass env:APK_SIGNING_PASSWORD --out "$apk" "$aligned"
+
+          certs=$("$android_tools/apksigner" verify --print-certs "$apk")
+          actual=$(sed -En 's/^Signer #[0-9]+ certificate SHA-256 digest: //p' <<< "$certs")
+          if [[ "$actual" != "$expected" ]]; then
+            echo '::error::The APK signer differs from the configured release certificate.'
+            exit 1
+          fi
           badging=$("$android_tools/aapt2" dump badging "$apk")
           [[ "$badging" == *"versionCode='$VERSION_CODE' versionName='$VERSION_NAME'"* ]]
+          [[ "$badging" != *"application-debuggable"* ]]
+          "$android_tools/zipalign" -c -P 16 4 "$apk"
           python scripts/check-apk-page-alignment.py "$apk"
-          mkdir -p apk
-          cp "$apk" "apk/CastCast-$VERSION_NAME.apk"
+          printf 'signer=%s\n' "$actual" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK Artifact
-        if: steps.release.outputs.published == 'false'
+        if: github.event_name == 'push' && steps.release.outputs.published == 'false'
         uses: actions/upload-artifact@v4
         with:
           name: castcast-apk
@@ -132,7 +182,7 @@ jobs:
 
   publish:
     needs: build-android
-    if: needs.build-android.outputs.published == 'false'
+    if: github.event_name == 'push' && needs.build-android.outputs.published == 'false'
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -145,6 +195,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION_NAME: ${{ needs.build-android.outputs.version }}
           RELEASE_TAG: ${{ needs.build-android.outputs.tag }}
+          APK_SIGNER_SHA256: ${{ needs.build-android.outputs.signer }}
         run: |
           args=(--repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "CastCast $VERSION_NAME")
           latest=true
@@ -153,8 +204,8 @@ jobs:
             latest=false
           fi
           asset="CastCast-$VERSION_NAME.apk"
-          notes=$(printf '<!-- castcast-ci -->\n\nCommit: `%s`\n\nSigned debug APK for Android 9+ (arm64).\n\nSHA-256: `%s`\n' \
-            "$GITHUB_SHA" "$(sha256sum "$asset" | cut -d' ' -f1)")
+          notes=$(printf '<!-- castcast-ci -->\n\nCommit: `%s`\n\nSigned release APK for Android 9+ (arm64).\n\nSHA-256: `%s`\n\nSigning certificate SHA-256: `%s`\n' \
+            "$GITHUB_SHA" "$(sha256sum "$asset" | cut -d' ' -f1)" "$APK_SIGNER_SHA256")
 
           # A draft interrupted during upload is safe to retry. Published releases stay immutable.
           existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
