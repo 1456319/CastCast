@@ -44,7 +44,7 @@ def fetch_peacock_manifest(variant_id: str) -> Dict[str, Any]:
 
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return {
                 "manifest_url": data.get("manifestUrl") or data.get("streamUrl", ""),

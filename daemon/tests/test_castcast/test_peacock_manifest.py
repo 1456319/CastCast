@@ -69,6 +69,52 @@ def test_transform_peacock_dash_manifest_multi_period_ad_stripping():
     assert "feature_part_2" in transformed
     # Primary feature period re-based to PT0S
     assert 'id="feature_part_1" start="PT0S"' in transformed or ('id="feature_part_1"' in transformed and 'start="PT0S"' in transformed)
+    # Subsequent feature period timeline normalized to eliminate mid-roll gap (675s - 75s stripped = 600s)
+    assert 'id="feature_part_2" start="PT600S"' in transformed or ('id="feature_part_2"' in transformed and 'start="PT600S"' in transformed)
+
+
+def test_transform_peacock_dash_manifest_does_not_strip_feature_content_with_ad_substring():
+    manifest = """<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011">
+  <Period id="ad_pre" start="PT0S" duration="PT30S"/>
+  <Period id="gladiator_feature_period" start="PT30S" duration="PT7200S">
+    <AdaptationSet mimeType="video/mp4">
+      <Representation id="v_uhd" width="3840" height="2160"/>
+    </AdaptationSet>
+  </Period>
+  <Period id="arcade_retro_game_shadow_nomad" start="PT7230S" duration="PT1200S">
+    <AdaptationSet mimeType="video/mp4">
+      <Representation id="v_uhd2" width="3840" height="2160"/>
+    </AdaptationSet>
+  </Period>
+  <Period id="feature_uuid_01ad45fe_blade" start="PT8430S" duration="PT3000S">
+    <AdaptationSet mimeType="video/mp4">
+      <Representation id="v_uhd3" width="3840" height="2160"/>
+    </AdaptationSet>
+  </Period>
+</MPD>"""
+    transformed = transform_peacock_dash_manifest(manifest, "https://peacocktv.com/dash/video.mpd")
+    assert "ad_pre" not in transformed
+    assert "gladiator_feature_period" in transformed
+    assert "arcade_retro_game_shadow_nomad" in transformed
+    assert "feature_uuid_01ad45fe_blade" in transformed
+    assert 'start="PT0S"' in transformed
+
+
+def test_transform_peacock_dash_manifest_regex_fallback_self_closing_period():
+    malformed = """<MPD xmlns="urn:mpeg:dash:schema:mpd:2011">
+  <Period id="ad_pre" start="PT0S" duration="PT30S"/>
+  <Period id="feature" start="PT30S" duration="PT1000S">
+    <AdaptationSet mimeType="video/mp4">
+      <Representation id="v" width="3840" height="2160"/>
+    </AdaptationSet>
+  </Period>
+  <!-- unclosed tag to force regex fallback
+</MPD>"""
+    transformed = transform_peacock_dash_manifest(malformed, "https://peacocktv.com/dash/video.mpd")
+    assert "ad_pre" not in transformed
+    assert "feature" in transformed
+    assert 'width="3840"' in transformed
 
 
 def test_transform_peacock_dash_manifest_id_case_insensitive_matching():

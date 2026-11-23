@@ -1271,6 +1271,10 @@ class CastService:
             self.media_server.drm_tokens[f"peacock_{variant_id}"] = user_token
             self.media_server.drm_tokens["peacock_user_token"] = user_token
 
+        upstream_license_url = manifest_info.get("license_url")
+        if upstream_license_url:
+            self.media_server.drm_tokens[f"peacock_license_url_{variant_id}"] = upstream_license_url
+
         raw_mpd_url = manifest_info.get("manifest_url") or manifest_info.get("streamUrl", "")
         if hasattr(self.media_server, "get_proxied_url"):
             proxied_url = self.media_server.get_proxied_url(raw_mpd_url)

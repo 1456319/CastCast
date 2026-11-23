@@ -8,6 +8,17 @@ from typing import Optional, Tuple
 AUTH_FILE_PATH = os.path.expanduser("~/.config/castcast/peacock_auth.json")
 
 
+def get_peacock_config_path() -> str:
+    """Resolve Peacock auth storage path honoring CASTCAST_CONFIG_DIR and Termux environments."""
+    if AUTH_FILE_PATH != os.path.expanduser("~/.config/castcast/peacock_auth.json"):
+        return AUTH_FILE_PATH
+    try:
+        from .amazon import get_config_path
+        return get_config_path("peacock_auth.json")
+    except Exception:
+        return AUTH_FILE_PATH
+
+
 def parse_ovp_token_payload(payload_str: str) -> Tuple[str, str]:
     """Parse Peacock OVP token and expiry from JSON payload string."""
     data = json.loads(payload_str)
@@ -19,7 +30,7 @@ def parse_ovp_token_payload(payload_str: str) -> Tuple[str, str]:
 
 def save_peacock_auth(auth_data: dict) -> None:
     """Save Peacock authentication data to local JSON file."""
-    path = Path(AUTH_FILE_PATH)
+    path = Path(get_peacock_config_path())
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(auth_data, f, indent=2)
@@ -27,7 +38,7 @@ def save_peacock_auth(auth_data: dict) -> None:
 
 def get_saved_peacock_auth() -> dict:
     """Load cached Peacock authentication data from local JSON file."""
-    path = Path(AUTH_FILE_PATH)
+    path = Path(get_peacock_config_path())
     if not path.is_file():
         return {}
     try:
@@ -48,7 +59,11 @@ def extract_device_token(
         cmd.extend(["-s", target])
     cmd.extend(["shell", "su -c 'cat /data/data/com.peacocktv.peacockandroid/files/ovpTokenFileDataSource'"])
 
-    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=5.0)
+    except (subprocess.TimeoutExpired, OSError):
+        return get_saved_peacock_auth()
+
     if res.returncode == 0 and res.stdout.strip():
         try:
             tok, exp = parse_ovp_token_payload(res.stdout.strip())

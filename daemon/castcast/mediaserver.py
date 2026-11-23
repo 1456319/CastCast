@@ -185,14 +185,42 @@ def transform_dash_manifest(body_content: str, target_url: str) -> str:
     return body_content
 
 
+def _parse_iso_duration(dur_str: str) -> float:
+    """Parse ISO 8601 duration (e.g. PT189S, PT1H2M3.4S) into seconds."""
+    if not dur_str:
+        return 0.0
+    import re
+    m = re.match(r'PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?', dur_str)
+    if not m:
+        return 0.0
+    hours = float(m.group(1) or 0)
+    mins = float(m.group(2) or 0)
+    secs = float(m.group(3) or 0)
+    return hours * 3600 + mins * 60 + secs
+
+
+def _format_iso_duration(seconds: float) -> str:
+    """Format seconds into ISO 8601 duration string."""
+    if seconds == int(seconds):
+        return f"PT{int(seconds)}S"
+    return f"PT{seconds:.3f}S"
+
+
+PEACOCK_AD_ID_RE = re.compile(
+    r'(?:^|[_\-.])(ad|ads|preroll|midroll|postroll|adbreak)(?:[_\-.]|\d|$)',
+    re.IGNORECASE
+)
+
+
 def transform_peacock_dash_manifest(body_content: str, target_url: str) -> str:
     """
     In-flight transformation for Peacock DASH manifests:
     1. BaseURL injection for CDN segment resolution.
     2. Strips all SSAI advertising <Period> elements (urn:psf:ads:tracking:v1, urn:scte:scte35, urn:sva:advertising-wg).
     3. Normalizes presentation start time of primary feature Period to PT0S.
-    4. Preserves 4K UHD Widevine ContentProtection descriptors intact.
-    5. Fallback regex strip if XML parsing fails.
+    4. Re-anchors subsequent feature periods to eliminate mid-roll timeline gaps.
+    5. Preserves 4K UHD Widevine ContentProtection descriptors intact.
+    6. Fallback regex strip if XML parsing fails.
     """
     import re
     import xml.etree.ElementTree as ET
@@ -219,30 +247,36 @@ def transform_peacock_dash_manifest(body_content: str, target_url: str) -> str:
         parent_map = {child: parent for parent in root.iter() for child in parent}
         periods = [elem for elem in root.iter() if elem.tag.endswith("Period") or elem.tag == "Period"]
 
-        feature_period = None
+        feature_periods = []
+        cumulative_stripped_sec = 0.0
         for p in periods:
             is_ad = False
-            p_id = p.attrib.get("id", "").lower()
-            if "ad" in p_id:
+            p_id = p.attrib.get("id", "")
+            if PEACOCK_AD_ID_RE.search(p_id):
                 is_ad = True
             else:
                 for elem in p.iter():
                     scheme = elem.attrib.get("schemeIdUri", "")
-                    if scheme in ad_schemes or scheme.startswith("urn:scte:scte35:"):
+                    if scheme in ad_schemes or scheme.startswith("urn:scte:scte35:") or "urn:psf:ads:" in scheme:
                         is_ad = True
                         break
             if is_ad:
+                dur_str = p.attrib.get("duration", "")
+                cumulative_stripped_sec += _parse_iso_duration(dur_str)
                 parent = parent_map.get(p, root)
                 try:
                     parent.remove(p)
                 except ValueError:
                     pass
             else:
-                if feature_period is None:
-                    feature_period = p
+                feature_periods.append(p)
+                if "start" in p.attrib:
+                    orig_start = _parse_iso_duration(p.attrib["start"])
+                    new_start = max(0.0, orig_start - cumulative_stripped_sec)
+                    p.attrib["start"] = _format_iso_duration(new_start)
 
-        if feature_period is not None:
-            feature_period.attrib["start"] = "PT0S"
+        if feature_periods and "start" not in feature_periods[0].attrib:
+            feature_periods[0].attrib["start"] = "PT0S"
 
         out = ET.tostring(root, encoding="utf-8").decode("utf-8")
         if 'xmlns=' not in out:
@@ -257,20 +291,20 @@ def transform_peacock_dash_manifest(body_content: str, target_url: str) -> str:
     except Exception:
         # Fallback regex strip
         def _regex_strip_period(match):
-            period_tag = match.group(0)
             attrs = match.group(1)
             p_id_match = re.search(r'\bid=[\'"]([^\'"]+)[\'"]', attrs, re.IGNORECASE)
-            if p_id_match and "ad" in p_id_match.group(1).lower():
+            if p_id_match and PEACOCK_AD_ID_RE.search(p_id_match.group(1)):
                 return ""
+            period_str = match.group(0)
             for scheme in ad_schemes:
-                if scheme in period_tag:
+                if scheme in period_str:
                     return ""
-            if "urn:psf:ads:" in period_tag or "urn:scte:scte35" in period_tag or "urn:sva:advertising-wg" in period_tag:
+            if "urn:psf:ads:" in period_str or "urn:scte:scte35" in period_str or "urn:sva:advertising-wg" in period_str:
                 return ""
-            return period_tag
+            return period_str
 
         cleaned = re.sub(
-            r'<(?:\w+:)?Period(\b[^>]*)>(.*?)</(?:\w+:)?Period>',
+            r'<(?:\w+:)?Period(\b[^>]*?)(?:/>|>(.*?)</(?:\w+:)?Period>)',
             _regex_strip_period,
             body_content,
             flags=re.DOTALL | re.IGNORECASE
@@ -460,8 +494,13 @@ class _Handler(BaseHTTPRequestHandler):
             challenge_bytes = self.rfile.read(content_length)
             self.server.media_server.log(f"Proxying Peacock Widevine License (variant={variant_id})", "info")
 
+            target_license_url = self.server.media_server.drm_tokens.get(
+                f"peacock_license_url_{variant_id}",
+                "https://play.ovp.peacocktv.com/auth/tokens"
+            )
+
             req = urllib.request.Request(
-                "https://play.ovp.peacocktv.com/auth/tokens",
+                target_license_url,
                 data=challenge_bytes,
                 headers={
                     "X-SkyOTT-UserToken": user_token,

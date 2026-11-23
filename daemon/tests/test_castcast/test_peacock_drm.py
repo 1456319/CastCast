@@ -48,7 +48,7 @@ def test_fetch_peacock_manifest_success(monkeypatch):
 
     captured_req = []
 
-    def mock_urlopen(req):
+    def mock_urlopen(req, *args, **kwargs):
         captured_req.append(req)
         return MockResponse()
 
@@ -84,7 +84,7 @@ def test_fetch_peacock_manifest_fallback_stream_url(monkeypatch):
             }
             return json.dumps(payload).encode("utf-8")
 
-    monkeypatch.setattr("urllib.request.urlopen", lambda req: MockResponse())
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, *args, **kwargs: MockResponse())
 
     res = fetch_peacock_manifest("e6fc9411-749e-3be3-8b8a-c652f15b7477")
     assert res["manifest_url"] == "https://ovp.peacocktv.com/stream/fallback.mpd"
@@ -94,7 +94,7 @@ def test_fetch_peacock_manifest_fallback_stream_url(monkeypatch):
 def test_fetch_peacock_manifest_http_error(monkeypatch):
     monkeypatch.setattr("castcast.peacock_drm.get_saved_peacock_auth", lambda: {"userToken": "test-token-123"})
 
-    def mock_urlopen(req):
+    def mock_urlopen(req, *args, **kwargs):
         fp = io.BytesIO(b'{"error": "Unauthorized"}')
         raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, fp)
 
