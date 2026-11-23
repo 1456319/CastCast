@@ -1162,6 +1162,12 @@ class MediaServer:
             return True
         return False
 
+    def get_proxied_url(self, raw_url: str) -> str:
+        """Return local /proxy/?url=... endpoint for a remote URL."""
+        import base64
+        encoded = base64.b64encode(raw_url.encode("utf-8")).decode("utf-8")
+        return f"http://{self.lan_ip}:{self.port}/proxy/?url={encoded}"
+
     def url_for(self, path: str) -> str:
         """Build a servable URL for an absolute path inside one of our roots."""
         real = os.path.realpath(path)

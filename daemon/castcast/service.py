@@ -19,6 +19,7 @@ from typing import Callable, Dict, List, Optional
 
 from . import capability, health, remux
 from .amazon import get_config_path, get_saved_auth
+from .peacock_drm import extract_variant_id, fetch_peacock_manifest
 from .channel import DEFAULT_TEXT_TRACK_STYLE
 from .discovery import CastDevice, DeviceCache, resolve
 from .mediaserver import MediaServer, guess_mime
@@ -711,6 +712,8 @@ class CastService:
             path_lower = clean_path.lower()
             if "amazon.com" in path_lower or "primevideo.com" in path_lower or "gti=" in path_lower:
                 self._current_source_type = "amazon"
+            elif "peacocktv.com" in path_lower or "peacock" in path_lower:
+                self._current_source_type = "peacock"
             elif "youtube.com" in path_lower or "youtu.be" in path_lower:
                 self._current_source_type = "youtube"
             else:
@@ -761,6 +764,8 @@ class CastService:
         #          at 4K — requesting only H.265 ensures we get the highest quality stream.
         if is_url and ("amazon.com" in path_lower or "primevideo.com" in path_lower or "gti=" in path_lower):
             return self._cast_amazon(clean_path, title=title)
+        if is_url and ("peacocktv.com" in path_lower or "peacock" in path_lower):
+            return self._cast_peacock(clean_path, title=title)
         if not path:
             return {"error": "Media path is empty or could not be resolved"}
             
@@ -1250,6 +1255,65 @@ class CastService:
             active_track_ids=active_track_ids
         )
         return {"casting": True, "url": proxied_path, "drm": True}
+
+    def _cast_peacock(self, path: str, title: Optional[str] = None, resume_pos: Optional[float] = None) -> dict:
+        self.log(f"DEBUG-ONLY: _cast_peacock processing path: {path}", "debug")
+        with self._lock:
+            self._current_scavenged_tracks = []
+        self._current_source_type = "peacock"
+        self._current_media_path = path
+
+        variant_id = extract_variant_id(path)
+        manifest_info = fetch_peacock_manifest(variant_id)
+
+        user_token = manifest_info.get("user_token")
+        if user_token:
+            self.media_server.drm_tokens[f"peacock_{variant_id}"] = user_token
+            self.media_server.drm_tokens["peacock_user_token"] = user_token
+
+        raw_mpd_url = manifest_info.get("manifest_url") or manifest_info.get("streamUrl", "")
+        if hasattr(self.media_server, "get_proxied_url"):
+            proxied_url = self.media_server.get_proxied_url(raw_mpd_url)
+        else:
+            import base64
+            encoded = base64.b64encode(raw_mpd_url.encode("utf-8")).decode("utf-8")
+            proxied_url = f"http://{self.media_server.lan_ip}:{self.media_server.port}/proxy/?url={encoded}"
+
+        license_url = None
+        if hasattr(self.media_server, "peacock_license_url"):
+            license_url = self.media_server.peacock_license_url(variant_id)
+        if not license_url:
+            public_url = getattr(self.media_server, "public_url", None)
+            host = getattr(self.media_server, "host", None) or getattr(self.media_server, "lan_ip", "127.0.0.1")
+            port = getattr(self.media_server, "port", 8000)
+            if public_url:
+                license_url = f"{public_url}/peacock/license"
+            else:
+                license_url = f"http://{host}:{port}/peacock/license"
+
+        if resume_pos is None:
+            raw_pos = max(self.resume_state.get(proxied_url, 0.0), self.resume_state.get(path, 0.0)) if hasattr(self, "resume_state") else 0.0
+            resume_pos = max(0.0, raw_pos - 10.0)
+
+        stream_title = title or "Peacock Stream"
+        self.supervisor.load(
+            proxied_url,
+            content_type="application/dash+xml",
+            title=stream_title,
+            source_path=path,
+            license_url=license_url,
+            position=resume_pos,
+        )
+
+        return {
+            "casting": True,
+            "url": proxied_url,
+            "drm": True,
+            "provider": "peacock",
+            "title": stream_title,
+        }
+
+    play_media = cast
 
     def queue(self, paths: list[str]) -> dict:
         """Queue multiple items for playback. Pre-flights each and only queues castable ones."""
