@@ -160,9 +160,12 @@ jobs:
             --key-pass env:APK_SIGNING_PASSWORD --out "$apk" "$aligned"
 
           certs=$("$android_tools/apksigner" verify --print-certs "$apk")
-          actual=$(sed -En 's/^Signer #[0-9]+ certificate SHA-256 digest: //p' <<< "$certs")
+          # Newer build-tools can label signers by SDK range instead of number.
+          actual=$(sed -En 's/^Signer.* certificate SHA-256 digest: ([0-9a-fA-F]{64})[[:space:]]*$/\1/p' \
+            <<< "$certs" | tr 'A-F' 'a-f' | sort -u)
           if [[ "$actual" != "$expected" ]]; then
             echo '::error::The APK signer differs from the configured release certificate.'
+            printf 'Expected certificate SHA-256: %s\n%s\n' "$expected" "$certs"
             exit 1
           fi
           badging=$("$android_tools/aapt2" dump badging "$apk")
