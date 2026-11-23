@@ -83,6 +83,11 @@ files:
     role: amazon-extraction
     boundaries:
     - utility-middleware
+  daemon/castcast/peacock_auth.py:
+    section: media-routing
+    role: peacock-auth
+    boundaries:
+    - utility-middleware
   daemon/castcast/channel.py:
     section: cast-sender-receiver
     role: cast-channel
