@@ -149,6 +149,31 @@ export interface Status {
   cast: CastState;
 }
 
+export interface CastDevice {
+  host: string;
+  port: number;
+  friendly_name: string;
+}
+
+export interface ReadinessCheck {
+  key: string;
+  label: string;
+  ok: boolean | null;
+  detail: string;
+  remedy: string;
+  blocking: boolean;
+}
+
+export interface HealthReport {
+  ready: boolean;
+  checks: ReadinessCheck[];
+}
+
+interface DeviceCode {
+  public_code?: string;
+  private_code?: string;
+}
+
 export interface LogLine {
   seq: number;
   ts: number;
@@ -192,11 +217,18 @@ const post = <T,>(path: string, payload?: unknown) =>
 
 export const daemon = {
   status: () => request<Status>("/status"),
+  health: (signal?: AbortSignal) => request<HealthReport>("/health", { signal }),
   amazonAuthStart: () => request<DeviceCode & { code_data?: DeviceCode }>("/amazon/auth", { signal: AbortSignal.timeout(15000) }),
   amazonAuthPoll: (pub: string, priv: string, signal: AbortSignal) =>
     request<{ response?: { success?: unknown } }>(`/amazon/poll?${new URLSearchParams({ public_code: pub, private_code: priv })}`,
       { signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]) }),
-  devices: () => request<{ devices: any[] }>("/devices"),
+  amazonDeviceCode: () =>
+    request<DeviceCode & { code_data?: DeviceCode }>("/amazon/auth", { signal: AbortSignal.timeout(15000) }),
+  checkAmazonDeviceCode: (publicCode: string, privateCode: string) => {
+    const params = new URLSearchParams({ public_code: publicCode, private_code: privateCode });
+    return request<{ response?: { success?: unknown } }>(`/amazon/poll?${params}`, { signal: AbortSignal.timeout(15000) });
+  },
+  devices: () => request<{ devices: CastDevice[] }>("/devices"),
   library: (deep = false) => request<{ items: LibraryItem[] }>(`/library${deep ? "?deep=1" : ""}`),
   getTrash: () => request<{ items: LibraryItem[] }>("/trash"),
   preflight: (path: string) => request<Preflight>(`/preflight?path=${encodeURIComponent(path)}`),

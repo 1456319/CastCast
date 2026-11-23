@@ -49,6 +49,12 @@ class CastDevice:
     def to_dict(self) -> dict:
         d = asdict(self)
         d["is_ultra"] = "ultra" in self.model.lower()
+        # Tier is computed lazily so importing capability.py is optional.
+        try:
+            from .capability import tier_from_model, DeviceTier
+            d["tier"] = tier_from_model(self.model).value
+        except Exception:
+            d["tier"] = "unknown"
         return d
 
 

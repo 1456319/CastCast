@@ -23,6 +23,30 @@ from .service import CastService
 from .metadata import resolve_title
 
 API_PORT = 8765
+AUDIT_TAIL_BYTES = 64 * 1024
+
+
+def _audit_log_tail(work_dir: str) -> str:
+    candidates = (
+        os.environ.get("CASTCAST_AUDIT_LOG"),
+        os.path.join(work_dir, "audit.log"),
+        "/var/log/audit/audit.log",
+        "/tmp/castcast.log",
+    )
+    for path in candidates:
+        if not path:
+            continue
+        try:
+            with open(path, "rb") as audit:
+                start = max(0, audit.seek(0, os.SEEK_END) - AUDIT_TAIL_BYTES)
+                audit.seek(start)
+                tail = audit.read(AUDIT_TAIL_BYTES)
+            if start and b"\n" in tail:
+                tail = tail.split(b"\n", 1)[1]
+            return tail.decode("utf-8", errors="replace")
+        except OSError:
+            continue
+    return ""
 
 
 AUDIT_TAIL_BYTES = 64 * 1024
