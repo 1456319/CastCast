@@ -328,7 +328,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):  # noqa: N802
         self.server.media_server.log(f"Received OPTIONS: {self.path.partition('?')[0]}", "debug")
-        if self.path.startswith("/drm/") or self.path.startswith("/amazon/license"):
+        if self.path.startswith("/drm/") or self.path.startswith("/amazon/license") or self.path.startswith("/peacock/license"):
             self.send_response(200)
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
@@ -403,6 +403,101 @@ class _Handler(BaseHTTPRequestHandler):
                 self.wfile.write(license_bytes)
             except Exception as e:
                 self.server.media_server.log(f"Amazon License Proxy Error: {e}", "warn")
+                self.send_error(500)
+            return
+
+        # ====================================================================
+        # [PEACOCK LICENSE PROXY ENDPOINT]
+        # This endpoint (/peacock/license) acts as a Widevine license relay
+        # between the Chromecast receiver (Shaka Player) and Peacock's official
+        # license server (https://play.ovp.peacocktv.com/auth/tokens).
+        #
+        # Flow: Chromecast CDM -> this relay -> Peacock OVP tokens API
+        #       -> raw license bytes -> back to Chromecast CDM
+        #
+        # Zero DRM Circumvention: Content keys are never extracted, dumped,
+        # or cracked. Widevine payload bytes are relayed verbatim. Decryption
+        # is performed strictly within the Chromecast Ultra's Google-certified
+        # L1 hardware CDM.
+        #
+        # CRITICAL: Content-Length MUST be set on the response so Shaka Player
+        # frames the response accurately without hanging in buffering.
+        # ====================================================================
+        if self.path.startswith("/peacock/license"):
+            import urllib.parse
+            import urllib.request
+            import urllib.error
+            from .peacock_auth import get_saved_peacock_auth
+
+            qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            variant_id = qs.get("variant_id", [""])[0]
+
+            user_token = None
+            if variant_id:
+                user_token = self.server.media_server.drm_tokens.get(f"peacock_{variant_id}")
+            if not user_token:
+                user_token = self.server.media_server.drm_tokens.get("peacock_user_token")
+            if isinstance(user_token, bytes):
+                user_token = user_token.decode("utf-8", "replace")
+            if not user_token:
+                auth = get_saved_peacock_auth()
+                user_token = auth.get("userToken")
+
+            if not user_token:
+                self.server.media_server.log("Peacock License Proxy: No user token available", "warn")
+                self.send_error(401, "No Peacock auth token available")
+                return
+
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+            except (ValueError, TypeError):
+                content_length = 0
+
+            if not 0 < content_length <= 1024 * 1024:
+                self.send_error(400, "Invalid license challenge size")
+                return
+
+            challenge_bytes = self.rfile.read(content_length)
+            self.server.media_server.log(f"Proxying Peacock Widevine License (variant={variant_id})", "info")
+
+            req = urllib.request.Request(
+                "https://play.ovp.peacocktv.com/auth/tokens",
+                data=challenge_bytes,
+                headers={
+                    "X-SkyOTT-UserToken": user_token,
+                    "X-SkyOTT-Territory": "US",
+                    "X-SkyOTT-Provider": "NBCUOTT",
+                    "X-SkyOTT-Platform": "ANDROID",
+                    "Content-Type": "application/octet-stream",
+                },
+                method="POST",
+            )
+
+            try:
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    resp_bytes = resp.read()
+                    self.server.media_server.log(
+                        f"Peacock Widevine License served successfully ({len(resp_bytes)} bytes)", "info"
+                    )
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.send_header("Access-Control-Allow-Private-Network", "true")
+                    self.send_header("Content-Length", str(len(resp_bytes)))
+                    self.end_headers()
+                    self.wfile.write(resp_bytes)
+            except urllib.error.HTTPError as e:
+                err_bytes = e.read()
+                self.server.media_server.log(f"Peacock License Proxy HTTPError: {e.code}", "warn")
+                self.send_response(e.code)
+                self.send_header("Content-Type", e.headers.get("Content-Type", "text/plain"))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Private-Network", "true")
+                self.send_header("Content-Length", str(len(err_bytes)))
+                self.end_headers()
+                self.wfile.write(err_bytes)
+            except Exception as e:
+                self.server.media_server.log(f"Peacock License Proxy Error: {e}", "warn")
                 self.send_error(500)
             return
 
@@ -704,7 +799,7 @@ class _LicenseHandler(_Handler):
     def _authorized(self):
         parsed = urllib.parse.urlsplit(self.path)
         token = urllib.parse.parse_qs(parsed.query).get("access", [""])[0]
-        return parsed.path == "/amazon/license" and secrets.compare_digest(
+        return parsed.path in ("/amazon/license", "/peacock/license") and secrets.compare_digest(
             token, self.server.media_server._license_access_token)
 
     def do_OPTIONS(self):
@@ -843,6 +938,18 @@ class MediaServer:
             if self._license_httpd:
                 query["access"] = self._license_access_token
             return f"{self.public_url}/amazon/license?{urllib.parse.urlencode(query)}"
+
+    def peacock_license_url(self, variant_id: str = "") -> str | None:
+        with self._tunnel_lock:
+            if not self.public_url:
+                return None
+            query = {}
+            if variant_id:
+                query["variant_id"] = variant_id
+            if self._license_httpd:
+                query["access"] = self._license_access_token
+            qs = f"?{urllib.parse.urlencode(query)}" if query else ""
+            return f"{self.public_url}/peacock/license{qs}"
 
     def _start_tunnel(self) -> None:
         if self._tunnel_thread and self._tunnel_thread.is_alive():
